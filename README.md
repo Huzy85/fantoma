@@ -2,6 +2,8 @@
 
 AI browser agent that works with any LLM. Anti-detection built in. Runs locally or with cloud APIs.
 
+![Fantoma Demo](fantoma_demo.gif)
+
 ```python
 from fantoma import Agent
 
