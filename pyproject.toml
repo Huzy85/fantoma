@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fantoma"
+version = "0.1.0"
+description = "The AI browser agent that doesn't get caught, doesn't get stuck, and doesn't need GPT-4."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    {name = "Petru", email = "support@steamvibe.com"},
+]
+keywords = ["browser", "automation", "ai", "agent", "anti-detect", "camoufox", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Internet :: WWW/HTTP :: Browsers",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "camoufox>=0.4",
+    "playwright>=1.40",
+    "httpx>=0.25",
+]
+
+[project.optional-dependencies]
+captcha = ["capsolver"]
+vision = ["pillow"]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+fantoma = "fantoma.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Huzy85/fantoma"
+Repository = "https://github.com/Huzy85/fantoma"
+Issues = "https://github.com/Huzy85/fantoma/issues"

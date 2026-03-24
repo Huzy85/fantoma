@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Fantoma runtime
+monitor_logs/
+stress_test_results*.json
+stress_test*.log
+signup_results*.json
+signup_log*.txt
+signup_output*.txt
+phi_complex_results.json
+overnight_results*.json
+overnight_log*.txt
+overnight_test.py
+integration_test.py
+integration_results.json
+ux_review*.py
+ux_review*.txt
+__pycache__/
