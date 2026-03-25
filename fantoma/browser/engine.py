@@ -135,7 +135,11 @@ class BrowserEngine:
         return True
 
     def type_text(self, selector_or_element, text: str, clear_first: bool = True):
-        """Type text with human-like character-by-character delay."""
+        """Type text character-by-character with human-like delays.
+
+        Waits for the element to have focus before typing, which prevents
+        keystrokes being lost on React controlled inputs during re-renders.
+        """
         page = self._page
 
         if isinstance(selector_or_element, str):
@@ -147,6 +151,20 @@ class BrowserEngine:
             return False
 
         element.click()
+
+        # Wait for element to actually receive focus — React controlled inputs
+        # re-render on focus which can briefly unmount/remount the DOM node
+        try:
+            page.wait_for_function(
+                "(el) => document.activeElement === el",
+                element,
+                timeout=3000,
+            )
+        except Exception:
+            # Fallback: element may have been replaced by React re-render,
+            # re-query and click again
+            element.click()
+            time.sleep(0.3)
 
         if clear_first:
             page.keyboard.press("Control+a")
