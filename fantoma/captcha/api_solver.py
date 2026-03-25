@@ -28,13 +28,29 @@ class APICaptchaSolver:
         self.api_key = api_key
         self.config = PROVIDERS[provider]
 
-    def solve_recaptcha_v2(self, site_key: str, page_url: str, timeout: int = 120) -> str | None:
+    def solve_recaptcha_v2(self, site_key: str, page_url: str,
+                           is_invisible: bool = False, timeout: int = 120) -> str | None:
         """Solve reCAPTCHA v2. Returns token or None."""
-        return self._solve({
+        task = {
             "type": "ReCaptchaV2TaskProxyLess",
             "websiteURL": page_url,
             "websiteKey": site_key,
-        }, timeout)
+        }
+        if is_invisible:
+            task["isInvisible"] = True
+        return self._solve(task, timeout)
+
+    def solve_recaptcha_v3(self, site_key: str, page_url: str,
+                           page_action: str = None, timeout: int = 120) -> str | None:
+        """Solve reCAPTCHA v3. Returns token or None."""
+        task = {
+            "type": "ReCaptchaV3TaskProxyLess",
+            "websiteURL": page_url,
+            "websiteKey": site_key,
+        }
+        if page_action:
+            task["pageAction"] = page_action
+        return self._solve(task, timeout)
 
     def solve_hcaptcha(self, site_key: str, page_url: str, timeout: int = 120) -> str | None:
         """Solve hCaptcha. Returns token or None."""
