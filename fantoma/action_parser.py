@@ -158,16 +158,12 @@ def _click_with_fallback(browser, page, element) -> bool:
 
 
 def _type_with_fallback(browser, element, text: str, idx: int) -> bool:
-    """Type with fill() first, fallback to character-by-character."""
+    """Type character-by-character. Never use fill() — it silently fails on React inputs."""
     try:
-        element.fill(text)
-        return True
+        return type_into(browser, element, text)
     except Exception:
-        try:
-            return type_into(browser, element, text)
-        except Exception:
-            log.warning("Could not type into element [%d]", idx)
-            return False
+        log.warning("Could not type into element [%d]", idx)
+        return False
 
 
 def _handle_freeform(action_raw: str, page, browser) -> bool:

@@ -7,64 +7,90 @@ log = logging.getLogger("fantoma.autocomplete")
 
 def handle_autocomplete(page, typed_text: str, timeout: float = 3.0) -> bool:
     """After typing, check for autocomplete suggestions and click the best match.
-    
+
     Returns True if a suggestion was found and clicked, False otherwise.
     This is pure code — no LLM needed.
+
+    Only matches genuine autocomplete/dropdown suggestions — NOT form buttons,
+    submit buttons, or navigation elements.
     """
     time.sleep(timeout)  # Wait for suggestions to render
-    
+
     # Find the active/focused input
     input_rect = page.evaluate('''() => {
         const input = document.activeElement;
-        if (!input || input.tagName !== 'INPUT') return null;
+        if (!input || (input.tagName !== 'INPUT' && input.tagName !== 'TEXTAREA')) return null;
         const rect = input.getBoundingClientRect();
         return {top: rect.top, left: rect.left, bottom: rect.bottom, right: rect.right, width: rect.width};
     }''')
-    
+
     if not input_rect:
         return False
-    
-    # Find all visible clickable elements near the input (within 300px below)
+
+    # Find autocomplete suggestions near the input
+    # IMPORTANT: exclude buttons, submit buttons, nav elements — only match
+    # actual dropdown/suggestion items that contain the typed text
     suggestions = page.evaluate('''(params) => {
         const {bottom, left, right} = params.inputRect;
         const typed = params.typedText.toLowerCase();
         const candidates = [];
-        
-        // Look for list items, options, suggestions near the input
-        const selectors = 'li, [role="option"], [role="button"], div[class*="suggest"], div[class*="result"]';
+
+        // Only look for actual suggestion/option elements — NOT buttons
+        const selectors = [
+            '[role="option"]',
+            '[role="listbox"] > *',
+            'li[class*="suggest"]',
+            'li[class*="autocomplete"]',
+            'li[class*="result"]',
+            'li[class*="option"]',
+            'div[class*="suggest"]',
+            'div[class*="autocomplete"]',
+            'div[class*="dropdown"] li',
+            'ul[class*="suggest"] li',
+            'ul[class*="dropdown"] li',
+            'datalist option',
+        ].join(', ');
+
         document.querySelectorAll(selectors).forEach(el => {
             const rect = el.getBoundingClientRect();
             if (rect.height === 0 || rect.width === 0) return;
-            
+
             // Must be below the input and roughly aligned horizontally
             if (rect.top < bottom - 5) return;
             if (rect.top > bottom + 300) return;
             if (rect.right < left - 50 || rect.left > right + 50) return;
-            
+
             const text = el.textContent?.trim() || '';
             if (!text) return;
-            
+
+            // Must relate to what was typed — ignore unrelated items
+            const textLower = text.toLowerCase();
+            const exactMatch = textLower === typed;
+            const startsWith = textLower.startsWith(typed);
+            const contains = textLower.includes(typed);
+            const typedContains = typed.includes(textLower);
+
+            if (!exactMatch && !startsWith && !contains && !typedContains) return;
+
             candidates.push({
                 text: text.substring(0, 100),
                 top: rect.top,
-                exactMatch: text.toLowerCase() === typed,
-                startsWith: text.toLowerCase().startsWith(typed),
-                contains: text.toLowerCase().includes(typed),
-                selector: el.id ? '#' + el.id : null,
-                index: candidates.length,
+                exactMatch: exactMatch,
+                startsWith: startsWith,
+                contains: contains,
             });
         });
-        
+
         return candidates;
     }''', {"inputRect": input_rect, "typedText": typed_text})
-    
+
     if not suggestions:
-        log.debug("No autocomplete suggestions found near input")
+        log.debug("No autocomplete suggestions found")
         return False
-    
+
     log.info("Found %d autocomplete suggestions", len(suggestions))
-    
-    # Pick the best match: exact > startsWith > contains > first
+
+    # Pick the best match: exact > startsWith > contains
     best = None
     for s in suggestions:
         if s["exactMatch"]:
@@ -74,41 +100,53 @@ def handle_autocomplete(page, typed_text: str, timeout: float = 3.0) -> bool:
             best = s
         if s["contains"] and best is None:
             best = s
-    
+
     if best is None:
-        best = suggestions[0]  # Just pick the first one
-    
+        log.debug("No suggestion matched the typed text")
+        return False
+
     log.info("Clicking suggestion: '%s' (exact=%s)", best["text"][:50], best["exactMatch"])
-    
-    # Click the suggestion using its position (most reliable)
+
+    # Click using text content matching (avoids stale selectors)
     try:
-        page.evaluate(f'''() => {{
-            const typed = "{typed_text.lower()}";
-            const selectors = 'li, [role="option"], [role="button"]';
-            const candidates = Array.from(document.querySelectorAll(selectors)).filter(el => {{
+        clicked = page.evaluate('''(params) => {
+            const typed = params.typedText.toLowerCase();
+            const targetText = params.targetText.toLowerCase();
+
+            const selectors = [
+                '[role="option"]',
+                '[role="listbox"] > *',
+                'li[class*="suggest"]',
+                'li[class*="autocomplete"]',
+                'li[class*="result"]',
+                'li[class*="option"]',
+                'div[class*="suggest"]',
+                'div[class*="autocomplete"]',
+                'div[class*="dropdown"] li',
+                'ul[class*="suggest"] li',
+                'ul[class*="dropdown"] li',
+            ].join(', ');
+
+            const matches = Array.from(document.querySelectorAll(selectors)).filter(el => {
                 const rect = el.getBoundingClientRect();
-                return rect.height > 0 && el.textContent?.trim()?.toLowerCase() === typed;
-            }});
-            if (candidates.length > 0) {{
-                candidates[0].click();
+                if (rect.height === 0) return false;
+                const t = el.textContent?.trim()?.toLowerCase() || '';
+                return t === targetText || t.includes(typed) || typed.includes(t);
+            });
+
+            if (matches.length > 0) {
+                matches[0].click();
                 return true;
-            }}
-            // Fallback: click first suggestion near input
-            const input = document.activeElement;
-            if (!input) return false;
-            const inputRect = input.getBoundingClientRect();
-            const nearby = Array.from(document.querySelectorAll(selectors)).filter(el => {{
-                const rect = el.getBoundingClientRect();
-                return rect.height > 0 && rect.top >= inputRect.bottom - 5 && rect.top <= inputRect.bottom + 300;
-            }});
-            if (nearby.length > 0) {{
-                nearby[0].click();
-                return true;
-            }}
+            }
             return false;
-        }}''')
-        time.sleep(1)
-        return True
+        }''', {"typedText": typed_text.lower(), "targetText": best["text"].lower()})
+
+        if clicked:
+            time.sleep(1)
+            return True
+        else:
+            log.debug("Could not click suggestion element")
+            return False
     except Exception as e:
         log.warning("Failed to click suggestion: %s", e)
         return False

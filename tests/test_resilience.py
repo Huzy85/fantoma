@@ -50,6 +50,86 @@ def test_escalation_chain():
     assert not chain.can_escalate()
 
 
+def test_action_loop_exact_match():
+    """5 identical actions should be detected as a loop."""
+    from fantoma.resilience.memory import ActionMemory
+    from unittest.mock import MagicMock
+    from fantoma.executor import Executor
+
+    executor = MagicMock(spec=Executor)
+    executor.memory = ActionMemory()
+    for _ in range(5):
+        executor.memory.record('SCROLL down', 'h1', 'h1', True, step=1)
+
+    # Call the real method
+    result = Executor._is_action_loop(executor)
+    assert result is True
+
+
+def test_action_loop_semantic_match():
+    """Same action type + same text but different element numbers = loop."""
+    from fantoma.resilience.memory import ActionMemory
+    from unittest.mock import MagicMock
+    from fantoma.executor import Executor
+
+    executor = MagicMock(spec=Executor)
+    executor.memory = ActionMemory()
+    executor.memory.record('TYPE [1] "email@test.com"', 'h1', 'h1', True, step=1)
+    executor.memory.record('TYPE [4] "email@test.com"', 'h1', 'h1', True, step=2)
+    executor.memory.record('TYPE [3] "email@test.com"', 'h1', 'h1', True, step=3)
+    executor.memory.record('TYPE [1] "email@test.com"', 'h1', 'h1', True, step=4)
+    executor.memory.record('TYPE [7] "email@test.com"', 'h1', 'h1', True, step=5)
+
+    result = Executor._is_action_loop(executor)
+    assert result is True
+
+
+def test_action_loop_different_actions_no_loop():
+    """Different actions should NOT be detected as a loop."""
+    from fantoma.resilience.memory import ActionMemory
+    from unittest.mock import MagicMock
+    from fantoma.executor import Executor
+
+    executor = MagicMock(spec=Executor)
+    executor.memory = ActionMemory()
+    executor.memory.record('TYPE [1] "email@test.com"', 'h1', 'h1', True, step=1)
+    executor.memory.record('CLICK [2]', 'h1', 'h2', True, step=2)
+    executor.memory.record('TYPE [3] "password"', 'h2', 'h2', True, step=3)
+    executor.memory.record('CLICK [5]', 'h2', 'h3', True, step=4)
+    executor.memory.record('WAIT', 'h3', 'h3', True, step=5)
+
+    result = Executor._is_action_loop(executor)
+    assert result is False
+
+
+def test_action_loop_fewer_than_5_no_loop():
+    """Fewer than 5 actions should never be a loop."""
+    from fantoma.resilience.memory import ActionMemory
+    from unittest.mock import MagicMock
+    from fantoma.executor import Executor
+
+    executor = MagicMock(spec=Executor)
+    executor.memory = ActionMemory()
+    for _ in range(3):
+        executor.memory.record('SCROLL down', 'h1', 'h1', True, step=1)
+
+    result = Executor._is_action_loop(executor)
+    assert result is False
+
+
+def test_consecutive_failure_counter_init():
+    """Executor should initialise consecutive failure counter to 0."""
+    from unittest.mock import MagicMock
+    from fantoma.executor import Executor
+    from fantoma.config import FantomaConfig
+
+    browser = MagicMock()
+    llm = MagicMock()
+    config = FantomaConfig()
+    executor = Executor(browser=browser, llm=llm, config=config)
+    assert executor._consecutive_failures == 0
+
+
 def test_captcha_detector():
     # Mock test — just verify the class loads and processes strings
     from fantoma.captcha.detector import CaptchaDetector, CAPTCHA_SIGNATURES
