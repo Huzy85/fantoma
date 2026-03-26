@@ -150,6 +150,70 @@ class Agent:
             except Exception:
                 pass
 
+    def login(self, url: str, email: str = "", username: str = "", password: str = "") -> AgentResult:
+        """Log into a site without using the LLM.
+
+        Reads the accessibility tree, matches fields by label, fills credentials,
+        clicks submit. Handles multi-step flows (email → Next → password → Login).
+
+        Args:
+            url: Login page URL
+            email: Email address
+            username: Username (also used for verification challenges)
+            password: Password
+
+        Returns:
+            AgentResult with success status and login details.
+        """
+        from fantoma.browser.form_login import login as form_login
+        from fantoma.dom.accessibility import AccessibilityExtractor
+
+        log.info("Login: %s (email=%s)", url, email[:3] + "***" if email else "none")
+
+        try:
+            browser = BrowserEngine(
+                headless=self.config.browser.headless,
+                profile_dir=self.config.browser.profile_dir,
+                proxy=self._proxy,
+            )
+            browser.start()
+        except Exception as e:
+            log.error("Browser start failed: %s", e)
+            return AgentResult(success=False, error=f"Browser start failed: {e}")
+
+        try:
+            browser.navigate(url)
+            import time
+            time.sleep(3)
+
+            dom = AccessibilityExtractor(
+                max_elements=self.config.extraction.max_elements,
+                max_headings=self.config.extraction.max_headings,
+            )
+
+            result = form_login(
+                browser=browser,
+                dom_extractor=dom,
+                email=email,
+                username=username,
+                password=password,
+            )
+
+            return AgentResult(
+                success=result["success"],
+                data=result,
+                steps_taken=result["steps"],
+                error="" if result["success"] else "Login failed",
+            )
+        except Exception as e:
+            log.error("Login failed: %s", e)
+            return AgentResult(success=False, error=str(e))
+        finally:
+            try:
+                browser.stop()
+            except Exception:
+                pass
+
     def extract(self, url: str, query: str, schema: dict = None) -> dict | str:
         """Navigate to a URL and extract structured data.
 
