@@ -6,7 +6,7 @@ from typing import Any
 from fantoma.browser.engine import BrowserEngine
 from fantoma.browser.actions import wait_for_navigation, wait_for_network_idle
 from fantoma.browser.consent import dismiss_consent
-from fantoma.browser.autocomplete import handle_autocomplete
+from fantoma.browser.form_assist import after_type as form_after_type
 from fantoma.action_parser import normalize_action, execute_action
 from fantoma.dom.diff import PageDiff
 from fantoma.llm.client import LLMClient
@@ -45,6 +45,7 @@ class Executor:
 
         self._total_actions = 0
         self._completed_steps: list[str] = []
+        self._consecutive_failures = 0
 
     # ── Plan-based execution ──────────────────────────────────────
 
@@ -209,15 +210,23 @@ class Executor:
                     escalations=self.escalation.total_escalations,
                 )
 
-            # Detect scroll loops (5x same action = force DONE)
+            # Detect action loops (5x same action)
             if self._is_action_loop():
-                log.info("Detected action loop — forcing DONE")
-                return AgentResult(
-                    success=bool(self._extract_result(task, dom_text)),
-                    data=self._extract_result(task, dom_text),
-                    steps_taken=step_num, steps_detail=steps_detail,
-                    escalations=self.escalation.total_escalations,
-                )
+                if self.escalation.can_escalate():
+                    new_endpoint = self.escalation.escalate()
+                    self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
+                    log.info("Action loop detected — escalated to %s", new_endpoint)
+                    self.memory._history.clear()  # clear loop history so new model starts fresh
+                    self._consecutive_failures = 0
+                    continue
+                else:
+                    log.info("Action loop detected, no escalation available — forcing DONE")
+                    return AgentResult(
+                        success=bool(self._extract_result(task, dom_text)),
+                        data=self._extract_result(task, dom_text),
+                        steps_taken=step_num, steps_detail=steps_detail,
+                        escalations=self.escalation.total_escalations,
+                    )
 
             # Ask LLM for next action
             failed = self.memory.get_failed_actions(dom_hash)
@@ -257,13 +266,31 @@ class Executor:
             if action_verb in ("SCROLL", "WAIT"):
                 self.memory.record(action, dom_hash, "success", True, step_num)
                 steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
+                self._consecutive_failures = 0
                 continue
 
-            # TYPE: auto-succeed, check autocomplete
+            # TYPE: check if it actually worked, then handle form assist
             if action_verb == "TYPE":
-                self._handle_autocomplete(action, page)
-                self.memory.record(action, dom_hash, "typed", True, step_num)
-                steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
+                if executed:
+                    # Extract typed text for autocomplete matching
+                    type_re = re.match(r'TYPE\s*\[?\d+\]?\s*["\'](.+?)["\']', action, re.IGNORECASE)
+                    typed_text = type_re.group(1) if type_re else ""
+                    assist = form_after_type(page, typed_text, timeout=self.config.timeouts.autocomplete)
+                    if assist:
+                        log.info("Step %d: form assist — %s", step_num, assist)
+                    self.memory.record(action, dom_hash, "typed", True, step_num)
+                    steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
+                    self._consecutive_failures = 0
+                else:
+                    self.memory.record(action, dom_hash, dom_hash, False, step_num)
+                    steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
+                    log.warning("Step %d: TYPE failed — element not found or not typeable", step_num)
+                    self._consecutive_failures += 1
+                    if self._consecutive_failures >= 3 and self.escalation.can_escalate():
+                        new_endpoint = self.escalation.escalate()
+                        self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
+                        log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
+                        self._consecutive_failures = 0
                 continue
 
             # NAVIGATE: wait for load
@@ -271,12 +298,19 @@ class Executor:
                 wait_for_navigation(self.browser, timeout=10000)
                 self.memory.record(action, dom_hash, "navigated", True, step_num)
                 steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
+                self._consecutive_failures = 0
                 continue
 
             if not executed:
                 self.memory.record(action, dom_hash, dom_hash, False, step_num)
                 steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
                 log.warning("Step %d: action failed to execute", step_num)
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= 3 and self.escalation.can_escalate():
+                    new_endpoint = self.escalation.escalate()
+                    self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
+                    log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
+                    self._consecutive_failures = 0
                 continue
 
             # CLICK and others: check page change
@@ -285,8 +319,15 @@ class Executor:
 
             if changed:
                 log.info("Step %d: page changed", step_num)
+                self._consecutive_failures = 0
             else:
                 log.info("Step %d: no visible change", step_num)
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= 3 and self.escalation.can_escalate():
+                    new_endpoint = self.escalation.escalate()
+                    self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
+                    log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
+                    self._consecutive_failures = 0
 
         # Hit max steps
         dom_text = self.dom.extract(page)
@@ -417,22 +458,22 @@ class Executor:
         return response.strip() if response else ""
 
     def _is_action_loop(self) -> bool:
-        """Detect if the last 5 actions were identical (scroll loop, etc)."""
-        recent = [r.action for r in self.memory._history[-5:]]
-        return len(recent) >= 5 and len(set(recent)) == 1
+        """Detect if the last 5 actions were identical or semantically identical.
 
-    def _handle_autocomplete(self, action: str, page):
-        """After TYPE, check for autocomplete suggestions and click if found."""
-        type_re = re.match(r'TYPE\s*\[?\d+\]?\s*["\'](.+?)["\']', action, re.IGNORECASE)
-        if not type_re:
-            return
-        typed_text = type_re.group(1)
-        try:
-            clicked = handle_autocomplete(page, typed_text, timeout=self.config.timeouts.autocomplete)
-            if clicked:
-                log.info("Autocomplete: clicked suggestion for '%s'", typed_text)
-        except Exception as e:
-            log.debug("Autocomplete check failed: %s", e)
+        Catches both exact repeats (SCROLL SCROLL SCROLL) and same-intent repeats
+        where only the element number differs (TYPE [1] "email", TYPE [4] "email").
+        """
+        recent = [r.action for r in self.memory._history[-5:]]
+        if len(recent) < 5:
+            return False
+        # Exact match
+        if len(set(recent)) == 1:
+            return True
+        # Semantic match — normalize by stripping element numbers
+        normalized = [re.sub(r'\[\d+\]', '[N]', a) for a in recent]
+        return len(set(normalized)) == 1
+
+    # _handle_autocomplete removed — replaced by form_assist.after_type()
 
     def _check_page_change(self, page, before, dom_hash: str, action: str, step_num: int) -> bool:
         """Wait for page to settle and check if it changed after an action."""

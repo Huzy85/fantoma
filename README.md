@@ -29,16 +29,18 @@ fantoma test         # Verify it works
 
 - Browses the web, fills forms, clicks buttons, extracts data
 - [Camoufox](https://github.com/daijro/camoufox) anti-detection — passes bot.sannysoft.com and nowsecure.nl
-- Reads pages as text (~200 tokens) instead of screenshots (~1000 tokens) — cheap, fast, works with small models
-- Handles cookie popups, autocomplete, SPA navigation automatically
+- Reads pages via the accessibility tree (~200 tokens) instead of screenshots (~1000 tokens) — cheap, fast, works with small models
+- **Universal form filling** — one approach that works on React, Vue, Angular, and vanilla HTML. Inspired by Bitwarden's autofill engine. No framework detection needed.
+- **Smart form assist** — auto-submits single-input forms (type email → Enter), handles autocomplete dropdowns, dismisses cookie consent overlays
 - Multi-tab sessions with shared cookies (signup in one tab, check email in another)
-- Proxy rotation, model escalation, verification code extraction
+- **Model escalation** — local model tries first, automatically switches to cloud API after 3 consecutive failures, then switches back
+- Proxy rotation, CAPTCHA solving (PoW free, API for reCAPTCHA/hCaptcha), verification code extraction
 
 ## Limitations
 
 - **CAPTCHAs:** Proof-of-work types (ALTCHA) are solved automatically for free. reCAPTCHA and hCaptcha need a paid solver like CapSolver. Most sites never show CAPTCHAs because Camoufox prevents detection.
 - **Context window:** Local LLMs need at least 8K tokens. Set `--ctx-size 8192` in llama.cpp or `num_ctx: 8192` in Ollama.
-- **Small models:** A 3.8B model handles browsing, extraction, and simple forms. Complex multi-step signups (Reddit, GitHub) work better with a larger model. The escalation chain handles this — your local model tries first, and if it gets stuck after 3 retries on the same step, Fantoma automatically switches to your cloud API for just that step, then goes back to local.
+- **Small models:** A 3.8B model handles browsing, extraction, and simple forms. Complex multi-step signups work better with a larger model. The escalation chain handles this — your local model tries first, and if it gets stuck after 3 consecutive failures, Fantoma automatically switches to your cloud API, then goes back to local.
 - **IP rate limiting:** Reddit detects repeated visits from the same IP after 2+ hours. Use proxy rotation for heavy scraping.
 
 ## Examples
@@ -111,7 +113,7 @@ agent = Agent(
 
 ## Test Results
 
-Tested across 20+ bot-protected sites with 6 different LLMs. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Full results below.
+Tested across 20+ bot-protected sites with 6 different LLMs. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Form filling verified on React and vanilla sites. Full results below.
 
 <details>
 <summary>Detailed test breakdown</summary>
@@ -127,6 +129,20 @@ Tested across 20+ bot-protected sites with 6 different LLMs. Passed fingerprint 
 **Anti-bot systems bypassed:** Cloudflare (X.com, Reddit, Indeed), DataDome (Amazon), PerimeterX (Walmart, Zillow), Akamai (Nike), Meta (Instagram, Facebook), custom (LinkedIn, Booking.com, TikTok, Craigslist, GitHub).
 
 **Small model (Phi-3.5-mini 3.8B):** 15/15 bot-protected sites passed. Logged into ProtonMail. Created Reddit account with email verification.
+
+**Form filling (fill + submit + verify response):**
+
+| Site | Framework | Result |
+|------|-----------|--------|
+| Microsoft login | React, multi-step | Filled email, auto-submitted, got error response |
+| GitHub login | React | Filled user + password, submitted, got error response |
+| Instagram login | React | Filled username field |
+| LinkedIn login | React | Filled email field |
+| HN login | Vanilla HTML | Filled user + password, submitted, got "Bad login" |
+| the-internet.herokuapp.com | Vanilla | Logged in, got "Welcome to the Secure Area" |
+| httpbin | Vanilla, 5 fields | All values submitted and returned correctly |
+| Amazon signin | Custom | Filled email field |
+| Outlook login | React | Filled email, auto-submitted |
 
 **6 LLMs tested:**
 
@@ -183,7 +199,7 @@ fantoma/
 ├── action_parser.py     # LLM response → browser action
 ├── config.py            # All settings
 ├── dom/                 # Page reading (ARIA tree + DOM fallback)
-├── browser/             # Camoufox, anti-detection, proxy, consent, tabs
+├── browser/             # Camoufox, anti-detection, proxy, consent, tabs, form assist
 ├── captcha/             # Detection + solving (PoW, API, human fallback)
 ├── resilience/          # Action memory, checkpoints, model escalation
 └── llm/                 # OpenAI-compatible client, prompts
