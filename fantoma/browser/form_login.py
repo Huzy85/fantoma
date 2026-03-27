@@ -125,7 +125,7 @@ def login(browser, dom_extractor, email="", username="", password="",
 
         # Retry-on-empty: if step > 0 and no fillable fields, wait for SPA render
         if step > 0 and not _has_fillable_fields(elements):
-            retried = False
+            found_fields = False
             for retry in range(_EMPTY_RETRY_COUNT):
                 log.info("Step %d: no fillable fields (retry %d/%d) — waiting %.0fs",
                          step + 1, retry + 1, _EMPTY_RETRY_COUNT, _EMPTY_RETRY_DELAY)
@@ -133,9 +133,9 @@ def login(browser, dom_extractor, email="", username="", password="",
                 tree = dom_extractor.extract(page)
                 elements = dom_extractor._last_interactive
                 if _has_fillable_fields(elements):
-                    retried = True
+                    found_fields = True
                     break
-            if not retried and not _has_fillable_fields(elements):
+            if not found_fields and not _has_fillable_fields(elements):
                 log.warning("Step %d: no fillable fields after %d retries — stopping",
                             step + 1, _EMPTY_RETRY_COUNT)
                 break
@@ -431,7 +431,19 @@ def _apply_llm_labels(labels, elements, page, dom_extractor):
                      "submit", "2fa_code"):
             fields[label] = el
         elif label == "checkbox_terms":
-            handle = _get_element(page, dom_extractor, el)
+            handle = None
+            if dom_extractor:
+                handle = _get_element(page, dom_extractor, el)
+            if not handle and el.get("_selector"):
+                try:
+                    handle = page.query_selector(el["_selector"])
+                except Exception:
+                    pass
+            if not handle:
+                try:
+                    handle = page.query_selector('input[type="checkbox"]')
+                except Exception:
+                    pass
             if handle:
                 try:
                     handle.click()

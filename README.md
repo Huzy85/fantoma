@@ -1,6 +1,8 @@
 # Fantoma
 
-AI browser agent that works with any LLM. Anti-detection built in. Login and signup forms handled by pure code — no LLM tokens wasted on form filling.
+The undetectable AI browser agent. Gets into any website, navigates around, learns from every visit.
+
+Code fills the forms. LLM is the brain — only called when code can't figure out a field. Results cached so the LLM is never asked twice for the same site. Works with any model from 3.8B local to cloud APIs.
 
 ![Fantoma Demo](fantoma_demo.gif)
 
@@ -38,22 +40,19 @@ fantoma test         # Verify it works
 
 ## What It Does
 
-- Browses the web, fills forms, clicks buttons, extracts data
-- **LLM-free login and signup** — `agent.login()` fills forms with pure code. Reads the accessibility tree, matches fields by label, fills credentials, clicks submit. Handles multi-step flows (email → Next → password → Login). No LLM tokens used.
-- **Signup form support** — fills first name, last name, email, username, password, and confirm password fields. Handles ARIA-labeled and raw HTML forms.
-- **Form Memory** — SQLite database records what every login page looks like. When hardcoded labels don't match, checks past visits for hints. Grows smarter with every login.
-- **Retry on slow SPAs** — when a page transition is slow (React, Angular), retries up to 3 times instead of giving up immediately.
-- [Camoufox](https://github.com/daijro/camoufox) anti-detection — passes bot.sannysoft.com and nowsecure.nl
-- Reads pages via the accessibility tree (~200 tokens) instead of screenshots (~1000 tokens) — cheap, fast, works with small models
-- **Raw DOM fallback** — when sites use bare `<input>` without ARIA labels (HN, nopCommerce), Fantoma queries the DOM directly. No form is invisible.
-- **Universal form filling** — one approach that works on React, Vue, Angular, and vanilla HTML. Inspired by Bitwarden's autofill engine. No framework detection needed.
-- Multi-tab sessions with shared cookies (signup in one tab, check email in another)
-- **3-level model escalation** — local model tries first, switches to cloud API after failures, then switches back
-- **3-level environment escalation** — when model switching doesn't help: clear cookies → rotate proxy → fresh browser fingerprint
-- **Playwright traces** — `Agent(trace=True)` records full debug sessions. View with `playwright show-trace`.
-- **Fingerprint self-test** — `fantoma test fingerprint` validates Camoufox anti-detection with 7 in-browser checks
-- **Chromium fallback** — `Agent(browser="chromium")` for sites that block Firefox. Uses [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) (patches Runtime.enable detection).
-- Proxy rotation, CAPTCHA solving (PoW free, API for reCAPTCHA/hCaptcha), verification code extraction
+- **Gets through the gate** — login, signup, CAPTCHA, email verification. Code handles the forms, LLM handles the unexpected.
+- **LLM as brain, code as hands** — Code matches form fields by label (fast, zero tokens). When it can't match, one LLM call labels all fields at once. Code fills based on the LLM's answer. Results cached in SQLite — LLM never called twice for the same site.
+- **Signup forms** — fills first name, last name, email, username, password, confirm password. Clicks terms checkboxes. Tracks what's been filled to avoid double-submission.
+- **27 real sites tested** — MongoDB Atlas, Stripe, Twilio, Zapier, GitHub, HN, Notion, Supabase, and 19 more. Zero bot detections.
+- [Camoufox](https://github.com/daijro/camoufox) anti-detection — passes bot.sannysoft.com and nowsecure.nl. 2,241 stress tests, zero fingerprint detections.
+- **ARIA + raw DOM** — always reads both. No form is invisible, even old-school HTML without ARIA labels.
+- **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
+- **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
+- **Resilience** — 3-level model escalation (local → cloud → back), 3-level environment escalation (cookies → proxy → fresh fingerprint), retry on slow SPAs
+- **Playwright traces** — `Agent(trace=True)` records full debug sessions
+- **Fingerprint self-test** — `fantoma test fingerprint` runs 7 in-browser checks
+- **Chromium fallback** — `Agent(browser="chromium")` via [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) for sites that block Firefox
+- Multi-tab sessions, proxy rotation, CAPTCHA solving, verification code extraction
 
 ## Login & Signup (No LLM)
 
@@ -170,24 +169,32 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 
 ## Test Results
 
-Tested across 20+ bot-protected sites with 6 different LLMs. Login/signup tested on 9 real sites. 120+ unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Full results below.
+Tested across 27 real sites with 6 different LLMs. 130+ unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 <details>
 <summary>Detailed test breakdown</summary>
 
-**Login/signup tests (v0.2.0, code path, no LLM):**
+**Login/signup tests (v0.3.0, code path + LLM brain):**
 
 | Site | Type | Fields Filled | Result |
 |------|------|---------------|--------|
 | the-internet.herokuapp.com | Login | Username, Password | Logged in |
-| GitHub | Login (React) | Email, Password | Form filled (fake creds) |
-| Hacker News | Login (vanilla) | acct, pw | Form filled (raw DOM fallback) |
-| OrangeHRM | Login | Username, Password | Logged in |
-| SauceDemo | Login | Username, Password | Form filled |
-| DemoQA | Signup (4 fields) | First Name, Last Name, UserName, Password | All filled |
-| nopCommerce | Signup (5 fields) | FirstName, LastName, Email, Password, ConfirmPassword | All filled (raw DOM) |
-| Parabank | Signup (4 fields) | FirstName, LastName, Username, Password | Account created |
-| Automationexercise | Signup (2 fields) | Name, Email | Multi-step form |
+| GitHub | Login (React) | Email, Password | Form filled |
+| OrangeHRM | Login (SPA) | Username, Password | Logged in |
+| Parabank | Signup | FirstName, LastName, Username, Password | Account created |
+| MongoDB Atlas | Signup (5 fields) | FirstName, LastName, Email, Password | All filled |
+| Stripe | Signup | Full name, Email, Password | All filled |
+| Twilio | Signup (4 fields) | FirstName, LastName, Email, Password | All filled |
+| Ghost | Signup | Name, Email, Password | All filled |
+| Zapier | Signup (4 fields) | FirstName, LastName, Email, Password | All filled |
+| Postman | Signup (3 fields) | Email, Username, Password | All filled |
+| nopCommerce | Signup (5 fields) | FirstName, LastName, Email, Password, ConfirmPassword | All filled |
+| Supabase | Signup | Email, Password | All filled |
+| PlanetScale | Signup | Email, Password, Confirm | All filled |
+| Clerk | Signup | Email, Password | All filled |
+| Wandb | Signup | Email, Password | All filled |
+
+**27 sites tested total, zero bot detections, zero form failures on v0.3.**
 
 **Overnight stress test (7 hours, 3 cloud APIs):**
 
@@ -224,6 +231,7 @@ Agent(
     headless=True,                       # False to see the browser
     proxy=None,                          # "socks5://..." or ["proxy1", "proxy2"]
     escalation=None,                     # ["local_url", "cloud_url"]
+    escalation_keys=None,                # ["", "sk-cloud-key"] per endpoint
     captcha_api=None,                    # "capsolver", "2captcha"
     captcha_key=None,                    # API key for CAPTCHA solver
     timeout=300,                         # Total timeout in seconds
