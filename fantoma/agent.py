@@ -156,7 +156,8 @@ class Agent:
             except Exception:
                 pass
 
-    def login(self, url: str, email: str = "", username: str = "", password: str = "") -> AgentResult:
+    def login(self, url: str, email: str = "", username: str = "", password: str = "",
+              first_name: str = "", last_name: str = "") -> AgentResult:
         """Log into a site without using the LLM.
 
         Reads the accessibility tree, matches fields by label, fills credentials,
@@ -215,6 +216,8 @@ class Agent:
                 email=email,
                 username=username,
                 password=password,
+                first_name=first_name,
+                last_name=last_name,
                 memory=memory,
                 visit_id=visit_id,
             )

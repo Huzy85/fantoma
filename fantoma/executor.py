@@ -242,7 +242,7 @@ class Executor:
             raw = self.llm.chat(
                 [{"role": "system", "content": REACTIVE_SYSTEM},
                  {"role": "user", "content": user_msg}],
-                max_tokens=50,
+                max_tokens=100,
             )
             raw = (raw or "").strip()
             if not raw:
