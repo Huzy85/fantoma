@@ -336,6 +336,23 @@ def login(browser, dom_extractor, email="", username="", password="",
         # Wait for page to settle
         time.sleep(step_delay)
 
+        # Check if we've landed on a verification page
+        post_tree = dom_extractor.extract(page)
+        try:
+            post_body = page.inner_text("body")[:2000]
+        except Exception:
+            post_body = ""
+        verification_type = _detect_verification_page(post_tree, post_body)
+        if verification_type:
+            log.info("Step %d: verification page detected (type=%s)", step + 1, verification_type)
+            return {
+                "success": False,
+                "steps": step + 1,
+                "url": page.url,
+                "fields_filled": fields_filled,
+                "verification_needed": verification_type,
+            }
+
         # Check if we've left the login page
         new_url = page.url
         if _looks_logged_in(page, new_url):
@@ -514,6 +531,28 @@ def _classify_fields(page, elements, step, first_name, last_name, llm=None):
                 submit_f = applied["submit"]
 
     return elements, email_f, user_f, pass_f, fn_f, ln_f, submit_f
+
+
+def _detect_verification_page(tree, body_text):
+    """Detect if the current page is asking for email verification.
+
+    Returns: "code", "link", or None.
+    """
+    combined = (tree + " " + body_text).lower()
+
+    code_signals = ["verification code", "verify code", "enter code",
+                    "enter the code", "confirmation code", "security code",
+                    "one-time code", "otp", "6-digit", "digit code"]
+    if any(s in combined for s in code_signals):
+        return "code"
+
+    link_signals = ["check your email", "sent you a link", "click the link",
+                    "verify your email", "confirmation email", "sent a link",
+                    "open the email", "check your inbox"]
+    if any(s in combined for s in link_signals):
+        return "link"
+
+    return None
 
 
 def _get_element(page, dom_extractor, field):
