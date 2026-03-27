@@ -38,7 +38,7 @@ PASSWORD_LABELS = [
 CONFIRM_PASSWORD_LABELS = [
     "confirm password", "confirmpassword", "repeat password",
     "re-enter password", "retype password", "password again",
-    "verify password",
+    "verify password", "password_confirmation", "password confirmation",
 ]
 
 FIRST_NAME_LABELS = [
@@ -102,6 +102,7 @@ def login(browser, dom_extractor, email="", username="", password="",
 
     page = browser.get_page()
     fields_filled = []
+    filled_purposes = set()  # track what purposes have been filled (email, password, etc.)
     prev_url = page.url
     prev_tree = ""
     domain = urlparse(page.url).netloc
@@ -185,52 +186,57 @@ def login(browser, dom_extractor, email="", username="", password="",
         filled_this_step = False
         filled_labels = []  # track what we filled for memory recording
 
-        # Fill name fields (signup forms)
-        if first_name_field and first_name:
+        # Fill name fields (signup forms) — skip if already filled in a previous step
+        if first_name_field and first_name and "first_name" not in filled_purposes:
             el = _get_element(page, dom_extractor, first_name_field)
             if el:
                 if type_into(browser, el, first_name):
                     log.info("Step %d: filled '%s' with first name", step + 1, first_name_field["name"])
                     fields_filled.append(first_name_field["name"])
                     filled_labels.append(("first_name", first_name_field["name"]))
+                    filled_purposes.add("first_name")
 
-        if last_name_field and last_name:
+        if last_name_field and last_name and "last_name" not in filled_purposes:
             el = _get_element(page, dom_extractor, last_name_field)
             if el:
                 if type_into(browser, el, last_name):
                     log.info("Step %d: filled '%s' with last name", step + 1, last_name_field["name"])
                     fields_filled.append(last_name_field["name"])
                     filled_labels.append(("last_name", last_name_field["name"]))
+                    filled_purposes.add("last_name")
 
         # Fill email field
-        if email_field and email:
+        if email_field and email and "email" not in filled_purposes:
             el = _get_element(page, dom_extractor, email_field)
             if el:
                 if type_into(browser, el, email):
                     log.info("Step %d: filled '%s' with email", step + 1, email_field["name"])
                     fields_filled.append(email_field["name"])
                     filled_labels.append(("email", email_field["name"]))
+                    filled_purposes.add("email")
                     filled_this_step = True
 
         # Fill username field — on signup forms both email AND username can exist
         is_signup = bool(email_field and username_field and email_field is not username_field)
-        if username_field and username and (is_signup or not filled_this_step):
+        if username_field and username and "username" not in filled_purposes and (is_signup or not filled_this_step):
             el = _get_element(page, dom_extractor, username_field)
             if el:
                 if type_into(browser, el, username):
                     log.info("Step %d: filled '%s' with username", step + 1, username_field["name"])
                     fields_filled.append(username_field["name"])
                     filled_labels.append(("username", username_field["name"]))
+                    filled_purposes.add("username")
                     filled_this_step = True
 
         # Fill password field (if visible on this page)
-        if password_field and password:
+        if password_field and password and "password" not in filled_purposes:
             el = _get_element(page, dom_extractor, password_field)
             if el:
                 if type_into(browser, el, password):
                     log.info("Step %d: filled '%s' with password", step + 1, password_field["name"])
                     fields_filled.append(password_field["name"])
                     filled_labels.append(("password", password_field["name"]))
+                    filled_purposes.add("password")
                     filled_this_step = True
 
             # Fill confirm password if present (signup forms)
