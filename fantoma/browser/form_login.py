@@ -35,6 +35,15 @@ PASSWORD_LABELS = [
     "enter password", "sign-in password",
 ]
 
+FIRST_NAME_LABELS = [
+    "first name", "firstname", "given name", "first",
+    "your name", "full name", "name",
+]
+
+LAST_NAME_LABELS = [
+    "last name", "lastname", "surname", "family name", "last",
+]
+
 SUBMIT_LABELS = [
     "next", "continue", "log in", "login", "sign in", "signin",
     "sign up", "signup", "register", "create account",
@@ -58,6 +67,7 @@ _EMPTY_RETRY_DELAY = 3.0
 
 
 def login(browser, dom_extractor, email="", username="", password="",
+          first_name="", last_name="",
           max_steps=5, step_delay=3.0, memory=None, visit_id=None):
     """Fill a login/signup form using pure code. No LLM needed.
 
@@ -136,6 +146,10 @@ def login(browser, dom_extractor, email="", username="", password="",
         password_field = _find_field(elements, PASSWORD_LABELS)
         submit_button = _find_submit(elements)
 
+        # Match name fields for signup forms
+        first_name_field = _find_field(elements, FIRST_NAME_LABELS) if first_name else None
+        last_name_field = _find_field(elements, LAST_NAME_LABELS) if last_name else None
+
         # Heuristic: if we found password but no username/email, the other
         # text input next to it is probably the username field
         if password_field and not email_field and not username_field:
@@ -166,6 +180,23 @@ def login(browser, dom_extractor, email="", username="", password="",
 
         filled_this_step = False
         filled_labels = []  # track what we filled for memory recording
+
+        # Fill name fields (signup forms)
+        if first_name_field and first_name:
+            el = _get_element(page, dom_extractor, first_name_field)
+            if el:
+                if type_into(browser, el, first_name):
+                    log.info("Step %d: filled '%s' with first name", step + 1, first_name_field["name"])
+                    fields_filled.append(first_name_field["name"])
+                    filled_labels.append(("first_name", first_name_field["name"]))
+
+        if last_name_field and last_name:
+            el = _get_element(page, dom_extractor, last_name_field)
+            if el:
+                if type_into(browser, el, last_name):
+                    log.info("Step %d: filled '%s' with last name", step + 1, last_name_field["name"])
+                    fields_filled.append(last_name_field["name"])
+                    filled_labels.append(("last_name", last_name_field["name"]))
 
         # Fill email/username field
         if email_field and email:
