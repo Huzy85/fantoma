@@ -52,15 +52,17 @@ Task: Sign up for an account
 URL: https://example.com/register
 
 Unmatched elements:
-[3] textbox "Identifier"
-[5] textbox "Secret"
-[7] button "Continue"
-[9] checkbox "I accept the Terms of Service"
+[3] <input type="text" name="identifier" placeholder="Identifier">
+[5] <input type="password" name="secret">
+[7] <button type="submit">Continue</button>
+[9] <input type="checkbox"> I accept the Terms of Service
 ```
 
 **Output**: `[3]=email, [5]=password, [7]=submit, [9]=checkbox_terms`
 
-**Tokens**: ~150 input, ~30 output. One call per page. Cheaper than one TYPE action in the current LLM path.
+**Tokens**: ~150 input, ~30 output for 10 elements (~8-12 tokens per element in HTML format). One call per page. Cheaper than one TYPE action in the current LLM path.
+
+**Element format**: HTML tags rather than ARIA roles — gives the LLM richer signal (`type="email"`, `type="password"`, `name="..."` attributes are strong hints). Validated by Skyvern's research: HTML format is 11% more token-efficient than JSON and 3.9% more accurate.
 
 ### What Code Does With the Labels
 
@@ -82,10 +84,11 @@ Unmatched elements:
 
 After LLM labels elements and code fills them:
 - Record the LLM mapping in `form_steps` table (same as current recording)
-- Next visit to same domain + step: database provides the mapping
-- LLM is never called for a site it's already seen
+- **Cache key**: domain + step + element-list hash (hash of tag types + attributes, excluding dynamic values). Same URL can show different forms depending on state (logged in vs out, step 1 vs step 2). The hash catches this.
+- Next visit with same element structure: database provides the mapping
+- LLM is never called for a form structure it's already seen
 
-This means the LLM cost is **per-site, not per-visit**. First visit: one LLM call. Every subsequent visit: zero.
+This means the LLM cost is **per-form-layout, not per-visit**. First encounter: one LLM call. Every repeat: zero.
 
 ## Scope — What Fantoma Owns
 
@@ -151,14 +154,15 @@ Add one new prompt:
 
 ```python
 FIELD_LABELLER_SYSTEM = """\
-You are labelling form elements on a web page. Given a list of interactive elements,
+You are labelling form elements on a web page. Given a list of HTML elements,
 identify what each one is for.
 
 Labels: email, username, password, confirm_password, first_name, last_name,
-        phone, submit, checkbox_terms, captcha, skip
+        full_name, phone, address, submit, checkbox_terms, captcha, 2fa_code, skip
 
 Rules:
 - Label each element with exactly one label.
+- Use HTML attributes as hints: type="email" → email, type="password" → password.
 - If an element is not relevant to login/signup, label it "skip".
 - Respond with ONLY: [number]=label, [number]=label
 - No explanation, no extra text.\
