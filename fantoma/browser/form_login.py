@@ -35,10 +35,20 @@ PASSWORD_LABELS = [
     "enter password", "sign-in password",
 ]
 
+CONFIRM_PASSWORD_LABELS = [
+    "confirm password", "confirmpassword", "repeat password",
+    "re-enter password", "retype password", "password again",
+    "verify password",
+]
+
 FIRST_NAME_LABELS = [
     "first name", "firstname", "given name", "first",
-    "your name", "full name", "name",
+    "your name", "full name",
 ]
+
+# "name" alone is ambiguous — could be first name or display name.
+# We match it only when no username field exists on the page.
+GENERIC_NAME_LABELS = ["name"]
 
 LAST_NAME_LABELS = [
     "last name", "lastname", "surname", "family name", "last",
@@ -150,6 +160,29 @@ def login(browser, dom_extractor, email="", username="", password="",
         first_name_field = _find_field(elements, FIRST_NAME_LABELS) if first_name else None
         last_name_field = _find_field(elements, LAST_NAME_LABELS) if last_name else None
 
+        # Second fallback: ARIA had textboxes but none matched our labels
+        # (e.g. only a search box). Try raw DOM for the real form fields.
+        matched_any = any([email_field, username_field, password_field,
+                           first_name_field, last_name_field])
+        if not matched_any and submit_button:
+            raw_inputs = _find_raw_inputs(page)
+            if raw_inputs:
+                log.info("Step %d: ARIA fields didn't match — raw DOM found %d inputs",
+                         step + 1, len(raw_inputs))
+                elements = raw_inputs + elements
+                email_field = _find_field(elements, EMAIL_LABELS)
+                username_field = _find_field(elements, USERNAME_LABELS)
+                password_field = _find_field(elements, PASSWORD_LABELS)
+                first_name_field = _find_field(elements, FIRST_NAME_LABELS) if first_name else None
+                last_name_field = _find_field(elements, LAST_NAME_LABELS) if last_name else None
+                submit_button = _find_submit(elements)
+
+        # If first_name provided but no first_name_field, check for generic "name"
+        if first_name and not first_name_field and not username_field:
+            first_name_field = _find_field(elements, GENERIC_NAME_LABELS)
+            if first_name_field:
+                log.info("Step %d: matched generic 'name' field as first name", step + 1)
+
         # Heuristic: if we found password but no username/email, the other
         # text input next to it is probably the username field
         if password_field and not email_field and not username_field:
@@ -226,6 +259,16 @@ def login(browser, dom_extractor, email="", username="", password="",
                     fields_filled.append(password_field["name"])
                     filled_labels.append(("password", password_field["name"]))
                     filled_this_step = True
+
+            # Fill confirm password if present (signup forms)
+            confirm_field = _find_field(elements, CONFIRM_PASSWORD_LABELS)
+            if confirm_field:
+                cel = _get_element(page, dom_extractor, confirm_field)
+                if cel:
+                    if type_into(browser, cel, password):
+                        log.info("Step %d: filled '%s' with confirm password", step + 1, confirm_field["name"])
+                        fields_filled.append(confirm_field["name"])
+                        filled_labels.append(("confirm_password", confirm_field["name"]))
 
         # If there's a verification/challenge field and we have a username
         if not filled_this_step and username:
