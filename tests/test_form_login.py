@@ -178,8 +178,9 @@ def test_memory_fallback_matching():
             with patch(_PATCHES["dismiss_consent"]):
                 with patch(_PATCHES["looks_logged_in"], return_value=True):
                     with patch(_PATCHES["sleep"]):
-                        result = login(browser, dom, email="test@test.com",
-                                       password="pass", memory=fm, visit_id="v2")
+                        with patch("fantoma.browser.form_login._find_raw_inputs", return_value=[]):
+                            result = login(browser, dom, email="test@test.com",
+                                           password="pass", memory=fm, visit_id="v2")
 
         assert len(result["fields_filled"]) >= 1
         fm.close()

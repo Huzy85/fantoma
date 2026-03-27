@@ -115,8 +115,22 @@ class Agent:
             )
             browser.start()
         except Exception as e:
-            log.error("Failed to start browser: %s", e)
-            return AgentResult(success=False, error=f"Browser start failed: {e}")
+            # Retry once — Camoufox can leave stale event loops between runs
+            log.warning("Browser start failed (%s), retrying...", e)
+            import time
+            time.sleep(2)
+            try:
+                browser = BrowserEngine(
+                    headless=self.config.browser.headless,
+                    profile_dir=self.config.browser.profile_dir,
+                    proxy=self._proxy,
+                    trace=self.config.browser.trace,
+                    browser_engine=self.config.browser.browser_engine,
+                )
+                browser.start()
+            except Exception as e2:
+                log.error("Browser start failed on retry: %s", e2)
+                return AgentResult(success=False, error=f"Browser start failed: {e2}")
 
         try:
             executor = Executor(
