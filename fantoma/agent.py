@@ -49,6 +49,7 @@ class Agent:
         max_steps: int = 50,
         timeout: int = 300,
         verbose: bool = False,
+        trace: bool = False,
     ):
         # Build config
         self.config = FantomaConfig()
@@ -60,6 +61,7 @@ class Agent:
         self._proxy = proxy
         self.config.resilience.max_steps = max_steps
         self.config.browser.timeout = timeout
+        self.config.browser.trace = trace
 
         if captcha_api:
             self.config.captcha.api = captcha_api
@@ -106,6 +108,7 @@ class Agent:
                 headless=self.config.browser.headless,
                 profile_dir=self.config.browser.profile_dir,
                 proxy=self._proxy,
+                trace=self.config.browser.trace,
             )
             browser.start()
         except Exception as e:
@@ -156,6 +159,9 @@ class Agent:
         Reads the accessibility tree, matches fields by label, fills credentials,
         clicks submit. Handles multi-step flows (email → Next → password → Login).
 
+        Uses FormMemory to learn from past visits — when hardcoded labels don't
+        match, the database provides hints from previous successful logins.
+
         Args:
             url: Login page URL
             email: Email address
@@ -166,9 +172,16 @@ class Agent:
             AgentResult with success status and login details.
         """
         from fantoma.browser.form_login import login as form_login
+        from fantoma.browser.form_memory import FormMemory
         from fantoma.dom.accessibility import AccessibilityExtractor
+        from urllib.parse import urlparse
+        from uuid import uuid4
 
         log.info("Login: %s (email=%s)", url, email[:3] + "***" if email else "none")
+
+        memory = FormMemory()
+        visit_id = uuid4().hex
+        domain = urlparse(url).netloc
 
         try:
             browser = BrowserEngine(
@@ -179,6 +192,7 @@ class Agent:
             browser.start()
         except Exception as e:
             log.error("Browser start failed: %s", e)
+            memory.close()
             return AgentResult(success=False, error=f"Browser start failed: {e}")
 
         try:
@@ -197,7 +211,11 @@ class Agent:
                 email=email,
                 username=username,
                 password=password,
+                memory=memory,
+                visit_id=visit_id,
             )
+
+            memory.record_visit(domain, result.get("success", False))
 
             return AgentResult(
                 success=result["success"],
@@ -213,6 +231,7 @@ class Agent:
                 browser.stop()
             except Exception:
                 pass
+            memory.close()
 
     def extract(self, url: str, query: str, schema: dict = None) -> dict | str:
         """Navigate to a URL and extract structured data.

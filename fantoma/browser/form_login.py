@@ -3,10 +3,15 @@
 Reads the accessibility tree, matches fields by label, fills credentials,
 clicks submit. Handles multi-step flows (email → Next → password → Login).
 No tokens, no loops, works on every site with standard form labels.
+
+Supports FormMemory for database-assisted field matching on unknown labels
+and retry-on-empty logic for slow SPAs that render asynchronously.
 """
+import json
 import logging
 import re
 import time
+from urllib.parse import urlparse
 
 log = logging.getLogger("fantoma.form_login")
 
@@ -43,9 +48,13 @@ SKIP_LABELS = [
     "close", "cancel", "back", "skip",
 ]
 
+# Retry settings for slow SPAs
+_EMPTY_RETRY_COUNT = 3
+_EMPTY_RETRY_DELAY = 3.0
+
 
 def login(browser, dom_extractor, email="", username="", password="",
-          max_steps=5, step_delay=3.0):
+          max_steps=5, step_delay=3.0, memory=None, visit_id=None):
     """Fill a login/signup form using pure code. No LLM needed.
 
     Args:
@@ -56,6 +65,8 @@ def login(browser, dom_extractor, email="", username="", password="",
         password: password to fill
         max_steps: max form pages to handle (email→Next→password→Login = 2 steps)
         step_delay: seconds to wait between steps for page transitions
+        memory: optional FormMemory instance for database-assisted matching
+        visit_id: optional visit ID for memory recording
 
     Returns:
         dict with 'success' (bool), 'steps' (int), 'url' (final URL),
@@ -68,6 +79,7 @@ def login(browser, dom_extractor, email="", username="", password="",
     fields_filled = []
     prev_url = page.url
     prev_tree = ""
+    domain = urlparse(page.url).netloc
 
     for step in range(max_steps):
         dismiss_consent(page)
@@ -85,6 +97,23 @@ def login(browser, dom_extractor, email="", username="", password="",
         prev_url = current_url
         prev_tree = tree
 
+        # Retry-on-empty: if step > 0 and no fillable fields, wait for SPA render
+        if step > 0 and not _has_fillable_fields(elements):
+            retried = False
+            for retry in range(_EMPTY_RETRY_COUNT):
+                log.info("Step %d: no fillable fields (retry %d/%d) — waiting %.0fs",
+                         step + 1, retry + 1, _EMPTY_RETRY_COUNT, _EMPTY_RETRY_DELAY)
+                time.sleep(_EMPTY_RETRY_DELAY)
+                tree = dom_extractor.extract(page)
+                elements = dom_extractor._last_interactive
+                if _has_fillable_fields(elements):
+                    retried = True
+                    break
+            if not retried and not _has_fillable_fields(elements):
+                log.warning("Step %d: no fillable fields after %d retries — stopping",
+                            step + 1, _EMPTY_RETRY_COUNT)
+                break
+
         if not elements:
             log.warning("Step %d: no interactive elements found", step + 1)
             break
@@ -95,7 +124,26 @@ def login(browser, dom_extractor, email="", username="", password="",
         password_field = _find_field(elements, PASSWORD_LABELS)
         submit_button = _find_submit(elements)
 
+        # Memory fallback: if hardcoded labels didn't match, check database
+        if memory and not email_field and not username_field and not password_field:
+            mem_elements = [{"label": e.get("name", ""), "role": e.get("role", "")}
+                           for e in elements]
+            hints = memory.lookup(domain, step, mem_elements)
+            if hints:
+                log.info("Step %d: memory provided %d field hints", step + 1, len(hints))
+                for el in elements:
+                    if el["role"] not in ("textbox", "input"):
+                        continue
+                    purpose = hints.get(el["name"])
+                    if purpose == "email":
+                        email_field = el
+                    elif purpose == "username":
+                        username_field = el
+                    elif purpose == "password":
+                        password_field = el
+
         filled_this_step = False
+        filled_labels = []  # track what we filled for memory recording
 
         # Fill email/username field
         if email_field and email:
@@ -104,6 +152,7 @@ def login(browser, dom_extractor, email="", username="", password="",
                 if type_into(browser, el, email):
                     log.info("Step %d: filled '%s' with email", step + 1, email_field["name"])
                     fields_filled.append(email_field["name"])
+                    filled_labels.append(("email", email_field["name"]))
                     filled_this_step = True
 
         if username_field and username and not filled_this_step:
@@ -112,6 +161,7 @@ def login(browser, dom_extractor, email="", username="", password="",
                 if type_into(browser, el, username):
                     log.info("Step %d: filled '%s' with username", step + 1, username_field["name"])
                     fields_filled.append(username_field["name"])
+                    filled_labels.append(("username", username_field["name"]))
                     filled_this_step = True
 
         # Fill password field (if visible on this page)
@@ -121,6 +171,7 @@ def login(browser, dom_extractor, email="", username="", password="",
                 if type_into(browser, el, password):
                     log.info("Step %d: filled '%s' with password", step + 1, password_field["name"])
                     fields_filled.append(password_field["name"])
+                    filled_labels.append(("password", password_field["name"]))
                     filled_this_step = True
 
         # If there's a verification/challenge field and we have a username
@@ -132,6 +183,7 @@ def login(browser, dom_extractor, email="", username="", password="",
                     if type_into(browser, el, username):
                         log.info("Step %d: filled verification challenge with username", step + 1)
                         fields_filled.append(challenge_field["name"])
+                        filled_labels.append(("challenge", challenge_field["name"]))
                         filled_this_step = True
 
         if not filled_this_step and step > 0:
@@ -179,6 +231,24 @@ def login(browser, dom_extractor, email="", username="", password="",
             page.keyboard.press("Enter")
             log.info("Step %d: pressed Enter (no submit button found)", step + 1)
 
+        # Record step to memory if provided
+        if memory and visit_id and filled_this_step:
+            elements_json = json.dumps([{"label": e.get("name", ""), "role": e.get("role", "")}
+                                        for e in elements])
+            submit_label = submit_button["name"] if submit_button else ""
+            for purpose, label in filled_labels:
+                try:
+                    field_el = next(e for e in elements if e["name"] == label)
+                    memory.record_step(
+                        domain=domain, visit_id=visit_id, step_number=step,
+                        field_label=label, field_role=field_el.get("role", ""),
+                        field_purpose=purpose, submit_label=submit_label,
+                        success=True, tree_text=tree, elements_json=elements_json,
+                        url=current_url, action="filled", result="ok"
+                    )
+                except (StopIteration, Exception) as exc:
+                    log.debug("Failed to record step to memory: %s", exc)
+
         # Wait for page to settle
         time.sleep(step_delay)
 
@@ -200,6 +270,16 @@ def login(browser, dom_extractor, email="", username="", password="",
         "url": final_url,
         "fields_filled": fields_filled,
     }
+
+
+def _has_fillable_fields(elements):
+    """Check if elements list contains any textbox or input fields."""
+    if not elements:
+        return False
+    for el in elements:
+        if el.get("role") in ("textbox", "input"):
+            return True
+    return False
 
 
 def _find_field(elements, labels):
