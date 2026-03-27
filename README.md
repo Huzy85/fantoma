@@ -40,7 +40,7 @@ fantoma test         # Verify it works
 
 ## What It Does
 
-- **Gets through the gate** — login, signup, CAPTCHA, email verification. Code handles the forms, LLM handles the unexpected.
+- **Gets through the gate** — login, signup, CAPTCHA solving. Code handles the forms, LLM handles the unexpected.
 - **LLM as brain, code as hands** — Code matches form fields by label (fast, zero tokens). When it can't match, one LLM call labels all fields at once. Code fills based on the LLM's answer. Results cached in SQLite — LLM never called twice for the same site.
 - **Signup forms** — fills first name, last name, email, username, password, confirm password. Clicks terms checkboxes. Tracks what's been filled to avoid double-submission.
 - **27 real sites tested** — MongoDB Atlas, Stripe, Twilio, Zapier, GitHub, HN, Notion, Supabase, and 19 more. Zero bot detections.
