@@ -392,6 +392,52 @@ def cmd_test():
     print(f"\n{_dim('Run')} fantoma test full {_dim('to test against 10 real bot-protected sites.')}\n")
 
 
+# ── Fingerprint test ─────────────────────────────────────────────
+
+def cmd_test_fingerprint():
+    """Test Camoufox fingerprint anti-detection consistency."""
+    config = _load_config()
+    if not config:
+        print(_red("No config found. Run 'fantoma setup' first."))
+        return
+
+    print(BANNER)
+    print(f"{_bold('Fantoma Fingerprint Test')}\n")
+    print(f"  Launching browser... ", end="", flush=True)
+
+    try:
+        from fantoma.browser.engine import BrowserEngine
+        from fantoma.browser.fingerprint import FingerprintTest
+
+        browser = BrowserEngine(headless=True)
+        browser.start()
+        browser.navigate("about:blank")
+        page = browser.get_page()
+        print(_green("OK"))
+
+        print(f"  Running fingerprint checks...\n")
+        ft = FingerprintTest()
+        results = ft.run_all(page)
+        browser.stop()
+
+        for name, check in results["checks"].items():
+            status = _green("PASS") if check["passed"] else _red("FAIL")
+            print(f"    {status}  {name}: {check['reason']}")
+
+        passed = sum(1 for c in results["checks"].values() if c["passed"])
+        total = len(results["checks"])
+        print()
+
+        if results["overall"]:
+            print(f"  {_green(f'All {total} checks passed!')} Fingerprint looks clean.\n")
+        else:
+            print(f"  {_yellow(f'{passed}/{total} checks passed.')} Some fingerprint leaks detected.\n")
+
+    except Exception as e:
+        print(_red("FAIL") + f" — {e}")
+        return
+
+
 # ── Full test (real sites) ───────────────────────────────────────
 
 FULL_TEST_SITES = [
@@ -568,6 +614,7 @@ HELP_TEXT = f"""
 {_bold('Logs:')}
 
   {_green('/logs')}              Show recent errors and warnings
+  {_green('/logs --trace')}      List saved Playwright trace recordings
   {_green('/logs clear')}        Clear the log
 
 {_dim('Or just type a task directly — Fantoma will run it.')}
@@ -768,6 +815,9 @@ def cmd_interactive():
             else:
                 print(_dim("  No logs yet."))
 
+        elif user_input in ("/logs --trace", "/logs trace"):
+            cmd_logs_trace()
+
         elif user_input == "/logs clear":
             LOG_BUFFER.clear()
             if LOG_FILE.exists():
@@ -940,6 +990,33 @@ def cmd_interactive():
             print(f"  Unknown command: {user_input}. Type {_green('/help')} for options.")
 
 
+# ── Trace viewer ─────────────────────────────────────────────────
+
+TRACE_DIR = Path.home() / ".local" / "share" / "fantoma" / "traces"
+
+
+def cmd_logs_trace():
+    """List saved Playwright traces."""
+    if not TRACE_DIR.exists():
+        print(_dim("  No traces found. Run a task with trace=True to record one."))
+        print(f"  Trace directory: {TRACE_DIR}")
+        return
+
+    traces = sorted(TRACE_DIR.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not traces:
+        print(_dim("  No traces found. Run a task with trace=True to record one."))
+        return
+
+    print(f"\n  {_bold('Saved traces:')} ({TRACE_DIR})\n")
+    for t in traces[:20]:
+        size_kb = t.stat().st_size / 1024
+        mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(t.stat().st_mtime))
+        print(f"  {mtime}  {size_kb:6.0f}KB  {t.name}")
+
+    print(f"\n  {_dim('View a trace in your browser:')}")
+    print(f"  npx playwright show-trace {TRACE_DIR}/<filename>.zip\n")
+
+
 # ── Main ─────────────────────────────────────────────────────────
 
 def main():
@@ -951,6 +1028,7 @@ Commands:
   setup           Guided first-time setup
   test            Quick check (LLM + browser + one task)
   test full       Test against 10 real bot-protected sites
+  test fingerprint  Validate Camoufox anti-detection fingerprint
   run "task"      Run a browser task
   (no args)       Interactive mode with /commands
 
@@ -958,6 +1036,7 @@ Examples:
   fantoma setup
   fantoma test
   fantoma test full
+  fantoma test fingerprint
   fantoma run "Go to github.com/trending and tell me the top repo"
   fantoma             (starts interactive mode)
 """,
@@ -980,6 +1059,8 @@ Examples:
     elif args.command == "test":
         if args.task == "full":
             cmd_test_full()
+        elif args.task == "fingerprint":
+            cmd_test_fingerprint()
         else:
             cmd_test()
     elif args.command == "run":
@@ -988,7 +1069,9 @@ Examples:
             sys.exit(1)
         cmd_run(args.task, args.start_url)
     elif args.command == "logs":
-        if LOG_FILE.exists():
+        if args.task == "trace" or args.task == "--trace":
+            cmd_logs_trace()
+        elif LOG_FILE.exists():
             lines = LOG_FILE.read_text().splitlines()[-20:]
             for line in lines:
                 print(f"  {line}")

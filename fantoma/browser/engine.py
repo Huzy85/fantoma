@@ -1,21 +1,32 @@
 """Camoufox browser engine wrapper with anti-detection and human-like behaviour."""
 
+import logging
+import os
 import time
+from datetime import datetime
 
 from camoufox.sync_api import Camoufox
 
 from fantoma.browser.humanize import Humanizer
 
+_log = logging.getLogger("fantoma.browser")
+
 
 class BrowserEngine:
     """Manages a Camoufox browser session with anti-detection and human-like behaviour."""
 
-    def __init__(self, headless=True, profile_dir=None, humanize=True, accessibility=True, proxy=None):
+    DEFAULT_TRACE_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "fantoma", "traces")
+
+    def __init__(self, headless=True, profile_dir=None, humanize=True, accessibility=True, proxy=None,
+                 trace=False, trace_dir=None):
         self.headless = headless
         self.profile_dir = profile_dir
         self.accessibility = accessibility
         self.proxy = proxy  # {"server": "http://host:port"} or "http://host:port" string
         self.humanizer = Humanizer() if humanize else None
+        self._trace = trace
+        self._trace_dir = trace_dir or self.DEFAULT_TRACE_DIR
+        self._trace_active = False
         self._browser = None
         self._context = None
         self._page = None
@@ -78,8 +89,37 @@ class BrowserEngine:
             except Exception:
                 pass  # Non-critical — works without these
 
+        # Start trace recording if enabled
+        if self._trace and self._context:
+            try:
+                self._context.tracing.start(screenshots=True, snapshots=True)
+                self._trace_active = True
+                _log.info("Trace recording started")
+            except Exception as e:
+                _log.warning("Tracing not available (Camoufox may not support it): %s", e)
+                self._trace_active = False
+
     def stop(self):
         """Close browser gracefully."""
+        # Save trace before closing browser
+        if self._trace_active and self._context:
+            try:
+                os.makedirs(self._trace_dir, exist_ok=True)
+                # Build filename from current domain + timestamp
+                url = self._page.url if self._page else "unknown"
+                try:
+                    from urllib.parse import urlparse
+                    domain = urlparse(url).netloc or "unknown"
+                except Exception:
+                    domain = "unknown"
+                ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+                trace_path = os.path.join(self._trace_dir, f"{domain}-{ts}.zip")
+                self._context.tracing.stop(path=trace_path)
+                self._trace_active = False
+                _log.info("Trace saved: %s", trace_path)
+            except Exception as e:
+                _log.warning("Failed to save trace: %s", e)
+
         if self._camoufox_cm is not None:
             try:
                 self._camoufox_cm.__exit__(None, None, None)
