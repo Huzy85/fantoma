@@ -164,7 +164,7 @@ def login(browser, dom_extractor, email="", username="", password="",
         # (e.g. only a search box). Try raw DOM for the real form fields.
         matched_any = any([email_field, username_field, password_field,
                            first_name_field, last_name_field])
-        if not matched_any and submit_button:
+        if not matched_any:
             raw_inputs = _find_raw_inputs(page)
             if raw_inputs:
                 log.info("Step %d: ARIA fields didn't match — raw DOM found %d inputs",
@@ -176,6 +176,12 @@ def login(browser, dom_extractor, email="", username="", password="",
                 first_name_field = _find_field(elements, FIRST_NAME_LABELS) if first_name else None
                 last_name_field = _find_field(elements, LAST_NAME_LABELS) if last_name else None
                 submit_button = _find_submit(elements)
+                # Also find submit button from raw DOM if ARIA missed it
+                if not submit_button:
+                    raw_buttons = _find_raw_buttons(page)
+                    if raw_buttons:
+                        elements = elements + raw_buttons
+                        submit_button = _find_submit(elements)
 
         # If first_name provided but no first_name_field, check for generic "name"
         if first_name and not first_name_field and not username_field:
@@ -417,6 +423,29 @@ def _find_raw_inputs(page):
         return inputs or []
     except Exception as e:
         log.debug("Raw input fallback failed: %s", e)
+        return []
+
+
+def _find_raw_buttons(page):
+    """Find <button> and input[type=submit] via JS when ARIA missed them."""
+    try:
+        buttons = page.evaluate("""() => {
+            const btns = document.querySelectorAll(
+                'button[type="submit"], input[type="submit"], button:not([type])'
+            );
+            return Array.from(btns)
+                .filter(el => el.offsetParent !== null)
+                .map(el => ({
+                    name: el.textContent?.trim() || el.value || el.getAttribute('id') || 'submit',
+                    role: 'button',
+                    index: -1,
+                    _selector: el.id ? `#${el.id}`
+                        : el.name ? `button[name="${el.name}"]`
+                        : `button:has-text("${(el.textContent?.trim() || '').slice(0, 30)}")`
+                }));
+        }""")
+        return buttons or []
+    except Exception:
         return []
 
 
