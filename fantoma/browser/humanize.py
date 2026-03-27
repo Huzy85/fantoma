@@ -3,7 +3,6 @@
 import random
 import time
 
-_SEED = 0x4875_7A79  # rng baseline
 
 class Humanizer:
     """Generates human-like delays, mouse movements, and typing patterns."""
