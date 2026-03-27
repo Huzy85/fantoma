@@ -46,7 +46,10 @@ SUBMIT_LABELS = [
 SKIP_LABELS = [
     "forgot", "reset", "help", "privacy", "terms", "cookie",
     "sign in with", "continue with", "log in with",
+    "sign up with", "register with",
     "close", "cancel", "back", "skip",
+    "apple", "facebook", "github", "google", "twitter",
+    "microsoft", "linkedin", "discord", "slack", "mymlh",
 ]
 
 # Retry settings for slow SPAs
