@@ -27,6 +27,7 @@ EMAIL_LABELS = [
 USERNAME_LABELS = [
     "username", "user name", "user id", "userid", "login",
     "account", "handle", "screen name", "display name",
+    "acct", "user",
 ]
 
 PASSWORD_LABELS = [
@@ -118,11 +119,29 @@ def login(browser, dom_extractor, email="", username="", password="",
             log.warning("Step %d: no interactive elements found", step + 1)
             break
 
+        # Fallback: if ARIA found buttons but no textboxes, query raw inputs
+        if not _has_fillable_fields(elements):
+            raw_inputs = _find_raw_inputs(page)
+            if raw_inputs:
+                log.info("Step %d: ARIA missed %d inputs — using raw DOM fallback",
+                         step + 1, len(raw_inputs))
+                elements = raw_inputs + elements  # prepend inputs, keep buttons
+
         # Classify what's on the page
         email_field = _find_field(elements, EMAIL_LABELS)
         username_field = _find_field(elements, USERNAME_LABELS)
         password_field = _find_field(elements, PASSWORD_LABELS)
         submit_button = _find_submit(elements)
+
+        # Heuristic: if we found password but no username/email, the other
+        # text input next to it is probably the username field
+        if password_field and not email_field and not username_field:
+            text_inputs = [e for e in elements
+                           if e.get("role") == "textbox" and e is not password_field]
+            if len(text_inputs) == 1:
+                username_field = text_inputs[0]
+                log.info("Step %d: inferred '%s' as username (only text input beside password)",
+                         step + 1, username_field["name"])
 
         # Memory fallback: if hardcoded labels didn't match, check database
         if memory and not email_field and not username_field and not password_field:
@@ -147,7 +166,7 @@ def login(browser, dom_extractor, email="", username="", password="",
 
         # Fill email/username field
         if email_field and email:
-            el = dom_extractor.get_element_by_index(page, email_field["index"])
+            el = _get_element(page, dom_extractor, email_field)
             if el:
                 if type_into(browser, el, email):
                     log.info("Step %d: filled '%s' with email", step + 1, email_field["name"])
@@ -156,7 +175,7 @@ def login(browser, dom_extractor, email="", username="", password="",
                     filled_this_step = True
 
         if username_field and username and not filled_this_step:
-            el = dom_extractor.get_element_by_index(page, username_field["index"])
+            el = _get_element(page, dom_extractor, username_field)
             if el:
                 if type_into(browser, el, username):
                     log.info("Step %d: filled '%s' with username", step + 1, username_field["name"])
@@ -166,7 +185,7 @@ def login(browser, dom_extractor, email="", username="", password="",
 
         # Fill password field (if visible on this page)
         if password_field and password:
-            el = dom_extractor.get_element_by_index(page, password_field["index"])
+            el = _get_element(page, dom_extractor, password_field)
             if el:
                 if type_into(browser, el, password):
                     log.info("Step %d: filled '%s' with password", step + 1, password_field["name"])
@@ -178,7 +197,7 @@ def login(browser, dom_extractor, email="", username="", password="",
         if not filled_this_step and username:
             challenge_field = _find_challenge(elements)
             if challenge_field:
-                el = dom_extractor.get_element_by_index(page, challenge_field["index"])
+                el = _get_element(page, dom_extractor, challenge_field)
                 if el:
                     if type_into(browser, el, username):
                         log.info("Step %d: filled verification challenge with username", step + 1)
@@ -193,7 +212,7 @@ def login(browser, dom_extractor, email="", username="", password="",
 
         # Click submit/next
         if submit_button:
-            el = dom_extractor.get_element_by_index(page, submit_button["index"])
+            el = _get_element(page, dom_extractor, submit_button)
             if el:
                 clicked = False
                 # Try direct click first
@@ -272,6 +291,58 @@ def login(browser, dom_extractor, email="", username="", password="",
     }
 
 
+def _get_element(page, dom_extractor, field):
+    """Get element handle — via ARIA index or CSS selector for raw inputs."""
+    if field.get("index", -1) >= 0:
+        return dom_extractor.get_element_by_index(page, field["index"])
+    # Raw input fallback — use CSS selector
+    selector = field.get("_selector")
+    if selector:
+        try:
+            return page.query_selector(selector)
+        except Exception:
+            pass
+    return None
+
+
+def _find_raw_inputs(page):
+    """Fallback: find <input> elements via JS when ARIA tree misses them.
+
+    Some sites (HN, old-style HTML) use bare <input> without ARIA labels.
+    This queries the DOM directly and builds element dicts compatible with
+    the rest of form_login's matching logic.
+    """
+    try:
+        inputs = page.evaluate("""() => {
+            const inputs = document.querySelectorAll(
+                'input[type="text"], input[type="email"], input[type="password"], ' +
+                'input[type="tel"], input:not([type])'
+            );
+            return Array.from(inputs)
+                .filter(el => el.offsetParent !== null)  // visible only
+                .map((el, i) => ({
+                    name: el.getAttribute('aria-label')
+                        || el.getAttribute('placeholder')
+                        || el.getAttribute('name')
+                        || el.getAttribute('id')
+                        || el.type
+                        || 'input',
+                    role: el.type === 'password' ? 'input' : 'textbox',
+                    type: el.type || 'text',
+                    index: -1,  // marker for raw input
+                    _selector: el.name
+                        ? `input[name="${el.name}"]`
+                        : el.id
+                            ? `#${el.id}`
+                            : `input[type="${el.type || 'text'}"]:nth-of-type(${i + 1})`
+                }));
+        }""")
+        return inputs or []
+    except Exception as e:
+        log.debug("Raw input fallback failed: %s", e)
+        return []
+
+
 def _has_fillable_fields(elements):
     """Check if elements list contains any textbox or input fields."""
     if not elements:
@@ -285,12 +356,16 @@ def _has_fillable_fields(elements):
 def _find_field(elements, labels):
     """Find the first textbox/input matching any of the given labels."""
     for el in elements:
-        if el["role"] not in ("textbox", "input"):
+        if el.get("role") not in ("textbox", "input"):
             continue
-        name = el["name"].lower()
+        name = el.get("name", "").lower()
+        # Match by label
         for label in labels:
             if label in name:
                 return el
+        # Match password inputs by type attribute
+        if el.get("type") == "password" and labels is PASSWORD_LABELS:
+            return el
     return None
 
 
