@@ -142,46 +142,10 @@ def login(browser, dom_extractor, email="", username="", password="",
             log.warning("Step %d: no interactive elements found", step + 1)
             break
 
-        # Fallback: if ARIA found buttons but no textboxes, query raw inputs
-        if not _has_fillable_fields(elements):
-            raw_inputs = _find_raw_inputs(page)
-            if raw_inputs:
-                log.info("Step %d: ARIA missed %d inputs — using raw DOM fallback",
-                         step + 1, len(raw_inputs))
-                elements = raw_inputs + elements  # prepend inputs, keep buttons
-
-        # Classify what's on the page
-        email_field = _find_field(elements, EMAIL_LABELS)
-        username_field = _find_field(elements, USERNAME_LABELS)
-        password_field = _find_field(elements, PASSWORD_LABELS)
-        submit_button = _find_submit(elements)
-
-        # Match name fields for signup forms
-        first_name_field = _find_field(elements, FIRST_NAME_LABELS) if first_name else None
-        last_name_field = _find_field(elements, LAST_NAME_LABELS) if last_name else None
-
-        # Second fallback: ARIA had textboxes but none matched our labels
-        # (e.g. only a search box). Try raw DOM for the real form fields.
-        matched_any = any([email_field, username_field, password_field,
-                           first_name_field, last_name_field])
-        if not matched_any:
-            raw_inputs = _find_raw_inputs(page)
-            if raw_inputs:
-                log.info("Step %d: ARIA fields didn't match — raw DOM found %d inputs",
-                         step + 1, len(raw_inputs))
-                elements = raw_inputs + elements
-                email_field = _find_field(elements, EMAIL_LABELS)
-                username_field = _find_field(elements, USERNAME_LABELS)
-                password_field = _find_field(elements, PASSWORD_LABELS)
-                first_name_field = _find_field(elements, FIRST_NAME_LABELS) if first_name else None
-                last_name_field = _find_field(elements, LAST_NAME_LABELS) if last_name else None
-                submit_button = _find_submit(elements)
-                # Also find submit button from raw DOM if ARIA missed it
-                if not submit_button:
-                    raw_buttons = _find_raw_buttons(page)
-                    if raw_buttons:
-                        elements = elements + raw_buttons
-                        submit_button = _find_submit(elements)
+        # Classify fields — try ARIA first, fall back to raw DOM if needed
+        elements, email_field, username_field, password_field, \
+            first_name_field, last_name_field, submit_button = \
+            _classify_fields(page, elements, step, first_name, last_name)
 
         # If first_name provided but no first_name_field, check for generic "name"
         if first_name and not first_name_field and not username_field:
@@ -372,6 +336,40 @@ def login(browser, dom_extractor, email="", username="", password="",
         "url": final_url,
         "fields_filled": fields_filled,
     }
+
+
+def _classify_fields(page, elements, step, first_name, last_name):
+    """Match elements to field types. Falls back to raw DOM if ARIA misses inputs."""
+
+    def _do_classify(elements):
+        email = _find_field(elements, EMAIL_LABELS)
+        username = _find_field(elements, USERNAME_LABELS)
+        password = _find_field(elements, PASSWORD_LABELS)
+        submit = _find_submit(elements)
+        fn = _find_field(elements, FIRST_NAME_LABELS) if first_name else None
+        ln = _find_field(elements, LAST_NAME_LABELS) if last_name else None
+        return email, username, password, fn, ln, submit
+
+    # First pass: try ARIA elements as-is
+    email_f, user_f, pass_f, fn_f, ln_f, submit_f = _do_classify(elements)
+
+    # If ARIA found nothing useful, try raw DOM inputs
+    if not any([email_f, user_f, pass_f, fn_f, ln_f]):
+        raw_inputs = _find_raw_inputs(page)
+        if raw_inputs:
+            log.info("Step %d: ARIA missed fields — raw DOM found %d inputs",
+                     step + 1, len(raw_inputs))
+            elements = raw_inputs + elements
+            email_f, user_f, pass_f, fn_f, ln_f, submit_f = _do_classify(elements)
+
+        # Also find submit button from raw DOM if still missing
+        if not submit_f:
+            raw_buttons = _find_raw_buttons(page)
+            if raw_buttons:
+                elements = elements + raw_buttons
+                submit_f = _find_submit(elements)
+
+    return elements, email_f, user_f, pass_f, fn_f, ln_f, submit_f
 
 
 def _get_element(page, dom_extractor, field):

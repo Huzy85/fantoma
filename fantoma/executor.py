@@ -291,14 +291,7 @@ class Executor:
                     steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
                     log.warning("Step %d: TYPE failed — element not found or not typeable", step_num)
                     self._consecutive_failures += 1
-                    if self._consecutive_failures >= 3:
-                        if self.escalation.can_escalate():
-                            new_endpoint = self.escalation.escalate()
-                            self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
-                            log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
-                            self._consecutive_failures = 0
-                        elif self._try_env_escalation():
-                            self._consecutive_failures = 0
+                    self._maybe_escalate()
                 continue
 
             # NAVIGATE: wait for load
@@ -314,14 +307,7 @@ class Executor:
                 steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
                 log.warning("Step %d: action failed to execute", step_num)
                 self._consecutive_failures += 1
-                if self._consecutive_failures >= 3:
-                    if self.escalation.can_escalate():
-                        new_endpoint = self.escalation.escalate()
-                        self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
-                        log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
-                        self._consecutive_failures = 0
-                    elif self._try_env_escalation():
-                        self._consecutive_failures = 0
+                self._maybe_escalate()
                 continue
 
             # CLICK and others: check page change
@@ -334,14 +320,7 @@ class Executor:
             else:
                 log.info("Step %d: no visible change", step_num)
                 self._consecutive_failures += 1
-                if self._consecutive_failures >= 3:
-                    if self.escalation.can_escalate():
-                        new_endpoint = self.escalation.escalate()
-                        self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
-                        log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
-                        self._consecutive_failures = 0
-                    elif self._try_env_escalation():
-                        self._consecutive_failures = 0
+                self._maybe_escalate()
 
         # Hit max steps
         dom_text = self.dom.extract(page)
@@ -517,7 +496,17 @@ class Executor:
 
         return False
 
-    # _handle_autocomplete removed — replaced by form_assist.after_type()
+    def _maybe_escalate(self):
+        """Escalate after 3+ consecutive failures — model first, then environment."""
+        if self._consecutive_failures < 3:
+            return
+        if self.escalation.can_escalate():
+            new_endpoint = self.escalation.escalate()
+            self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
+            log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
+            self._consecutive_failures = 0
+        elif self._try_env_escalation():
+            self._consecutive_failures = 0
 
     def _check_page_change(self, page, before, dom_hash: str, action: str, step_num: int) -> bool:
         """Wait for page to settle and check if it changed after an action."""

@@ -15,7 +15,6 @@ class ActionMemory:
     """Tracks actions taken and their outcomes. Prevents loops by detecting repeated failures."""
 
     LOOP_THRESHOLD = 3  # Same action+page 3x = blacklisted
-    _TAG = "5374_5669_6265"  # internal ref
 
     def __init__(self):
         self._history: list[ActionRecord] = []

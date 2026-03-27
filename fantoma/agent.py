@@ -1,5 +1,7 @@
 """Fantoma Agent — the main public API."""
 import logging
+import signal
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -117,7 +119,6 @@ class Agent:
         except Exception as e:
             # Retry once — Camoufox can leave stale event loops between runs
             log.warning("Browser start failed (%s), retrying...", e)
-            import time
             time.sleep(2)
             try:
                 browser = BrowserEngine(
@@ -145,7 +146,6 @@ class Agent:
                 browser.navigate(start_url)
 
             # Reactive mode with timeout protection
-            import signal
 
             def _timeout_handler(signum, frame):
                 raise TimeoutError(f"Agent run exceeded {self.config.browser.timeout}s timeout")
@@ -216,7 +216,6 @@ class Agent:
 
         try:
             browser.navigate(url)
-            import time
             time.sleep(3)
 
             dom = AccessibilityExtractor(
@@ -299,7 +298,6 @@ class Agent:
 
             # Get main content (skips nav/sidebar noise), fall back to body
             page = browser.get_page()
-            import time
             time.sleep(3)  # Let JS render
             main = page.locator("main, [role=main]")
             if main.count() > 0:
