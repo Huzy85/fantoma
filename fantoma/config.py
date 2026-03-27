@@ -30,6 +30,7 @@ class ResilienceConfig:
     max_retries: int = 3
     max_steps: int = 50
     loop_threshold: int = 3
+    retry_levels: int = 3
 
 
 @dataclass

@@ -308,6 +308,16 @@ class BrowserEngine:
         if ctx:
             ctx.add_cookies(cookies)
 
+    def clear_cookies(self):
+        """Clear all cookies from the browser context."""
+        if self._context:
+            self._context.clear_cookies()
+
+    def restart_with_new_fingerprint(self):
+        """Stop the browser and start a fresh session with a new fingerprint."""
+        self.stop()
+        self.start()
+
     def __enter__(self):
         self.start()
         return self
