@@ -46,6 +46,7 @@ class Executor:
         self._total_actions = 0
         self._completed_steps: list[str] = []
         self._consecutive_failures = 0
+        self._env_level = 1
 
     # ── Plan-based execution ──────────────────────────────────────
 
@@ -219,6 +220,10 @@ class Executor:
                     self.memory._history.clear()  # clear loop history so new model starts fresh
                     self._consecutive_failures = 0
                     continue
+                elif self._try_env_escalation():
+                    self.memory._history.clear()
+                    self._consecutive_failures = 0
+                    continue
                 else:
                     log.info("Action loop detected, no escalation available — forcing DONE")
                     return AgentResult(
@@ -286,11 +291,14 @@ class Executor:
                     steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
                     log.warning("Step %d: TYPE failed — element not found or not typeable", step_num)
                     self._consecutive_failures += 1
-                    if self._consecutive_failures >= 3 and self.escalation.can_escalate():
-                        new_endpoint = self.escalation.escalate()
-                        self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
-                        log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
-                        self._consecutive_failures = 0
+                    if self._consecutive_failures >= 3:
+                        if self.escalation.can_escalate():
+                            new_endpoint = self.escalation.escalate()
+                            self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
+                            log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
+                            self._consecutive_failures = 0
+                        elif self._try_env_escalation():
+                            self._consecutive_failures = 0
                 continue
 
             # NAVIGATE: wait for load
@@ -306,11 +314,14 @@ class Executor:
                 steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
                 log.warning("Step %d: action failed to execute", step_num)
                 self._consecutive_failures += 1
-                if self._consecutive_failures >= 3 and self.escalation.can_escalate():
-                    new_endpoint = self.escalation.escalate()
-                    self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
-                    log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
-                    self._consecutive_failures = 0
+                if self._consecutive_failures >= 3:
+                    if self.escalation.can_escalate():
+                        new_endpoint = self.escalation.escalate()
+                        self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
+                        log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
+                        self._consecutive_failures = 0
+                    elif self._try_env_escalation():
+                        self._consecutive_failures = 0
                 continue
 
             # CLICK and others: check page change
@@ -323,11 +334,14 @@ class Executor:
             else:
                 log.info("Step %d: no visible change", step_num)
                 self._consecutive_failures += 1
-                if self._consecutive_failures >= 3 and self.escalation.can_escalate():
-                    new_endpoint = self.escalation.escalate()
-                    self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
-                    log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
-                    self._consecutive_failures = 0
+                if self._consecutive_failures >= 3:
+                    if self.escalation.can_escalate():
+                        new_endpoint = self.escalation.escalate()
+                        self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
+                        log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
+                        self._consecutive_failures = 0
+                    elif self._try_env_escalation():
+                        self._consecutive_failures = 0
 
         # Hit max steps
         dom_text = self.dom.extract(page)
@@ -472,6 +486,36 @@ class Executor:
         # Semantic match — normalize by stripping element numbers
         normalized = [re.sub(r'\[\d+\]', '[N]', a) for a in recent]
         return len(set(normalized)) == 1
+
+    def _try_env_escalation(self):
+        """Try environment-level escalation when model escalation didn't help.
+
+        Level 1: Normal (current behaviour)
+        Level 2: Clear cookies + rotate proxy
+        Level 3: Fresh browser fingerprint
+        """
+        max_levels = self.config.resilience.retry_levels
+        if self._env_level >= max_levels:
+            log.info("All %d environment escalation levels exhausted", max_levels)
+            return False
+
+        self._env_level += 1
+        log.info("Environment escalation → level %d", self._env_level)
+
+        if self._env_level == 2:
+            self.browser.clear_cookies()
+            log.info("Level 2: Cleared cookies")
+            return True
+
+        if self._env_level == 3:
+            current_url = self.browser.get_url()
+            self.browser.restart_with_new_fingerprint()
+            if current_url:
+                self.browser.navigate(current_url)
+            log.info("Level 3: Fresh fingerprint, re-navigated to %s", current_url)
+            return True
+
+        return False
 
     # _handle_autocomplete removed — replaced by form_assist.after_type()
 
