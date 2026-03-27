@@ -1,5 +1,55 @@
 # Fantoma Development Progress
 
+## Session 3: 2026-03-27 — v0.2.0
+
+### New Features (5)
+
+1. **Form Memory** — SQLite database (`~/.local/share/fantoma/form_memory.db`) records what every login page looks like. Tables: sites (stats), form_steps (field label → purpose mapping), snapshots (full accessibility tree per step). When hardcoded labels don't match, checks database for hints from past visits. Live page always wins over stale data.
+
+2. **Playwright Traces** — `Agent(trace=True)` records screenshots, DOM snapshots, and network activity. Saved as zip files at `~/.local/share/fantoma/traces/`. View with `playwright show-trace <file>.zip`. CLI: `fantoma logs --trace`. Wrapped in try/except for Camoufox compatibility.
+
+3. **Fingerprint Self-Test** — `fantoma test fingerprint` runs 7 in-browser JS checks: UA vs platform, GPU vs OS, timezone vs locale, screen dimensions (catches Camoufox #330), WebGL present, DedicatedWorker cross-check, instance stability (catches Camoufox #328). No external sites visited.
+
+4. **Smart Retry Escalation** — 3-level environment escalation when model escalation fails. Level 1: retry (existing). Level 2: clear cookies. Level 3: close browser, start fresh Camoufox instance with new fingerprint. Configurable: `ResilienceConfig(retry_levels=3)`.
+
+5. **Patchright Chromium Fallback** — `Agent(browser="chromium")` opt-in. Uses Patchright (patches Runtime.enable leak). Install: `pip install fantoma[chromium]`. Default stays Camoufox. Import guard with clear error message.
+
+### Bug Fixes (6)
+
+1. **LLM prompt fix** — REACTIVE_SYSTEM prompt rewritten. LLM was saying DONE immediately without acting. Now: "Only say DONE when the task is fully COMPLETED." Hercules navigates correctly after fix.
+2. **Raw DOM fallback** — when ARIA tree misses form inputs (HN, nopCommerce), Fantoma queries raw `<input>` elements via JS. Falls back when: (a) no textboxes in ARIA, or (b) textboxes exist but none match login/signup labels.
+3. **Raw DOM buttons** — also finds `<button>` and `input[type=submit]` via JS when ARIA misses the submit button.
+4. **OAuth button skip** — SKIP_LABELS now includes Apple, Facebook, GitHub, Google, Twitter, etc. Won't click "Continue with Google" when looking for the login button.
+5. **Name fields** — `agent.login()` now accepts `first_name` and `last_name`. Matches: first name, firstname, given name, full name, name (when no username field). Also matches confirm password fields.
+6. **Browser retry** — `agent.run()` retries browser start once after "Event loop is closed" error (Camoufox stale event loop between sequential runs).
+
+### Login/Signup Test Results (v0.2.0, code path, no LLM)
+
+| Site | Type | Fields Filled | Result |
+|------|------|---------------|--------|
+| the-internet.herokuapp.com | Login | Username, Password | **Logged in** |
+| GitHub | Login (React) | Email, Password | Form filled |
+| Hacker News | Login (vanilla) | acct, pw | Form filled (raw DOM fallback) |
+| OrangeHRM | Login (SPA) | Username, Password | **Logged in** |
+| SauceDemo | Login | Username, Password | Form filled |
+| Practice Automation | Login | Username, Password | **Logged in** |
+| DemoQA | Signup (4 fields) | First Name, Last Name, UserName, Password | All filled |
+| nopCommerce | Signup (5 fields) | FirstName, LastName, Email, Password, ConfirmPassword | All filled (raw DOM) |
+| Parabank | Signup (4 fields) | FirstName, LastName, Username, Password | **Account created** |
+| Automationexercise | Signup (2 fields) | Name, Email | Multi-step form |
+| HN | Signup (LLM) | Username, Password | **Account created** (LLM clicked create) |
+
+### Stats
+
+- 12 new commits on `fantoma-v0.2` branch
+- 120+ unit tests (was 83)
+- 17 files changed, +1,608 lines
+- Version: 0.1.0 → 0.2.0
+- Specs: `docs/superpowers/specs/2026-03-27-fantoma-v02-design.md`
+- Plan: `docs/superpowers/plans/2026-03-27-fantoma-v02-plan.md`
+
+---
+
 ## Sessions 1-2: 2026-03-22 to 2026-03-23
 
 ### Built
