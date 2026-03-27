@@ -72,6 +72,16 @@ class ExtractionConfig:
 
 
 @dataclass
+class EmailConfig:
+    """IMAP email settings for autonomous verification."""
+    host: str = ""
+    port: int = 993
+    user: str = ""
+    password: str = ""
+    security: str = "ssl"  # "ssl" (port 993), "starttls" (port 143/1143), "none" (testing)
+
+
+@dataclass
 class FantomaConfig:
     """Top-level configuration combining all settings."""
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -81,6 +91,7 @@ class FantomaConfig:
     delays: DelayConfig = field(default_factory=DelayConfig)
     timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
+    email: EmailConfig = field(default_factory=EmailConfig)
     escalation: list[str] = field(default_factory=list)
     verbose: bool = False
 
