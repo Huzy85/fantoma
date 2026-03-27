@@ -18,19 +18,22 @@ class BrowserEngine:
     DEFAULT_TRACE_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "fantoma", "traces")
 
     def __init__(self, headless=True, profile_dir=None, humanize=True, accessibility=True, proxy=None,
-                 trace=False, trace_dir=None):
+                 trace=False, trace_dir=None, browser_engine="camoufox"):
         self.headless = headless
         self.profile_dir = profile_dir
         self.accessibility = accessibility
         self.proxy = proxy  # {"server": "http://host:port"} or "http://host:port" string
+        self._humanize = humanize
         self.humanizer = Humanizer() if humanize else None
         self._trace = trace
         self._trace_dir = trace_dir or self.DEFAULT_TRACE_DIR
         self._trace_active = False
+        self._browser_engine = browser_engine
         self._browser = None
         self._context = None
         self._page = None
         self._camoufox_cm = None
+        self._playwright = None
         self._persistent = False
 
     def _proxy_dict(self) -> dict | None:
@@ -39,6 +42,13 @@ class BrowserEngine:
         return resolve_proxy(self.proxy)
 
     def start(self):
+        """Launch browser. Dispatches to Camoufox (default) or Chromium (Patchright)."""
+        if self._browser_engine == "chromium":
+            self._start_chromium()
+        else:
+            self._start_camoufox()
+
+    def _start_camoufox(self):
         """Launch Camoufox browser. Uses persistent profile if profile_dir is set."""
         proxy = self._proxy_dict()
 
@@ -99,6 +109,40 @@ class BrowserEngine:
                 _log.warning("Tracing not available (Camoufox may not support it): %s", e)
                 self._trace_active = False
 
+    def _start_chromium(self):
+        """Start Patchright Chromium browser."""
+        try:
+            from patchright.sync_api import sync_playwright
+        except ImportError:
+            raise ImportError(
+                "Patchright not installed. Install with: pip install fantoma[chromium]"
+            )
+
+        self._playwright = sync_playwright().start()
+        launch_args = {"headless": self.headless}
+        if self.profile_dir:
+            self._context = self._playwright.chromium.launch_persistent_context(
+                self.profile_dir, **launch_args
+            )
+            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        else:
+            self._browser = self._playwright.chromium.launch(**launch_args)
+            self._context = self._browser.new_context()
+            self._page = self._context.new_page()
+
+        if self._humanize:
+            self.humanizer = Humanizer()
+
+        if self._trace:
+            try:
+                self._context.tracing.start(screenshots=True, snapshots=True)
+                self._trace_active = True
+            except Exception as e:
+                _log.warning("Tracing not available: %s", e)
+                self._trace_active = False
+
+        _log.info("Chromium (Patchright) started, headless=%s", self.headless)
+
     def stop(self):
         """Close browser gracefully."""
         # Save trace before closing browser
@@ -120,15 +164,36 @@ class BrowserEngine:
             except Exception as e:
                 _log.warning("Failed to save trace: %s", e)
 
-        if self._camoufox_cm is not None:
-            try:
-                self._camoufox_cm.__exit__(None, None, None)
-            except Exception:
-                pass
-        self._page = None
-        self._context = None
-        self._browser = None
-        self._camoufox_cm = None
+        if self._browser_engine == "chromium":
+            if self._context:
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
+            if self._browser:
+                try:
+                    self._browser.close()
+                except Exception:
+                    pass
+            if self._playwright:
+                try:
+                    self._playwright.stop()
+                except Exception:
+                    pass
+            self._page = None
+            self._context = None
+            self._browser = None
+            self._playwright = None
+        else:
+            if self._camoufox_cm is not None:
+                try:
+                    self._camoufox_cm.__exit__(None, None, None)
+                except Exception:
+                    pass
+            self._page = None
+            self._context = None
+            self._browser = None
+            self._camoufox_cm = None
 
     def navigate(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 30000):
         """Navigate to URL with human-like delay after."""
