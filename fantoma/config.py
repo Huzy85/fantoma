@@ -22,6 +22,7 @@ class BrowserConfig:
     timeout: int = 30
     profile_dir: Optional[str] = None
     trace: bool = False
+    browser_engine: str = "camoufox"
 
 
 @dataclass

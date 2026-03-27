@@ -50,6 +50,7 @@ class Agent:
         timeout: int = 300,
         verbose: bool = False,
         trace: bool = False,
+        browser: str = "camoufox",
     ):
         # Build config
         self.config = FantomaConfig()
@@ -58,6 +59,7 @@ class Agent:
         self.config.llm.model = model
         self.config.browser.headless = headless
         self.config.browser.profile_dir = profile_dir
+        self.config.browser.browser_engine = browser
         self._proxy = proxy
         self.config.resilience.max_steps = max_steps
         self.config.browser.timeout = timeout
@@ -109,6 +111,7 @@ class Agent:
                 profile_dir=self.config.browser.profile_dir,
                 proxy=self._proxy,
                 trace=self.config.browser.trace,
+                browser_engine=self.config.browser.browser_engine,
             )
             browser.start()
         except Exception as e:
@@ -188,6 +191,7 @@ class Agent:
                 headless=self.config.browser.headless,
                 profile_dir=self.config.browser.profile_dir,
                 proxy=self._proxy,
+                browser_engine=self.config.browser.browser_engine,
             )
             browser.start()
         except Exception as e:
@@ -266,6 +270,7 @@ class Agent:
             browser = BrowserEngine(
                 headless=self.config.browser.headless,
                 proxy=self._proxy,
+                browser_engine=self.config.browser.browser_engine,
             )
             browser.start()
         except Exception as e:
@@ -372,6 +377,7 @@ class _Session:
             headless=self.agent.config.browser.headless,
             profile_dir=self.agent.config.browser.profile_dir,
             proxy=self.agent._proxy,
+            browser_engine=self.agent.config.browser.browser_engine,
         )
         self._browser.start()
         self._browser.navigate(self.start_url)

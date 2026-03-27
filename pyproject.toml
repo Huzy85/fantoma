@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 captcha = ["capsolver"]
+chromium = ["patchright>=1.0"]
 vision = ["pillow"]
 dev = ["pytest", "pytest-asyncio"]
 
