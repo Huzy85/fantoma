@@ -236,29 +236,8 @@ class Agent:
                 memory=memory,
                 visit_id=visit_id,
                 captcha_config=self.config.captcha,
+                llm=self._llm,
             )
-
-            # If code path filled fields but didn't complete, hand off to LLM
-            # to finish (handle CAPTCHAs, unusual flows, verification, etc.)
-            fields = result.get("fields_filled", [])
-            if fields and not result["success"]:
-                log.info("Code filled %d fields but not done — handing off to LLM", len(fields))
-                executor = Executor(
-                    browser=browser,
-                    llm=self._llm,
-                    config=self.config,
-                    escalation=self.escalation,
-                )
-                remaining = "Complete the login/signup. The form fields have been filled. "
-                remaining += "Look for a submit button, CAPTCHA, checkbox, or next step and complete it."
-                try:
-                    llm_result = executor.execute_reactive(remaining)
-                    if llm_result.success:
-                        result["success"] = True
-                        result["steps"] += llm_result.steps_taken
-                        result["llm_assisted"] = True
-                except Exception as e:
-                    log.debug("LLM handoff failed: %s", e)
 
             memory.record_visit(domain, result.get("success", False))
 
