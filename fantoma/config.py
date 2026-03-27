@@ -21,6 +21,7 @@ class BrowserConfig:
     humanize: bool = True
     timeout: int = 30
     profile_dir: Optional[str] = None
+    trace: bool = False
 
 
 @dataclass
