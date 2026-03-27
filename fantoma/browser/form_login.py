@@ -350,6 +350,64 @@ def login(browser, dom_extractor, email="", username="", password="",
     }
 
 
+def _build_element_html(el):
+    """Build an HTML-like representation of an element for the LLM."""
+    tag = "input" if el.get("role") in ("textbox", "input") else "button"
+    attrs = ""
+    if el.get("type"):
+        attrs += f' type="{el["type"]}"'
+    if el.get("name"):
+        attrs += f' name="{el["name"]}"'
+    if el.get("_selector"):
+        sel = el["_selector"]
+        if "#" in sel:
+            attrs += f' id="{sel.split("#")[1].split("]")[0]}"'
+    if tag == "button":
+        return f'[{el.get("index", "?")}] <button{attrs}>{el.get("name", "")}</button>'
+    return f'[{el.get("index", "?")}] <input{attrs}>'
+
+
+def _parse_llm_labels(raw):
+    """Parse LLM response '[3]=email, [5]=password' into {3: 'email', 5: 'password'}."""
+    if not raw:
+        return {}
+    result = {}
+    for match in re.finditer(r'\[(\d+)\]\s*=\s*(\w+)', raw):
+        idx = int(match.group(1))
+        label = match.group(2).lower()
+        result[idx] = label
+    return result
+
+
+def _ask_llm_to_label(llm, elements, url):
+    """Ask LLM to label unmatched form elements. Returns {index: label}."""
+    if not llm or not elements:
+        return {}
+
+    from fantoma.llm.prompts import FIELD_LABELLER_SYSTEM
+
+    lines = [f"URL: {url}", "", "Elements:"]
+    for el in elements:
+        lines.append(_build_element_html(el))
+
+    user_msg = "\n".join(lines)
+
+    try:
+        raw = llm.chat(
+            [{"role": "system", "content": FIELD_LABELLER_SYSTEM},
+             {"role": "user", "content": user_msg}],
+            max_tokens=100,
+            temperature=0.1,
+        )
+        labels = _parse_llm_labels(raw or "")
+        if labels:
+            log.info("LLM labelled %d elements: %s", len(labels), labels)
+        return labels
+    except Exception as e:
+        log.warning("LLM labelling failed: %s", e)
+        return {}
+
+
 def _classify_fields(page, elements, step, first_name, last_name):
     """Match elements to field types. Falls back to raw DOM if ARIA misses inputs."""
 

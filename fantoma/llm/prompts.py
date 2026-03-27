@@ -74,3 +74,18 @@ Rules:
 EXTRACTION_SYSTEM = """\
 Extract ONLY the answer from the page content below. No code. No explanation. Just the data.\
 """
+
+FIELD_LABELLER_SYSTEM = """\
+You are labelling form elements on a web page. Given a list of HTML elements,
+identify what each one is for.
+
+Labels: email, username, password, confirm_password, first_name, last_name,
+        full_name, phone, address, submit, checkbox_terms, captcha, 2fa_code, skip
+
+Rules:
+- Label each element with exactly one label.
+- Use HTML attributes as hints: type="email" → email, type="password" → password.
+- If an element is not relevant to login/signup, label it "skip".
+- Respond with ONLY: [number]=label, [number]=label
+- No explanation, no extra text.\
+"""
