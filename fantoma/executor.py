@@ -195,12 +195,28 @@ class Executor:
         steps_detail = []
         page = self.browser.get_page()
 
+        _login_attempted = False
+
         for step_num in range(1, self.config.resilience.max_steps + 1):
             dismiss_consent(page)
             self.captcha.handle(page, self.browser.screenshot)
 
             dom_text = self.dom.extract(page)
             dom_hash = self.memory.hash_dom(dom_text)
+
+            # Code-assisted form fill: if task involves login/signup and page
+            # has a form, use the code path first (faster, more reliable)
+            if not _login_attempted and step_num <= 3:
+                if self._task_wants_login(task, dom_text):
+                    log.info("Step %d: detected login/signup form — using code path", step_num)
+                    filled = self._try_code_form_fill(task, page)
+                    if filled:
+                        _login_attempted = True
+                        steps_detail.append({"step": step_num, "action": "CODE_FORM_FILL", "success": True, "url": self.browser.get_url()})
+                        # Re-read page after filling
+                        dom_text = self.dom.extract(page)
+                        dom_hash = self.memory.hash_dom(dom_text)
+                        continue
 
             # Code-based answer detection (solves "small models don't say DONE")
             if step_num >= 2 and self._page_likely_has_answer(task, page):
@@ -495,6 +511,75 @@ class Executor:
             return True
 
         return False
+
+    @staticmethod
+    def _task_wants_login(task, dom_text):
+        """Check if task involves login/signup AND page has a form."""
+        task_lower = task.lower()
+        has_auth_intent = any(w in task_lower for w in [
+            "sign up", "signup", "create account", "register",
+            "log in", "login", "sign in", "signin",
+        ])
+        if not has_auth_intent:
+            return False
+        # Check if page has form-like fields
+        dom_lower = dom_text.lower()
+        has_form = any(w in dom_lower for w in [
+            "password", "email", "username", "sign in", "log in",
+            "create account", "register", "sign up",
+        ])
+        return has_form
+
+    def _try_code_form_fill(self, task, page):
+        """Use form_login code path to fill a login/signup form detected by LLM task."""
+        from fantoma.browser.form_login import login as form_login
+        import re
+
+        # Extract credentials from the task description
+        email = ""
+        username = ""
+        password = ""
+        first_name = ""
+
+        # Parse common patterns from task text
+        task_text = task
+
+        # Email: look for email-like strings
+        email_match = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', task_text)
+        if email_match:
+            email = email_match.group(0)
+
+        # Password: look for "password: X" or "Password: X"
+        pw_match = re.search(r'[Pp]assword[:\s]+(\S+)', task_text)
+        if pw_match:
+            password = pw_match.group(1).rstrip('.,;')
+
+        # Username: look for "username: X" or "Username: X"
+        user_match = re.search(r'[Uu]sername[:\s]+(\S+)', task_text)
+        if user_match:
+            username = user_match.group(1).rstrip('.,;')
+
+        # Name: look for "name: X" or first_name
+        name_match = re.search(r'[Nn]ame[:\s]+(\S+)', task_text)
+        if name_match:
+            first_name = name_match.group(1).rstrip('.,;')
+
+        if not any([email, username, password]):
+            return False
+
+        log.info("Code form fill: email=%s, user=%s, pass=%s",
+                 email[:3] + "***" if email else "", username, "***" if password else "")
+
+        result = form_login(
+            browser=self.browser,
+            dom_extractor=self.dom,
+            email=email,
+            username=username,
+            password=password,
+            first_name=first_name,
+            captcha_config=self.config.captcha,
+        )
+        return bool(result.get("fields_filled"))
 
     def _maybe_escalate(self):
         """Escalate after 3+ consecutive failures — model first, then environment."""

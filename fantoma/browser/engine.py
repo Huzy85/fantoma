@@ -185,6 +185,12 @@ class BrowserEngine:
             self._browser = None
             self._playwright = None
         else:
+            # Close context and pages before exiting Camoufox
+            if self._context:
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
             if self._camoufox_cm is not None:
                 try:
                     self._camoufox_cm.__exit__(None, None, None)
