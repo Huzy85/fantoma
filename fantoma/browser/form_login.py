@@ -79,7 +79,7 @@ _EMPTY_RETRY_DELAY = 3.0
 def login(browser, dom_extractor, email="", username="", password="",
           first_name="", last_name="",
           max_steps=5, step_delay=3.0, memory=None, visit_id=None,
-          captcha_config=None):
+          captcha_config=None, llm=None):
     """Fill a login/signup form using pure code. No LLM needed.
 
     Args:
@@ -146,7 +146,7 @@ def login(browser, dom_extractor, email="", username="", password="",
         # Classify fields — try ARIA first, fall back to raw DOM if needed
         elements, email_field, username_field, password_field, \
             first_name_field, last_name_field, submit_button = \
-            _classify_fields(page, elements, step, first_name, last_name)
+            _classify_fields(page, elements, step, first_name, last_name, llm=llm)
 
         # If first_name provided but no first_name_field, check for generic "name"
         if first_name and not first_name_field and not username_field:
@@ -408,7 +408,39 @@ def _ask_llm_to_label(llm, elements, url):
         return {}
 
 
-def _classify_fields(page, elements, step, first_name, last_name):
+def _apply_llm_labels(labels, elements, page, dom_extractor):
+    """Apply LLM-provided labels to elements. Returns field mapping + clicks checkboxes."""
+    fields = {}
+    checkboxes_clicked = 0
+
+    elements_by_idx = {el.get("index"): el for el in elements if el.get("index") is not None}
+
+    for idx, label in labels.items():
+        el = elements_by_idx.get(idx)
+        if not el:
+            continue
+
+        if label in ("email", "username", "password", "confirm_password",
+                     "first_name", "last_name", "full_name", "phone", "address",
+                     "submit", "2fa_code"):
+            fields[label] = el
+        elif label == "checkbox_terms":
+            handle = _get_element(page, dom_extractor, el)
+            if handle:
+                try:
+                    handle.click()
+                    checkboxes_clicked += 1
+                    log.info("Clicked terms checkbox: '%s'", el.get("name", ""))
+                except Exception as e:
+                    log.debug("Failed to click checkbox: %s", e)
+        elif label == "captcha":
+            fields["captcha"] = el
+
+    fields["checkboxes_clicked"] = checkboxes_clicked
+    return fields
+
+
+def _classify_fields(page, elements, step, first_name, last_name, llm=None):
     """Match elements to field types. Falls back to raw DOM if ARIA misses inputs."""
 
     def _do_classify(elements):
@@ -442,6 +474,26 @@ def _classify_fields(page, elements, step, first_name, last_name):
         if raw_buttons:
             elements = elements + raw_buttons
             submit_f = _find_submit(elements)
+
+    # LLM fallback: if fields are still unmatched, ask the LLM to label them
+    matched_any = any([email_f, user_f, pass_f, fn_f, ln_f])
+    has_fillable = _has_fillable_fields(elements)
+    if not matched_any and has_fillable and llm:
+        url = ""
+        try:
+            url = page.url
+        except Exception:
+            pass
+        labels = _ask_llm_to_label(llm, elements, url)
+        if labels:
+            applied = _apply_llm_labels(labels, elements, page, None)
+            email_f = applied.get("email", email_f)
+            user_f = applied.get("username", user_f)
+            pass_f = applied.get("password", pass_f)
+            fn_f = applied.get("first_name") or applied.get("full_name") or fn_f
+            ln_f = applied.get("last_name", ln_f)
+            if not submit_f and applied.get("submit"):
+                submit_f = applied["submit"]
 
     return elements, email_f, user_f, pass_f, fn_f, ln_f, submit_f
 
