@@ -27,7 +27,7 @@ EMAIL_LABELS = [
 USERNAME_LABELS = [
     "username", "user name", "user id", "userid", "login",
     "account", "handle", "screen name", "display name",
-    "acct", "user",
+    "acct", "user", "yourname",
 ]
 
 PASSWORD_LABELS = [
@@ -43,7 +43,7 @@ CONFIRM_PASSWORD_LABELS = [
 
 FIRST_NAME_LABELS = [
     "first name", "firstname", "given name", "first",
-    "your name", "full name",
+    "your name", "full name", "name (optional)",
 ]
 
 # "name" alone is ambiguous — could be first name or display name.
@@ -78,7 +78,8 @@ _EMPTY_RETRY_DELAY = 3.0
 
 def login(browser, dom_extractor, email="", username="", password="",
           first_name="", last_name="",
-          max_steps=5, step_delay=3.0, memory=None, visit_id=None):
+          max_steps=5, step_delay=3.0, memory=None, visit_id=None,
+          captcha_config=None):
     """Fill a login/signup form using pure code. No LLM needed.
 
     Args:
@@ -201,7 +202,7 @@ def login(browser, dom_extractor, email="", username="", password="",
                     fields_filled.append(last_name_field["name"])
                     filled_labels.append(("last_name", last_name_field["name"]))
 
-        # Fill email/username field
+        # Fill email field
         if email_field and email:
             el = _get_element(page, dom_extractor, email_field)
             if el:
@@ -211,7 +212,9 @@ def login(browser, dom_extractor, email="", username="", password="",
                     filled_labels.append(("email", email_field["name"]))
                     filled_this_step = True
 
-        if username_field and username and not filled_this_step:
+        # Fill username field — on signup forms both email AND username can exist
+        is_signup = bool(email_field and username_field and email_field is not username_field)
+        if username_field and username and (is_signup or not filled_this_step):
             el = _get_element(page, dom_extractor, username_field)
             if el:
                 if type_into(browser, el, username):
@@ -256,6 +259,15 @@ def login(browser, dom_extractor, email="", username="", password="",
             # Nothing to fill — we might be done or on an unrecognised page
             log.info("Step %d: no fillable fields found — stopping", step + 1)
             break
+
+        # Handle CAPTCHA before submitting
+        if captcha_config and filled_this_step:
+            try:
+                from fantoma.captcha.orchestrator import CaptchaOrchestrator
+                captcha = CaptchaOrchestrator(captcha_config)
+                captcha.handle(page, lambda: browser.screenshot())
+            except Exception as e:
+                log.debug("CAPTCHA handling: %s", e)
 
         # Click submit/next
         if submit_button:
@@ -353,21 +365,25 @@ def _classify_fields(page, elements, step, first_name, last_name):
     # First pass: try ARIA elements as-is
     email_f, user_f, pass_f, fn_f, ln_f, submit_f = _do_classify(elements)
 
-    # If ARIA found nothing useful, try raw DOM inputs
-    if not any([email_f, user_f, pass_f, fn_f, ln_f]):
-        raw_inputs = _find_raw_inputs(page)
-        if raw_inputs:
-            log.info("Step %d: ARIA missed fields — raw DOM found %d inputs",
-                     step + 1, len(raw_inputs))
-            elements = raw_inputs + elements
+    # Always supplement with raw DOM — ARIA often misses some fields
+    # (e.g. password visible in raw DOM but not ARIA, or vice versa)
+    raw_inputs = _find_raw_inputs(page)
+    if raw_inputs:
+        # Only add inputs not already represented in ARIA
+        aria_labels = {e.get("name", "").lower() for e in elements if e.get("role") in ("textbox", "input")}
+        new_inputs = [r for r in raw_inputs if r["name"].lower() not in aria_labels]
+        if new_inputs:
+            log.info("Step %d: raw DOM found %d additional inputs",
+                     step + 1, len(new_inputs))
+            elements = new_inputs + elements
             email_f, user_f, pass_f, fn_f, ln_f, submit_f = _do_classify(elements)
 
-        # Also find submit button from raw DOM if still missing
-        if not submit_f:
-            raw_buttons = _find_raw_buttons(page)
-            if raw_buttons:
-                elements = elements + raw_buttons
-                submit_f = _find_submit(elements)
+    # Also find submit button from raw DOM if still missing
+    if not submit_f:
+        raw_buttons = _find_raw_buttons(page)
+        if raw_buttons:
+            elements = elements + raw_buttons
+            submit_f = _find_submit(elements)
 
     return elements, email_f, user_f, pass_f, fn_f, ln_f, submit_f
 

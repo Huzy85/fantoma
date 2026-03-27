@@ -44,6 +44,7 @@ class Agent:
         profile_dir: str = None,
         proxy: str | dict = None,
         escalation: list[str] = None,
+        escalation_keys: list[str] = None,
         captcha_api: str = None,
         captcha_key: str = None,
         captcha_webhook: str = None,  # Any webhook URL (Slack, Discord, custom)
@@ -81,10 +82,11 @@ class Agent:
 
         # Set up escalation chain with per-endpoint API keys
         endpoints = escalation or [llm_url]
-        # Build API key list: first endpoint uses the main key, rest use empty
-        # (users can override via config file or EscalationChain directly)
-        api_keys = [api_key] + [""] * (len(endpoints) - 1)
-        self.escalation = EscalationChain(endpoints, api_keys)
+        if escalation_keys:
+            esc_keys = escalation_keys
+        else:
+            esc_keys = [api_key] + [""] * (len(endpoints) - 1)
+        self.escalation = EscalationChain(endpoints, esc_keys)
 
         # Set up logging
         if verbose:
@@ -233,6 +235,7 @@ class Agent:
                 last_name=last_name,
                 memory=memory,
                 visit_id=visit_id,
+                captcha_config=self.config.captcha,
             )
 
             memory.record_visit(domain, result.get("success", False))
