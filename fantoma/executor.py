@@ -533,7 +533,6 @@ class Executor:
     def _try_code_form_fill(self, task, page):
         """Use form_login code path to fill a login/signup form detected by LLM task."""
         from fantoma.browser.form_login import login as form_login
-        import re
 
         # Extract credentials from the task description
         email = ""

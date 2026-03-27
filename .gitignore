@@ -45,4 +45,21 @@ integration_test.py
 integration_results.json
 ux_review*.py
 ux_review*.txt
-__pycache__/
+
+# Test artifacts
+tests/*_results.json
+tests/real_*.py
+tests/full_*.py
+v03_fresh_results.json
+
+# One-off scripts
+hn_post.py
+demo_script.sh
+weekly_monitor.py
+
+# Demo files (keep .gif for README)
+fantoma_demo.cast
+fantoma_demo.mp4
+
+# Backup files
+*.backup-*
