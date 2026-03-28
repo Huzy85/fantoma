@@ -83,6 +83,14 @@ class CaptchaOrchestrator:
         site_key = extract_sitekey(page, captcha_type)
 
         if not site_key:
+            log.warning("No sitekey found for %s on %s — cannot call API solver", captcha_type, page.url)
+            return False
+
+        # Validate sitekey length — reCAPTCHA keys are 40 chars, hCaptcha 36 (UUID)
+        expected_len = {"recaptcha": 40, "hcaptcha": 36}
+        if captcha_type in expected_len and len(site_key) != expected_len[captcha_type]:
+            log.warning("Sitekey length %d doesn't match expected %d for %s — skipping API call",
+                        len(site_key), expected_len[captcha_type], captcha_type)
             return False
 
         url = page.url
@@ -108,7 +116,7 @@ class CaptchaOrchestrator:
     def _solve_with_human(self, screenshot_bytes: bytes, captcha_type: str) -> bool:
         """Send to webhook for human solving."""
         from fantoma.captcha.human_solver import HumanCaptchaSolver
-        solver = HumanCaptchaSolver(self.config.captcha.webhook)
+        solver = HumanCaptchaSolver(self.config.captcha.webhook, timeout=self.config.captcha.human_timeout)
         solution = solver.solve(screenshot_bytes, captcha_type)
         if solution:
             log.info("CAPTCHA solved by human")
