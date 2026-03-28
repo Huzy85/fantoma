@@ -40,15 +40,7 @@ class CaptchaConfig:
     api: Optional[str] = None
     key: Optional[str] = None
     webhook: Optional[str] = None
-    human_timeout: int = 300
-
-
-@dataclass
-class DelayConfig:
-    """Human-like delay ranges in seconds."""
-    action_delay: tuple[float, float] = (1.0, 4.0)
-    type_delay: tuple[float, float] = (0.05, 0.15)
-    scroll_delay: tuple[float, float] = (0.5, 1.5)
+    human_timeout: int = 300        # Seconds to wait for human to solve via webhook
 
 
 @dataclass
@@ -68,7 +60,6 @@ class ExtractionConfig:
     max_elements: int = 15          # Max interactive elements shown to LLM
     max_headings: int = 25          # Max headings/text shown to LLM
     max_page_text: int = 4000       # Max chars of page text for extraction
-    max_content_elements: int = 30  # Max elements in content-focused extraction
 
 
 @dataclass
@@ -88,12 +79,9 @@ class FantomaConfig:
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     resilience: ResilienceConfig = field(default_factory=ResilienceConfig)
     captcha: CaptchaConfig = field(default_factory=CaptchaConfig)
-    delays: DelayConfig = field(default_factory=DelayConfig)
     timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
     extraction: ExtractionConfig = field(default_factory=ExtractionConfig)
     email: EmailConfig = field(default_factory=EmailConfig)
-    escalation: list[str] = field(default_factory=list)
-    verbose: bool = False
 
 
 # Convenience: default config instance

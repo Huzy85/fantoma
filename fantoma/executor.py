@@ -198,7 +198,7 @@ class Executor:
         _login_attempted = False
 
         for step_num in range(1, self.config.resilience.max_steps + 1):
-            dismiss_consent(page)
+            dismiss_consent(page, timeout=self.config.timeouts.consent_dismiss)
             self.captcha.handle(page, self.browser.screenshot)
 
             dom_text = self.dom.extract(page)
@@ -237,7 +237,8 @@ class Executor:
                     self._consecutive_failures = 0
                     continue
                 elif self._try_env_escalation():
-                    self.memory._history.clear()
+                    # Don't clear history — same LLM will repeat the same loop.
+                    # Next detection (5 more identical actions) will force DONE.
                     self._consecutive_failures = 0
                     continue
                 else:
@@ -576,7 +577,7 @@ class Executor:
             username=username,
             password=password,
             first_name=first_name,
-            captcha_config=self.config.captcha,
+            captcha_config=self.config,
         )
         return bool(result.get("fields_filled"))
 
