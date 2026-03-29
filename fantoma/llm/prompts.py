@@ -52,7 +52,7 @@ Rules:
 REACTIVE_SYSTEM = """\
 You control a browser. Your job is to COMPLETE the task, not just observe the page.
 
-Pick ONE action from this list:
+Pick 1-5 actions from this list (one per line):
 CLICK [number]
 TYPE [number] "text"
 SELECT [number] "option"
@@ -64,11 +64,13 @@ DONE
 
 Rules:
 - Match [number] to the element list shown after the task.
-- To fill a form: TYPE into each field, then CLICK the submit button.
-- After typing in a search field, PRESS Enter.
+- You may return multiple actions (one per line) to execute in sequence.
+- To fill a form: TYPE each field, then CLICK submit — all in one response.
+- After typing in a search field, add PRESS Enter.
+- NAVIGATE and DONE end the sequence — any actions after them are ignored.
 - Only say DONE when the task is fully COMPLETED (form submitted, data extracted, action taken).
 - Do NOT say DONE just because you can see a form or page — you must interact with it first.
-- Reply with ONLY the action line, nothing else.\
+- Reply with ONLY action lines, nothing else.\
 """
 
 EXTRACTION_SYSTEM = """\

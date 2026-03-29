@@ -7,7 +7,7 @@ from fantoma.browser.engine import BrowserEngine
 from fantoma.browser.actions import wait_for_navigation, wait_for_network_idle
 from fantoma.browser.consent import dismiss_consent
 from fantoma.browser.form_assist import after_type as form_after_type
-from fantoma.action_parser import normalize_action, execute_action
+from fantoma.action_parser import normalize_action, execute_action, parse_actions
 from fantoma.dom.diff import PageDiff
 from fantoma.llm.client import LLMClient
 from fantoma.llm.prompts import ACTION_SELECTOR_SYSTEM, EXTRACTION_SYSTEM
@@ -251,7 +251,7 @@ class Executor:
                         escalations=self.escalation.total_escalations,
                     )
 
-            # Ask LLM for next action
+            # Ask LLM for next action(s)
             failed = self.memory.get_failed_actions(dom_hash)
             user_msg = f"Task: {task}\n\n{dom_text}"
             if failed:
@@ -260,85 +260,103 @@ class Executor:
             raw = self.llm.chat(
                 [{"role": "system", "content": REACTIVE_SYSTEM},
                  {"role": "user", "content": user_msg}],
-                max_tokens=100,
+                max_tokens=300,
             )
             raw = (raw or "").strip()
             if not raw:
                 log.warning("Step %d: LLM returned empty action", step_num)
                 continue
 
-            action = normalize_action(raw, user_msg)
-            log.info("Step %d: %s", step_num, action[:80])
+            actions_batch = parse_actions(raw, max_actions=5)
+            if not actions_batch:
+                log.warning("Step %d: no valid actions parsed from LLM response", step_num)
+                continue
 
-            # DONE signal
-            if action.upper().startswith("DONE"):
-                log.info("LLM signalled DONE after %d steps", step_num)
+            log.info("Step %d: %d action(s) — %s", step_num, len(actions_batch),
+                     ", ".join(a[:40] for a in actions_batch))
+
+            pre_batch_url = self.browser.get_url()
+            done_signalled = False
+
+            for action in actions_batch:
+                action_verb = action.strip().split()[0].upper() if action.strip() else ""
+
+                # DONE signal
+                if action_verb == "DONE":
+                    log.info("LLM signalled DONE after %d steps", step_num)
+                    done_signalled = True
+                    break
+
+                # Execute the action
+                before = self.diff.snapshot(page)
+                self._total_actions += 1
+                executed = execute_action(action, self.browser, self.dom)
+
+                # SCROLL/WAIT: auto-succeed, no page change check, continue batch
+                if action_verb in ("SCROLL", "WAIT"):
+                    self.memory.record(action, dom_hash, "success", True, step_num)
+                    steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
+                    self._consecutive_failures = 0
+                    continue
+
+                # TYPE: check if it actually worked, then handle form assist, continue batch
+                if action_verb == "TYPE":
+                    if executed:
+                        type_re = re.match(r'TYPE\s*\[?\d+\]?\s*["\'](.+?)["\']', action, re.IGNORECASE)
+                        typed_text = type_re.group(1) if type_re else ""
+                        assist = form_after_type(page, typed_text, timeout=self.config.timeouts.autocomplete)
+                        if assist:
+                            log.info("Step %d: form assist — %s", step_num, assist)
+                        self.memory.record(action, dom_hash, "typed", True, step_num)
+                        steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
+                        self._consecutive_failures = 0
+                    else:
+                        self.memory.record(action, dom_hash, dom_hash, False, step_num)
+                        steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
+                        log.warning("Step %d: TYPE failed — element not found or not typeable", step_num)
+                        self._consecutive_failures += 1
+                        self._maybe_escalate()
+                    continue
+
+                # NAVIGATE: wait for load, then terminate batch (page changed)
+                if action_verb == "NAVIGATE":
+                    wait_for_navigation(self.browser, timeout=10000)
+                    self.memory.record(action, dom_hash, "navigated", True, step_num)
+                    steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
+                    self._consecutive_failures = 0
+                    break
+
+                if not executed:
+                    self.memory.record(action, dom_hash, dom_hash, False, step_num)
+                    steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
+                    log.warning("Step %d: action failed to execute", step_num)
+                    self._consecutive_failures += 1
+                    self._maybe_escalate()
+                    continue
+
+                # CLICK and others: check page change
+                changed = self._check_page_change(page, before, dom_hash, action, step_num)
+                steps_detail.append({"step": step_num, "action": action, "success": changed, "url": self.browser.get_url()})
+
+                if changed:
+                    log.info("Step %d: page changed after %s", step_num, action_verb)
+                    self._consecutive_failures = 0
+                    # If URL changed, stop executing further batch actions
+                    post_action_url = self.browser.get_url()
+                    if action_verb == "CLICK" and post_action_url != pre_batch_url:
+                        log.info("Step %d: URL changed — stopping batch", step_num)
+                        break
+                else:
+                    log.info("Step %d: no visible change", step_num)
+                    self._consecutive_failures += 1
+                    self._maybe_escalate()
+
+            if done_signalled:
                 return AgentResult(
                     success=True, data=self._extract_result(task, dom_text),
                     steps_taken=step_num, steps_detail=steps_detail,
                     escalations=self.escalation.total_escalations,
                 )
-
-            # Execute the action
-            before = self.diff.snapshot(page)
-            self._total_actions += 1
-            executed = execute_action(action, self.browser, self.dom)
-            action_verb = action.strip().split()[0].upper() if action.strip() else ""
-
-            # SCROLL/WAIT: auto-succeed, no page change check
-            if action_verb in ("SCROLL", "WAIT"):
-                self.memory.record(action, dom_hash, "success", True, step_num)
-                steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
-                self._consecutive_failures = 0
-                continue
-
-            # TYPE: check if it actually worked, then handle form assist
-            if action_verb == "TYPE":
-                if executed:
-                    # Extract typed text for autocomplete matching
-                    type_re = re.match(r'TYPE\s*\[?\d+\]?\s*["\'](.+?)["\']', action, re.IGNORECASE)
-                    typed_text = type_re.group(1) if type_re else ""
-                    assist = form_after_type(page, typed_text, timeout=self.config.timeouts.autocomplete)
-                    if assist:
-                        log.info("Step %d: form assist — %s", step_num, assist)
-                    self.memory.record(action, dom_hash, "typed", True, step_num)
-                    steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
-                    self._consecutive_failures = 0
-                else:
-                    self.memory.record(action, dom_hash, dom_hash, False, step_num)
-                    steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
-                    log.warning("Step %d: TYPE failed — element not found or not typeable", step_num)
-                    self._consecutive_failures += 1
-                    self._maybe_escalate()
-                continue
-
-            # NAVIGATE: wait for load
-            if action_verb == "NAVIGATE":
-                wait_for_navigation(self.browser, timeout=10000)
-                self.memory.record(action, dom_hash, "navigated", True, step_num)
-                steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
-                self._consecutive_failures = 0
-                continue
-
-            if not executed:
-                self.memory.record(action, dom_hash, dom_hash, False, step_num)
-                steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
-                log.warning("Step %d: action failed to execute", step_num)
-                self._consecutive_failures += 1
-                self._maybe_escalate()
-                continue
-
-            # CLICK and others: check page change
-            changed = self._check_page_change(page, before, dom_hash, action, step_num)
-            steps_detail.append({"step": step_num, "action": action, "success": changed, "url": self.browser.get_url()})
-
-            if changed:
-                log.info("Step %d: page changed", step_num)
-                self._consecutive_failures = 0
-            else:
-                log.info("Step %d: no visible change", step_num)
-                self._consecutive_failures += 1
-                self._maybe_escalate()
 
         # Hit max steps
         dom_text = self.dom.extract(page)
