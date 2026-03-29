@@ -578,7 +578,7 @@ class Executor:
             username=username,
             password=password,
             first_name=first_name,
-            captcha_config=self.config,
+            config=self.config,
         )
         return bool(result.get("fields_filled"))
 
