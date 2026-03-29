@@ -42,8 +42,8 @@ log = logging.getLogger("fantoma.monitor")
 
 
 def detect_llm() -> tuple[str, str]:
-    """Find which LLM is loaded. Checks ports 8081 and 8082."""
-    for port in [8081, 8082]:
+    """Find which LLM is loaded. Checks ports 8080, 8081, and 8082."""
+    for port in [8080, 8081, 8082]:
         try:
             req = urllib.request.Request(f"http://localhost:{port}/v1/models")
             with urllib.request.urlopen(req, timeout=5) as resp:
@@ -196,7 +196,7 @@ def run_login_test(agent_cls, llm_url: str, model: str) -> dict:
         from fantoma.browser.engine import BrowserEngine
         browser = BrowserEngine(headless=True)
         browser.start()
-        browser.navigate("https://mail.google.com")
+        browser.navigate("https://account.proton.me/mail")
         time.sleep(5)
         page = browser.get_page()
         page.get_by_label("Email or username").fill(email)
@@ -309,7 +309,7 @@ def run_all_tests(quick: bool = False) -> list[dict]:
 
     llm_url, model_id = detect_llm()
     if not llm_url:
-        log.error("No LLM found on ports 8081 or 8082")
+        log.error("No LLM found on ports 8080, 8081, or 8082")
         return [{"test": "LLM Detection", "status": "ERROR", "error": "No LLM available"}]
 
     log.info("Using LLM: %s (%s)", model_id, llm_url)
