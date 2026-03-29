@@ -166,6 +166,47 @@ def _type_with_fallback(browser, element, text: str, idx: int) -> bool:
         return False
 
 
+# Actions that terminate the sequence — no further actions should run after these
+SEQUENCE_TERMINATORS = {"NAVIGATE", "DONE"}
+
+MAX_ACTIONS_PER_STEP = 5
+
+
+def parse_actions(raw_response: str, max_actions: int = MAX_ACTIONS_PER_STEP) -> list[str]:
+    """Parse multiple actions from one LLM response.
+    Returns up to max_actions normalized actions.
+    Strips non-action text (thinking, explanations).
+    Terminates early on NAVIGATE or DONE.
+    """
+    if not raw_response or not raw_response.strip():
+        return []
+
+    actions = []
+    for line in raw_response.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        normalized = normalize_action(line)
+        if not normalized or normalized == line:
+            matched = False
+            for pattern in EXTRACT_PATTERNS:
+                if re.search(pattern, line, re.IGNORECASE):
+                    matched = True
+                    break
+            if not matched:
+                continue
+        actions.append(normalized)
+
+        verb = normalized.strip().split()[0].upper() if normalized.strip() else ""
+        if verb in SEQUENCE_TERMINATORS:
+            break
+
+        if len(actions) >= max_actions:
+            break
+
+    return actions
+
+
 def _handle_freeform(action_raw: str, page, browser) -> bool:
     """Handle free-form action text that doesn't match standard patterns."""
     lower = action_raw.lower()
