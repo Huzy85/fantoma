@@ -243,9 +243,10 @@ class Executor:
                     continue
                 else:
                     log.info("Action loop detected, no escalation available — forcing DONE")
+                    loop_data = self._extract_result(task, dom_text)
                     return AgentResult(
-                        success=bool(self._extract_result(task, dom_text)),
-                        data=self._extract_result(task, dom_text),
+                        success=bool(loop_data),
+                        data=loop_data,
                         steps_taken=step_num, steps_detail=steps_detail,
                         escalations=self.escalation.total_escalations,
                     )
@@ -403,7 +404,7 @@ class Executor:
 
         if self.escalation.can_escalate():
             new_endpoint = self.escalation.escalate()
-            self.llm = LLMClient(base_url=new_endpoint, api_key=self.config.llm.api_key)
+            self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
 
         return self._execute_step(failed_step, step_num, max_retries=2)
 
@@ -462,7 +463,7 @@ class Executor:
 
         response = self.llm.chat(
             [{"role": "system", "content": EXTRACTION_SYSTEM},
-             {"role": "user", "content": f"Task: {task}\n\nPage:\n{full_text[:max_text]}"}],
+             {"role": "user", "content": f"Task: {task}\n\nPage:\n{full_text}"}],
             max_tokens=200,
         )
         return response.strip() if response else ""
