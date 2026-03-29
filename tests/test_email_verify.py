@@ -108,3 +108,91 @@ def test_detect_verification_page_link():
 def test_detect_verification_page_none():
     from fantoma.browser.form_login import _detect_verification_page
     assert _detect_verification_page("[0] textbox 'Email'", "Welcome back!") is None
+
+
+# --- Agent wiring tests ---
+
+def _make_agent(**kwargs):
+    """Create an Agent without starting a browser or LLM."""
+    with patch("fantoma.agent.LLMClient"):
+        from fantoma.agent import Agent
+        return Agent(llm_url="http://localhost:8080/v1", **kwargs)
+
+
+def test_agent_accepts_email_imap():
+    agent = _make_agent(email_imap={
+        "host": "127.0.0.1", "port": 1143,
+        "user": "me@test.com", "password": "pass", "security": "starttls",
+    })
+    assert agent.config.email.host == "127.0.0.1"
+    assert agent.config.email.port == 1143
+    assert agent.config.email.security == "starttls"
+
+
+def test_agent_accepts_verification_callback():
+    cb = lambda domain, msg: "123456"
+    agent = _make_agent(verification_callback=cb)
+    assert agent._verification_callback is cb
+
+
+def test_agent_default_no_email():
+    agent = _make_agent()
+    assert agent.config.email.host == ""
+    assert agent._verification_callback is None
+
+
+def test_get_verification_imap_first():
+    """IMAP tier runs before callback."""
+    agent = _make_agent(
+        email_imap={"host": "localhost", "port": 993, "user": "u", "password": "p"},
+        verification_callback=lambda d, m: "from_callback",
+    )
+    with patch("fantoma.browser.email_verify.check_inbox") as mock_inbox:
+        mock_inbox.return_value = {"type": "code", "value": "from_imap", "subject": "test"}
+        result = agent._get_verification("code", "example.com")
+    assert result == "from_imap"
+
+
+def test_get_verification_callback_when_no_imap():
+    """Callback tier used when no IMAP configured."""
+    agent = _make_agent(verification_callback=lambda d, m: "  callback_code  ")
+    result = agent._get_verification("code", "example.com")
+    assert result == "callback_code"
+
+
+def test_get_verification_callback_when_imap_empty():
+    """Callback tier used when IMAP returns nothing."""
+    agent = _make_agent(
+        email_imap={"host": "localhost", "port": 993, "user": "u", "password": "p"},
+        verification_callback=lambda d, m: "fallback",
+    )
+    with patch("fantoma.browser.email_verify.check_inbox") as mock_inbox:
+        mock_inbox.return_value = None
+        result = agent._get_verification("code", "example.com")
+    assert result == "fallback"
+
+
+def test_get_verification_terminal_fallback():
+    """Terminal prompt used when no IMAP or callback."""
+    agent = _make_agent()
+    with patch("builtins.input", return_value="manual_code"):
+        result = agent._get_verification("code", "example.com")
+    assert result == "manual_code"
+
+
+def test_get_verification_no_terminal():
+    """Returns None when nothing available and no terminal."""
+    agent = _make_agent()
+    with patch("builtins.input", side_effect=EOFError):
+        result = agent._get_verification("code", "example.com")
+    assert result is None
+
+
+def test_get_verification_callback_exception():
+    """Bad callback doesn't crash — falls through to terminal."""
+    def bad_callback(d, m):
+        raise RuntimeError("boom")
+    agent = _make_agent(verification_callback=bad_callback)
+    with patch("builtins.input", return_value="recovered"):
+        result = agent._get_verification("code", "example.com")
+    assert result == "recovered"

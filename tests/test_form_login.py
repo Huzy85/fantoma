@@ -97,7 +97,7 @@ def test_retry_on_empty_step():
     # URL must contain /login so _looks_logged_in returns False (keeps loop going)
     # But must change between steps so "page unchanged" check doesn't exit
     logged_in_check = {"n": 0}
-    def fake_looks_logged_in(p, url):
+    def fake_looks_logged_in(p, url, start_url=""):
         logged_in_check["n"] += 1
         # Return True only after step 1 completes (password filled)
         return logged_in_check["n"] >= 2

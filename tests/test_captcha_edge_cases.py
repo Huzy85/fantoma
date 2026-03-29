@@ -197,7 +197,7 @@ def test_orchestrator_solve_with_api_full_flow():
 
     call_map = {
         0: None,              # extract_sitekey: data-sitekey → None
-        1: "site_key_abc",    # extract_sitekey: iframe → key found
+        1: "0123456789abcdef0123456789abcdef01234567",    # extract_sitekey: 40-char reCAPTCHA key
         # detect_version is called next
         2: "v2",              # detect_version → v2 (not None, so returns "v2" ... actually returns the string)
         # detect_invisible is called next
@@ -216,7 +216,7 @@ def test_orchestrator_solve_with_api_full_flow():
 
     assert result is True
     mock_solver_instance.solve_recaptcha_v2.assert_called_once_with(
-        "site_key_abc", "https://example.com", is_invisible=False
+        "0123456789abcdef0123456789abcdef01234567", "https://example.com", is_invisible=False
     )
 
 
