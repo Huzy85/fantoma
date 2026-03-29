@@ -81,6 +81,13 @@ EXTRACTION_SYSTEM = """\
 Extract ONLY the answer from the page content below. No code. No explanation. Just the data.\
 """
 
+COMPACTION_SYSTEM = """\
+Summarize what has been accomplished so far in this browser automation task.
+Include: pages visited, forms filled, buttons clicked, data found, errors encountered.
+Be specific about what succeeded and what failed.
+Keep it under 200 words. No speculation about what to do next.\
+"""
+
 FIELD_LABELLER_SYSTEM = """\
 You are labelling form elements on a web page. Given a list of HTML elements,
 identify what each one is for.
