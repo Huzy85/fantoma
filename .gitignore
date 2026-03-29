@@ -50,6 +50,8 @@ ux_review*.txt
 tests/*_results.json
 tests/real_*.py
 tests/full_*.py
+tests/live_*.py
+tests/scenario_*.py
 v03_fresh_results.json
 
 # One-off scripts
