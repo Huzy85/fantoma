@@ -6,7 +6,6 @@ import logging
 import time
 
 from fantoma.captcha.detector import CaptchaDetector
-from fantoma.captcha.pow_solver import solve_altcha
 from fantoma.config import FantomaConfig
 
 log = logging.getLogger("fantoma.captcha")
@@ -40,7 +39,7 @@ class CaptchaOrchestrator:
 
         # Tier 3: Human fallback (webhook)
         if self.config.captcha.webhook and screenshot_fn:
-            if self._solve_with_human(screenshot_fn(), captcha_type):
+            if self._solve_with_human(page, screenshot_fn(), captcha_type):
                 return True
 
         log.warning("Could not solve %s CAPTCHA", captcha_type)
@@ -113,14 +112,14 @@ class CaptchaOrchestrator:
             return inject_token(page, token, captcha_type)
         return False
 
-    def _solve_with_human(self, screenshot_bytes: bytes, captcha_type: str) -> bool:
-        """Send to webhook for human solving."""
+    def _solve_with_human(self, page, screenshot_bytes: bytes, captcha_type: str) -> bool:
+        """Send to webhook for human solving, then inject the returned token."""
         from fantoma.captcha.human_solver import HumanCaptchaSolver
         solver = HumanCaptchaSolver(self.config.captcha.webhook, timeout=self.config.captcha.human_timeout)
-        solution = solver.solve(screenshot_bytes, captcha_type)
-        if solution:
+        token = solver.solve(screenshot_bytes, captcha_type)
+        if token:
             log.info("CAPTCHA solved by human")
-            return True
+            return inject_token(page, token, captcha_type)
         return False
 
 

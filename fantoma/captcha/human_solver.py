@@ -1,5 +1,4 @@
 """CAPTCHA fallback — send to a human via webhook (Telegram, Discord, Slack, custom URL)."""
-import json
 import logging
 import time
 import httpx

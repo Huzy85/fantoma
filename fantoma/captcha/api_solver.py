@@ -1,5 +1,4 @@
 """CAPTCHA solving via paid APIs (CapSolver, 2Captcha, Anti-Captcha). User provides their own key."""
-import json
 import logging
 import time
 import httpx
