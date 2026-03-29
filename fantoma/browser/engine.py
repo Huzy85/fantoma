@@ -52,16 +52,31 @@ class BrowserEngine:
         """Launch Camoufox browser. Uses persistent profile if profile_dir is set."""
         proxy = self._proxy_dict()
 
+        # When using virtual display, sync Xvfb resolution with Camoufox's
+        # spoofed screen size to prevent layout mismatches (dialogs off-screen)
+        screen = None
+        if self.headless == "virtual":
+            from browserforge.fingerprints import Screen
+            screen = Screen(min_width=1920, max_width=1920, min_height=1080, max_height=1080)
+
+        # Native stealth patches (hardwareConcurrency, buildID, timer precision)
+        from fantoma.browser.stealth import get_camoufox_config
+        stealth_config = get_camoufox_config()
+
         if self.profile_dir:
             self._persistent = True
-            self._camoufox_cm = Camoufox(
+            cm_kwargs = dict(
                 persistent_context=True,
                 user_data_dir=self.profile_dir,
                 headless=self.headless,
                 humanize=True,
                 os=["linux"],
                 proxy=proxy,
+                **stealth_config,
             )
+            if screen:
+                cm_kwargs["screen"] = screen
+            self._camoufox_cm = Camoufox(**cm_kwargs)
             # persistent_context returns a BrowserContext directly
             self._context = self._camoufox_cm.__enter__()
             self._browser = None
@@ -70,15 +85,31 @@ class BrowserEngine:
             self._page = pages[0] if pages else self._context.new_page()
         else:
             self._persistent = False
-            self._camoufox_cm = Camoufox(
+            cm_kwargs = dict(
                 headless=self.headless,
                 humanize=True,
                 os=["linux"],
                 proxy=proxy,
+                **stealth_config,
             )
+            if screen:
+                cm_kwargs["screen"] = screen
+            self._camoufox_cm = Camoufox(**cm_kwargs)
             self._browser = self._camoufox_cm.__enter__()
             self._context = self._browser.new_context()
             self._page = self._context.new_page()
+
+        # Sync viewport with screen size for virtual display
+        if screen and self._page:
+            try:
+                self._page.set_viewport_size({"width": 1920, "height": 1080})
+            except Exception:
+                pass
+
+        # Apply stealth patches before any page JS runs
+        if self._context:
+            from fantoma.browser.stealth import apply_stealth
+            apply_stealth(self._context)
 
         # Set accessibility preferences — present as assistive technology user
         if self.accessibility and self._page:
@@ -119,7 +150,10 @@ class BrowserEngine:
             )
 
         self._playwright = sync_playwright().start()
+        proxy = self._proxy_dict()
         launch_args = {"headless": self.headless}
+        if proxy:
+            launch_args["proxy"] = proxy
         if self.profile_dir:
             self._context = self._playwright.chromium.launch_persistent_context(
                 self.profile_dir, **launch_args
@@ -127,11 +161,9 @@ class BrowserEngine:
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         else:
             self._browser = self._playwright.chromium.launch(**launch_args)
-            self._context = self._browser.new_context()
+            ctx_args = {"proxy": proxy} if proxy else {}
+            self._context = self._browser.new_context(**ctx_args)
             self._page = self._context.new_page()
-
-        if self._humanize:
-            self.humanizer = Humanizer()
 
         if self._trace:
             try:
@@ -207,15 +239,11 @@ class BrowserEngine:
             self._page.goto(url, wait_until=wait_until, timeout=timeout)
         except Exception as e:
             # If page crashed, try to recover with a new page
-            import logging
-            logging.getLogger("fantoma.browser").warning("Navigation failed: %s — trying recovery", e)
-            try:
-                if self._context:
-                    self._page = self._context.new_page()
-                    self._page.goto(url, wait_until=wait_until, timeout=timeout)
-                else:
-                    raise
-            except Exception:
+            _log.warning("Navigation failed: %s — trying recovery", e)
+            if self._context:
+                self._page = self._context.new_page()
+                self._page.goto(url, wait_until=wait_until, timeout=timeout)
+            else:
                 raise
         if self.humanizer:
             self.humanizer.reading_pause()

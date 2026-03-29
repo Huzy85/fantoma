@@ -81,21 +81,54 @@ def type_into(engine, element_or_selector, text: str, clear_first: bool = True):
     if not _focus_element(page, element):
         return False
 
-    # Unified fill: one JS call that covers every framework
+    # Human-like path: type character by character with realistic delays.
+    # Sites like X detect instant DOM value injection as automation.
+    if engine.humanizer:
+        # Reset React's _valueTracker first — without this, React controlled
+        # inputs silently discard keystrokes during re-renders
+        element.evaluate('''(el) => {
+            const tracker = el._valueTracker;
+            if (tracker) tracker.setValue('');
+        }''')
+
+        if clear_first:
+            page.keyboard.press("Control+a")
+            page.keyboard.press("Backspace")
+            time.sleep(0.1)
+
+        for char in text:
+            page.keyboard.type(char)
+            time.sleep(engine.humanizer.type_char_delay())
+
+        engine.humanizer.action_pause()
+
+        # Verify
+        try:
+            actual = element.input_value()
+            if actual == text:
+                return True
+        except Exception:
+            pass
+
+        # If keyboard typing didn't stick (rare), fall through to DOM injection
+        log.info("Keyboard typing didn't stick — falling back to DOM injection")
+
+    # Fast path: instant DOM injection via nativeSetter.
+    # Used when humanizer is disabled (speed over stealth) or as fallback.
     element.evaluate('''(el, args) => {
         const [text, clear] = args;
 
-        // Step 1: focus properly
+        // Focus properly
         el.blur();
         el.focus();
 
-        // Step 2: reset React's _valueTracker (harmless on non-React)
+        // Reset React's _valueTracker (harmless on non-React)
         const tracker = el._valueTracker;
         if (tracker) {
             tracker.setValue('');
         }
 
-        // Step 3: clear if needed
+        // Clear if needed
         if (clear) {
             const proto = Object.getPrototypeOf(el);
             const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
@@ -104,52 +137,20 @@ def type_into(engine, element_or_selector, text: str, clear_first: bool = True):
             el.dispatchEvent(new Event('input', { bubbles: true }));
         }
 
-        // Step 4: simulate typing start
-        el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
-        el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-
-        // Step 5: set value via native prototype setter (bypasses React override)
+        // Set value via native prototype setter (bypasses React override)
         const proto = Object.getPrototypeOf(el);
         const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
         if (setter) setter.call(el, text);
         else el.value = text;
 
-        // Step 6: simulate typing end + fire all events
+        // Fire all events
         el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
         el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
     }''', [text, clear_first])
 
-    if engine.humanizer:
-        engine.humanizer.action_pause()
-
     # Verify the value stuck
-    try:
-        actual = element.input_value()
-        if actual == text:
-            return True
-    except Exception:
-        pass
-
-    # Fallback: keyboard character by character (real keypresses via Playwright)
-    log.info("Unified fill didn't stick — falling back to keyboard.type()")
-    if not _focus_element(page, element):
-        return False
-
-    if clear_first:
-        page.keyboard.press("Control+a")
-        page.keyboard.press("Backspace")
-
-    for char in text:
-        page.keyboard.type(char)
-        if engine.humanizer:
-            time.sleep(engine.humanizer.type_char_delay())
-
-    if engine.humanizer:
-        engine.humanizer.action_pause()
-
-    # Final verify
     try:
         actual = element.input_value()
         if actual == text:
