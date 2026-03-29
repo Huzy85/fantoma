@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fantoma"
-version = "0.3.0"
+version = "0.4.0"
 description = "The AI browser agent that doesn't get caught, doesn't get stuck, and doesn't need GPT-4."
 readme = "README.md"
 license = "MIT"
