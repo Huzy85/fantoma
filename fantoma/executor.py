@@ -25,7 +25,8 @@ class Executor:
     """Orchestrates browser steps with DOM extraction, LLM action selection, and resilience."""
 
     def __init__(self, browser: BrowserEngine, llm: LLMClient,
-                 config: FantomaConfig, escalation: EscalationChain = None):
+                 config: FantomaConfig, escalation: EscalationChain = None,
+                 sensitive_data: dict = None):
         self.browser = browser
         self.llm = llm
         self.config = config
@@ -51,6 +52,7 @@ class Executor:
         self._compacted_memory: str = ""
         self._compact_threshold = 30
         self._compact_keep_recent = 6
+        self._secrets = sensitive_data or {}
 
     # ── Plan-based execution ──────────────────────────────────────
 
@@ -263,6 +265,9 @@ class Executor:
             if self._step_history:
                 recent = "\n".join(f"  {s}" for s in self._step_history[-self._compact_keep_recent:])
                 user_msg += f"\n\nRecent steps:\n{recent}"
+            if self._secrets:
+                secret_list = ", ".join(f"<secret:{k}>" for k in self._secrets.keys())
+                user_msg += f"\n\nAvailable secrets: {secret_list}"
             if failed:
                 user_msg += f"\n\nFailed (don't repeat): {', '.join(failed)}"
 
@@ -281,8 +286,12 @@ class Executor:
                 log.warning("Step %d: no valid actions parsed from LLM response", step_num)
                 continue
 
+            # Inject secrets into actions before execution
+            if self._secrets:
+                actions_batch = [self._inject_secrets(a, self._secrets) for a in actions_batch]
+
             log.info("Step %d: %d action(s) — %s", step_num, len(actions_batch),
-                     ", ".join(a[:40] for a in actions_batch))
+                     ", ".join(self._filter_secrets(a, self._secrets)[:40] if self._secrets else a[:40] for a in actions_batch))
 
             pre_batch_url = self.browser.get_url()
             done_signalled = False
@@ -362,7 +371,10 @@ class Executor:
 
             # Record step for history tracking
             if actions_batch:
-                self._step_history.append(actions_batch[0][:60])
+                step_summary = actions_batch[0][:60]
+                if self._secrets:
+                    step_summary = self._filter_secrets(step_summary, self._secrets)
+                self._step_history.append(step_summary)
                 self._compact_history()
 
             if done_signalled:
@@ -574,6 +586,21 @@ class Executor:
                          len(old_steps), len(recent_steps))
         except Exception as e:
             log.warning("History compaction failed: %s", e)
+
+    @staticmethod
+    def _inject_secrets(action: str, secrets: dict) -> str:
+        """Replace <secret:key> placeholders with real values in an action string."""
+        for key, value in secrets.items():
+            action = action.replace(f"<secret:{key}>", value)
+        return action
+
+    @staticmethod
+    def _filter_secrets(text: str, secrets: dict) -> str:
+        """Replace real secret values with placeholders in text (for logging/history)."""
+        for key, value in secrets.items():
+            if value and value in text:
+                text = text.replace(value, f"<secret:{key}>")
+        return text
 
     @staticmethod
     def _task_wants_login(task, dom_text):

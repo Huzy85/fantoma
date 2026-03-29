@@ -55,6 +55,7 @@ class Agent:
         browser: str = "camoufox",
         email_imap: dict = None,
         verification_callback: callable = None,
+        sensitive_data: dict = None,
     ):
         # Build config
         self.config = FantomaConfig()
@@ -89,6 +90,7 @@ class Agent:
                 security=email_imap.get("security", "ssl"),
             )
         self._verification_callback = verification_callback
+        self._sensitive_data = sensitive_data or {}
 
         # Set up escalation chain with per-endpoint API keys
         endpoints = escalation or [llm_url]
@@ -149,6 +151,7 @@ class Agent:
                 llm=self._llm,
                 config=self.config,
                 escalation=self.escalation,
+                sensitive_data=self._sensitive_data,
             )
 
             # Navigate to start URL if provided
@@ -510,6 +513,7 @@ class _Session:
             llm=self.agent._llm,
             config=self.agent.config,
             escalation=self.agent.escalation,
+            sensitive_data=self.agent._sensitive_data,
         )
         self._tabs = [{"index": 0, "name": "main", "url": self.start_url}]
         return self

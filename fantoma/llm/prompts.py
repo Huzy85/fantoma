@@ -74,6 +74,7 @@ Rules:
 - Do NOT say DONE just because you can see a form or page — you must interact with it first.
 - SEARCH_PAGE finds text on the current page (like Ctrl+F). Free, no scrolling needed.
 - FIND runs a CSS selector query and returns matching elements. Free.
+- If secrets are available, use them with <secret:name> syntax (e.g., TYPE [3] "<secret:email>").
 - Reply with ONLY action lines, nothing else.\
 """
 
