@@ -204,3 +204,56 @@ def wait_for_network_idle(engine, timeout: int = 15000):
         except Exception:
             pass
         return False
+
+
+def search_page(page, query: str) -> list[dict]:
+    """Find all visible text matches on the page. Like Ctrl+F. Free — no LLM cost."""
+    try:
+        results = page.evaluate("""(query) => {
+            const matches = [];
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+            let idx = 0;
+            const queryLower = query.toLowerCase();
+            while (walker.nextNode()) {
+                const text = walker.currentNode.textContent;
+                if (text.toLowerCase().includes(queryLower)) {
+                    const el = walker.currentNode.parentElement;
+                    if (el && el.offsetParent !== null) {
+                        const full = el.innerText || text;
+                        const pos = full.toLowerCase().indexOf(queryLower);
+                        const start = Math.max(0, pos - 30);
+                        const end = Math.min(full.length, pos + query.length + 30);
+                        matches.push({text: full.substring(start, end).trim(), index: idx});
+                        idx++;
+                    }
+                }
+            }
+            return matches.slice(0, 20);
+        }""", query)
+        return results or []
+    except Exception as e:
+        log.warning("search_page failed: %s", e)
+        return []
+
+
+def find_elements(page, selector: str) -> list[dict]:
+    """Query elements by CSS selector. Like browser DevTools. Free — no LLM cost."""
+    try:
+        results = page.evaluate("""(selector) => {
+            const els = document.querySelectorAll(selector);
+            return Array.from(els)
+                .filter(el => el.offsetParent !== null)
+                .slice(0, 20)
+                .map(el => ({
+                    tag: el.tagName.toLowerCase(),
+                    type: el.getAttribute('type') || '',
+                    name: el.getAttribute('name') || '',
+                    id: el.getAttribute('id') || '',
+                    text: (el.innerText || el.value || '').substring(0, 100).trim(),
+                    href: el.getAttribute('href') || '',
+                }));
+        }""", selector)
+        return results or []
+    except Exception as e:
+        log.warning("find_elements failed: %s", e)
+        return []
