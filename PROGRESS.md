@@ -3,7 +3,7 @@
 ## Session 7: 2026-03-29 — v0.5.0 (Session Persistence, Agent Upgrades)
 
 ### Summary
-Seven features inspired by browser-use analysis, built on Fantoma's code-first architecture. 205 tests passing.
+Eight features inspired by browser-use analysis, built on Fantoma's code-first architecture. 205 tests passing.
 
 ### New Features
 
