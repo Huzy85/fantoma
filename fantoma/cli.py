@@ -521,14 +521,11 @@ def cmd_run(task, start_url=None):
         return
 
     from fantoma import Agent
-    from fantoma.resilience.escalation import EscalationChain
 
-    # Build escalation chain with proper API keys
     escalation_endpoints = config.get("escalation")
-    escalation_obj = None
+    escalation_keys = None
     if escalation_endpoints:
-        api_keys = [config.get("api_key", ""), config.get("escalation_key", "")]
-        escalation_obj = EscalationChain(escalation_endpoints, api_keys)
+        escalation_keys = [config.get("api_key", ""), config.get("escalation_key", "")]
 
     agent = Agent(
         llm_url=config["llm_url"],
@@ -539,12 +536,10 @@ def cmd_run(task, start_url=None):
         captcha_key=config.get("captcha_key"),
         captcha_webhook=config.get("captcha_webhook"),
         escalation=escalation_endpoints,
+        escalation_keys=escalation_keys,
         headless=True,
         verbose=True,
     )
-    # Override escalation with properly keyed chain
-    if escalation_obj:
-        agent.escalation = escalation_obj
 
     result = agent.run(task, start_url=start_url)
 
