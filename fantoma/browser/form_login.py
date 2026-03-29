@@ -766,6 +766,15 @@ def _looks_logged_in(page, url, start_url=""):
                                  "sign out", "log out", "products",
                                  "inventory", "my account"]
 
+        session_expired_indicators = ["session expired", "session has expired",
+                                       "please log in again", "please sign in again",
+                                       "been logged out", "been signed out",
+                                       "login again", "sign in again"]
+
+        # Session expired is a clear "not logged in" signal
+        if any(ind in body for ind in session_expired_indicators):
+            return False
+
         out_score = sum(1 for ind in logged_out_indicators if ind in body)
         in_score = sum(1 for ind in logged_in_indicators if ind in body)
 
