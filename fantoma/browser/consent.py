@@ -1,4 +1,5 @@
 """Cookie consent auto-dismisser — handles GDPR/cookie banners across sites."""
+import json
 import logging
 import time
 
@@ -6,7 +7,7 @@ log = logging.getLogger("fantoma.consent")
 
 # Selectors for common consent frameworks, ordered by specificity
 ACCEPT_SELECTORS = [
-    # OneTrust (Amazon, Indeed, many others)
+    # OneTrust (Amazon, Indeed, Booking.com, many others)
     '#onetrust-accept-btn-handler',
     # Amazon-specific
     '#sp-cc-accept',
@@ -18,8 +19,6 @@ ACCEPT_SELECTORS = [
     '[data-testid="cookie-accept"]',
     '[data-action="accept-cookies"]',
     '[data-gdpr="accept"]',
-    # Booking.com
-    '#onetrust-accept-btn-handler',
     'button[id*="accept"][id*="cookie"]',
     # Common class patterns
     '.cookie-accept',
@@ -69,7 +68,6 @@ def dismiss_consent(page, timeout: float = 3.0) -> bool:
     """
     # Check if there's a consent overlay — use JS to check display/visibility
     # (Playwright's is_visible() can miss some overlay implementations)
-    import json
     selectors_json = json.dumps(OVERLAY_SELECTORS)
     has_overlay = page.evaluate(f'''() => {{
         // Check known overlay selectors
@@ -97,6 +95,14 @@ def dismiss_consent(page, timeout: float = 3.0) -> bool:
         return cookieButtons >= 2;
     }}''')
 
+    # Skip if we already dismissed consent on this page (prevent infinite loops)
+    try:
+        already = page.evaluate('() => window.__fantoma_consent_dismissed === true')
+        if already:
+            return False
+    except Exception:
+        pass
+
     if not has_overlay:
         return False
 
@@ -110,18 +116,8 @@ def dismiss_consent(page, timeout: float = 3.0) -> bool:
                 # Use JS click — bypasses Playwright's overlay interception check
                 page.evaluate("el => el.click()", el)
                 time.sleep(1.0)
-                # Verify overlay is actually gone — remove it via JS if still present
-                still_visible = page.evaluate(f'''() => {{
-                    const el = document.querySelector('#onetrust-consent-sdk');
-                    if (el && window.getComputedStyle(el).display !== 'none') {{
-                        el.style.display = 'none';
-                        // Also remove the dark filter overlay
-                        document.querySelectorAll('.onetrust-pc-dark-filter').forEach(f => f.style.display = 'none');
-                        return 'force-hidden';
-                    }}
-                    return 'gone';
-                }}''')
-                log.info("Dismissed consent via selector: %s (%s)", sel, still_visible)
+                _force_remove_overlays(page)
+                log.info("Dismissed consent via selector: %s", sel)
                 return True
         except Exception:
             continue
@@ -133,6 +129,7 @@ def dismiss_consent(page, timeout: float = 3.0) -> bool:
             if el:
                 page.evaluate("el => el.click()", el)
                 time.sleep(0.5)
+                _force_remove_overlays(page)
                 log.info("Dismissed consent via text: %s", text)
                 return True
         except Exception:
@@ -142,16 +139,61 @@ def dismiss_consent(page, timeout: float = 3.0) -> bool:
     try:
         page.keyboard.press("Escape")
         time.sleep(0.5)
-        # Check if overlay is gone
-        for sel in OVERLAY_SELECTORS:
-            el = page.query_selector(sel)
-            if el and el.is_visible():
-                log.warning("Consent overlay still visible after Escape")
-                return False
+        _force_remove_overlays(page)
         log.info("Dismissed consent via Escape key")
         return True
     except Exception:
         pass
 
-    log.warning("Could not dismiss consent overlay")
-    return False
+    # Nuclear option: force-remove all overlays even without clicking accept
+    _force_remove_overlays(page)
+    log.warning("Force-removed consent overlay without clicking accept")
+    return True
+
+
+def _force_remove_overlays(page):
+    """Remove all consent overlays from DOM and mark page to prevent re-detection.
+
+    Sets common consent cookies so the banner doesn't reappear on navigation.
+    """
+    selectors_json = json.dumps(OVERLAY_SELECTORS)
+    try:
+        page.evaluate(f'''() => {{
+            // Remove all known overlay elements from the DOM entirely
+            const selectors = {selectors_json};
+            for (const sel of selectors) {{
+                try {{
+                    document.querySelectorAll(sel).forEach(el => el.remove());
+                }} catch(e) {{}}
+            }}
+
+            // Remove dark filter overlays (OneTrust, etc.)
+            document.querySelectorAll(
+                '.onetrust-pc-dark-filter, [class*="consent-overlay"], '
+                + '[class*="cookie-wall"], [class*="modal-backdrop"]'
+            ).forEach(el => el.remove());
+
+            // Restore body scroll (consent banners often set overflow:hidden)
+            document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
+
+            // Set common consent cookies so banner doesn't reappear
+            const domain = location.hostname;
+            const expires = new Date(Date.now() + 365*24*60*60*1000).toUTCString();
+            const cookies = [
+                'OptanonAlertBoxClosed=' + new Date().toISOString(),
+                'OptanonConsent=isGpcEnabled=0&groups=C0001%3A1%2CC0002%3A1%2CC0003%3A1%2CC0004%3A1',
+                'CookieConsent=true',
+                'cookie-consent=accepted',
+                'gdpr-consent=1',
+                'cc_cookie=accepted',
+            ];
+            for (const c of cookies) {{
+                document.cookie = c + '; path=/; expires=' + expires + '; SameSite=Lax';
+            }}
+
+            // Mark page so we don't re-detect
+            window.__fantoma_consent_dismissed = true;
+        }}''')
+    except Exception as e:
+        log.debug("Force-remove overlays failed: %s", e)
