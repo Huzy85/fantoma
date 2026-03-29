@@ -1,6 +1,5 @@
 """DOM extractor — converts a live page into a numbered text map for LLM consumption."""
 
-import re
 from typing import Any, Optional
 
 
@@ -230,40 +229,6 @@ _GET_ELEMENT_JS = """
 class DOMExtractor:
     """Extracts interactive elements from a page into a numbered text map for LLM consumption."""
 
-
-    SKIP_SELECTORS = [
-        '[aria-hidden="true"]',
-        '[style*="display: none"]',
-        '[style*="display:none"]',
-        '[data-testid="placementTracking"]',
-        'nav:not([aria-label*="main"])',
-        'footer',
-    ]
-
-    INTERACTIVE_SELECTORS = [
-        'input:not([type="hidden"])',
-        'textarea',
-        'select',
-        'button',
-        'a[href]',
-        '[role="button"]',
-        '[role="link"]',
-        '[role="tab"]',
-        '[role="menuitem"]',
-        '[role="option"]',
-        '[contenteditable="true"]',
-        # Autocomplete/suggestion dropdowns
-        'li[class*="suggest"]',
-        'li[class*="search"]',
-        'li[class*="result"]',
-        'li[class*="option"]',
-        'li[class*="item"][class*="dropdown"]',
-        'li[class*="autocomplete"]',
-        'li[class*="lookup"]',
-        'div[class*="suggestion"]',
-        'div[class*="autocomplete-item"]',
-    ]
-
     def __init__(self, max_elements: int = 15):
         self._max_elements = max_elements
         self._last_elements: list[dict] = []  # Cached elements from last extraction
@@ -290,14 +255,12 @@ class DOMExtractor:
             tag = e.get("tag", "")
             role = e.get("role", "")
             etype = e.get("type", "")
-            cls = (e.get("class", "") or "").lower()
             text = (e.get("text", "") or "").lower()
-            name = (e.get("name", "") or "").lower()
             # Highest: text/search inputs (not checkboxes, not hidden)
             if tag in ("input", "textarea") and etype in ("text", "search", "email", "password", "tel", "url", ""):
                 return 0
-            # High: autocomplete suggestion items
-            if tag == "li" and ("suggest" in cls or "search" in cls or "result" in cls or "option" in cls or "lookup" in cls):
+            # High: autocomplete suggestion items (matched by tag from JS selectors)
+            if tag == "li" and any(k in text for k in ("suggest", "search", "result", "option")):
                 return 1
             if role in ("option", "button") and tag == "li":
                 return 1
@@ -363,7 +326,7 @@ class DOMExtractor:
 
         Args:
             page: Playwright Page object.
-            index: 1-based element index from the extraction output.
+            index: 0-based element index from the extraction output.
 
         Returns:
             Playwright ElementHandle or None if not found.
@@ -426,8 +389,9 @@ class DOMExtractor:
                     continue
 
         # Final fallback: re-query all elements and pick by index
+        # _GET_ELEMENT_JS uses 1-based indexing internally
         try:
-            result = page.evaluate(_GET_ELEMENT_JS, index)
+            result = page.evaluate(_GET_ELEMENT_JS, index + 1)
             if result:
                 return page.query_selector(result)
         except Exception:

@@ -282,6 +282,7 @@ class AccessibilityExtractor:
         result = extract_aria(page, self._max_elements, self._max_headings)
         if not result or "Elements: none found" in result:
             log.debug("ARIA tree empty — falling back to DOM extraction")
+            self._last_interactive = []  # Clear stale elements from previous step
             from fantoma.dom.extractor import DOMExtractor
             fallback = DOMExtractor()
             return fallback.extract(page)
