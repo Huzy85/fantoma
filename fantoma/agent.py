@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from fantoma.config import FantomaConfig
-from fantoma.planner import Planner
 from fantoma.executor import Executor
 from fantoma.browser.engine import BrowserEngine
 from fantoma.llm.client import LLMClient
@@ -54,6 +53,8 @@ class Agent:
         verbose: bool = False,
         trace: bool = False,
         browser: str = "camoufox",
+        email_imap: dict = None,
+        verification_callback: callable = None,
     ):
         # Build config
         self.config = FantomaConfig()
@@ -74,11 +75,20 @@ class Agent:
             self.config.captcha.key = captcha_key
         if captcha_webhook:
             self.config.captcha.webhook = captcha_webhook
-        if captcha_telegram:
-            # Store for Telegram-specific solver
-            self._captcha_telegram = captcha_telegram
-        else:
-            self._captcha_telegram = None
+        # captcha_telegram: reserved for future Telegram-based CAPTCHA solver
+        # (accepted in __init__ but not yet wired to CaptchaOrchestrator)
+
+        # Email verification config
+        if email_imap:
+            from fantoma.config import EmailConfig
+            self.config.email = EmailConfig(
+                host=email_imap.get("host", ""),
+                port=email_imap.get("port", 993),
+                user=email_imap.get("user", ""),
+                password=email_imap.get("password", ""),
+                security=email_imap.get("security", "ssl"),
+            )
+        self._verification_callback = verification_callback
 
         # Set up escalation chain with per-endpoint API keys
         endpoints = escalation or [llm_url]
@@ -100,14 +110,12 @@ class Agent:
 
         Args:
             task: What to do, e.g. "Find the cheapest flight from London to Barcelona"
-            start_url: Optional starting URL. If not given, the planner will determine it.
+            start_url: Optional starting URL.
 
         Returns:
             AgentResult with success status, extracted data, and step details.
         """
         log.info("Task: %s", task)
-
-        planner = Planner(self._llm)
 
         try:
             browser = BrowserEngine(
@@ -235,9 +243,74 @@ class Agent:
                 last_name=last_name,
                 memory=memory,
                 visit_id=visit_id,
-                captcha_config=self.config.captcha,
+                captcha_config=self.config,
                 llm=self._llm,
             )
+
+            # Handle email verification if needed
+            if result.get("verification_needed"):
+                vtype = result["verification_needed"]
+                log.info("Verification needed: %s", vtype)
+                code = self._get_verification(vtype, domain)
+                if code and vtype == "code":
+                    # Type the code into the verification field on the page
+                    from fantoma.browser.actions import type_into
+                    page = browser.get_page()
+                    typed = False
+
+                    # Strategy 1: find textbox via ARIA tree
+                    post_tree = dom.extract(page)
+                    post_elements = dom._last_interactive
+                    for el in post_elements:
+                        if el.get("role") in ("textbox", "input"):
+                            handle = dom.get_element_by_index(page, el["index"])
+                            if handle:
+                                type_into(browser, handle, code)
+                                typed = True
+                                break
+
+                    # Strategy 2: find input via raw DOM (OTP fields, code inputs)
+                    if not typed:
+                        try:
+                            handle = page.query_selector(
+                                'input[type="text"], input[type="number"], '
+                                'input[type="tel"], input:not([type])[autocomplete*="one-time"], '
+                                'input[name*="code"], input[name*="otp"], '
+                                'input[name*="token"], input[name*="verify"], '
+                                'input[placeholder*="code"], input[placeholder*="Code"]'
+                            )
+                            if handle and handle.is_visible():
+                                type_into(browser, handle, code)
+                                typed = True
+                        except Exception as e:
+                            log.debug("Raw DOM code input search: %s", e)
+
+                    # Strategy 3: find any visible, empty, focused-looking input
+                    if not typed:
+                        try:
+                            inputs = page.query_selector_all('input[type="text"], input[type="number"], input[type="tel"], input:not([type])')
+                            for inp in inputs:
+                                if inp.is_visible() and inp.get_attribute("value") in ("", None):
+                                    type_into(browser, inp, code)
+                                    typed = True
+                                    break
+                        except Exception as e:
+                            log.debug("Fallback code input search: %s", e)
+
+                    if typed:
+                        log.info("Entered verification code: %s", code[:2] + "****")
+                        page.keyboard.press("Enter")
+                        time.sleep(5)
+                        result["success"] = True
+                        result["verification_completed"] = True
+                    else:
+                        log.warning("Could not find verification code input on page")
+
+                elif code and vtype == "link":
+                    browser.navigate(code)
+                    time.sleep(3)
+                    result["success"] = True
+                    result["verification_completed"] = True
 
             memory.record_visit(domain, result.get("success", False))
 
@@ -256,6 +329,37 @@ class Agent:
             except Exception:
                 pass
             memory.close()
+
+    def _get_verification(self, vtype, domain):
+        """Get verification code/link. Priority: IMAP → callback → terminal → None."""
+        # Tier 1: IMAP
+        if self.config.email.host:
+            from fantoma.browser.email_verify import check_inbox
+            result = check_inbox(self.config.email, domain, prefer=vtype)
+            if result:
+                log.info("IMAP verification: %s=%s", result["type"], result["value"][:30])
+                return result["value"]
+
+        # Tier 2: Callback
+        if self._verification_callback:
+            try:
+                msg = f"Enter verification code from {domain}" if vtype == "code" else f"Enter verification link from {domain}"
+                value = self._verification_callback(domain, msg)
+                if value:
+                    return value.strip()
+            except Exception as e:
+                log.warning("Verification callback failed: %s", e)
+
+        # Tier 3: Terminal prompt (only in interactive mode)
+        try:
+            if vtype == "code":
+                value = input(f"\nVerification code from {domain}: ")
+            else:
+                value = input(f"\nVerification link from {domain}: ")
+            return value.strip() if value else None
+        except (EOFError, OSError):
+            log.info("No interactive terminal — verification cannot be completed")
+            return None
 
     def extract(self, url: str, query: str, schema: dict = None) -> dict | str:
         """Navigate to a URL and extract structured data.
