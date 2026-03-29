@@ -28,7 +28,6 @@ Usage:
 
 import logging
 import random
-from typing import Optional
 
 log = logging.getLogger("fantoma.proxy")
 

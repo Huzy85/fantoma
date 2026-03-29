@@ -122,15 +122,9 @@ class FingerprintTest:
         if "Windows" in ua and "Win" not in platform:
             passed = False
             reason = f"UA says Windows but platform is '{platform}'"
-        elif "Linux" in ua and "Linux" not in platform and "Win" not in platform and "Mac" not in platform:
-            # Linux UA should have Linux platform
-            pass
         elif "Mac" in ua and "Mac" not in platform:
             passed = False
             reason = f"UA says Mac but platform is '{platform}'"
-        elif "Linux" in platform and "Windows" in ua:
-            passed = False
-            reason = f"Platform is Linux but UA says Windows"
         elif "Win" in platform and "Linux" in ua:
             passed = False
             reason = f"Platform is Win but UA says Linux"
