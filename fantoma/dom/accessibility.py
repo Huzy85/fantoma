@@ -289,7 +289,63 @@ class AccessibilityExtractor:
 
         # Cache interactive elements for get_element_by_index
         self._last_interactive = self._parse_interactive_from_output(result)
+        if self._last_interactive:
+            self._last_interactive = self._filter_occluded(page, self._last_interactive)
         return result
+
+    def _filter_occluded(self, page, elements: list[dict]) -> list[dict]:
+        """Remove elements that are visually hidden behind other elements (e.g. modals).
+
+        Uses document.elementFromPoint() to check whether each element is actually
+        on top at its centre coordinates. Elements outside the viewport or that
+        cannot be located are assumed visible and kept. On any JS error the full
+        list is returned unchanged.
+        """
+        _JS = """
+        (function(role, name) {
+            // Find the element by role + accessible name
+            var candidates = [];
+            var all = document.querySelectorAll('*');
+            for (var i = 0; i < all.length; i++) {
+                var el = all[i];
+                var elRole = el.getAttribute('role') || el.tagName.toLowerCase();
+                var elLabel = el.getAttribute('aria-label') || el.textContent.trim().slice(0, 80);
+                if (elRole === role && elLabel === name) {
+                    candidates.push(el);
+                }
+            }
+            if (candidates.length === 0) return true;  // not found → assume visible
+            var el = candidates[0];
+            var rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return false;  // zero-size → hidden
+            var vw = window.innerWidth || document.documentElement.clientWidth;
+            var vh = window.innerHeight || document.documentElement.clientHeight;
+            var cx = rect.left + rect.width / 2;
+            var cy = rect.top + rect.height / 2;
+            if (cx < 0 || cy < 0 || cx > vw || cy > vh) return true;  // off-screen → keep
+            var top = document.elementFromPoint(cx, cy);
+            if (!top) return true;  // can't determine → keep
+            return el.contains(top) || top.contains(el) || el === top;
+        })(arguments[0], arguments[1])
+        """
+        try:
+            visible = []
+            for el in elements:
+                try:
+                    is_on_top = page.evaluate(_JS, el["role"], el["name"])
+                    if is_on_top:
+                        visible.append(el)
+                    else:
+                        log.debug(
+                            "paint-order: hiding occluded %s %r", el["role"], el["name"]
+                        )
+                except Exception as inner:
+                    log.debug("paint-order check failed for %r: %s — keeping", el, inner)
+                    visible.append(el)
+            return visible
+        except Exception as e:
+            log.warning("paint-order filtering failed: %s — returning all elements", e)
+            return elements
 
     def extract_content(self, page) -> str:
         """Extract page content only — for data extraction, not navigation.
