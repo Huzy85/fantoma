@@ -49,6 +49,81 @@ def _is_nav_noise(name: str) -> bool:
     return any(noise in name_lower for noise in NAV_NOISE)
 
 
+# Submit/action button patterns (boosted in pruning)
+SUBMIT_PATTERNS = {
+    "next", "continue", "sign in", "submit", "login",
+    "search", "sign up", "register", "create", "confirm",
+    "log in", "proceed", "send", "verify", "done",
+}
+
+# Stop words removed from task for keyword extraction
+_STOP_WORDS = {
+    "the", "a", "an", "to", "in", "on", "at", "for", "of", "and",
+    "or", "is", "are", "was", "were", "be", "been", "being", "have",
+    "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "this", "that", "these",
+    "those", "it", "its", "i", "my", "me", "we", "our", "you", "your",
+    "go", "get", "use", "find", "with", "from", "into", "then",
+}
+
+
+def prune_elements(elements: list[dict], task: str = "", max_elements: int = 15) -> list[dict]:
+    """Score and rank elements by relevance to the task. Returns top N.
+
+    Scoring:
+      +3  element name contains a task keyword
+      +2  textbox/combobox/searchbox (form inputs)
+      +2  name matches a submit pattern
+      +1  checkbox or radio
+      -2  name matches navigation noise
+       0  baseline
+    """
+    task_lower = task.lower()
+    words = task_lower.split()
+    keywords = [w for w in words if w not in _STOP_WORDS and len(w) > 1]
+
+    scored = []
+    for el in elements:
+        score = 0
+        name_lower = el.get("name", "").lower()
+        role = el.get("role", "")
+
+        for kw in keywords:
+            if kw in name_lower.split():
+                score += 3
+                break
+
+        if role in ("textbox", "combobox", "searchbox"):
+            score += 2
+
+        if any(p in name_lower for p in SUBMIT_PATTERNS):
+            score += 2
+
+        if role in ("checkbox", "radio"):
+            score += 1
+
+        if _is_nav_noise(name_lower):
+            score -= 2
+
+        scored.append((score, el))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [el for _, el in scored[:max_elements]]
+
+
+def mark_new_elements(previous: list[dict], current: list[dict]) -> list[bool]:
+    """Compare current elements with previous by (role, name) tuple.
+
+    Returns a list of booleans — True if element is new (not in previous).
+    On first page (empty previous), all elements are marked False.
+    """
+    if not previous:
+        return [False] * len(current)
+
+    prev_set = {(el.get("role", ""), el.get("name", "")) for el in previous}
+    return [(el.get("role", ""), el.get("name", "")) not in prev_set for el in current]
+
+
 def _parse_aria_line(line: str) -> dict | None:
     """Parse one line of ARIA snapshot into a structured dict.
 
@@ -90,7 +165,7 @@ def _parse_aria_line(line: str) -> dict | None:
     return result
 
 
-def extract_aria(page, max_elements: int = None, max_headings: int = None) -> str:
+def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None) -> str:
     """Extract page content via ARIA accessibility tree.
 
     Returns a numbered element map similar to DOMExtractor but using
@@ -160,10 +235,17 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None) -> st
     _max_hd = max_headings or MAX_HEADINGS
 
     if interactive:
-        shown = interactive[:_max_el]
+        if task:
+            shown = prune_elements(interactive, task, _max_el)
+        else:
+            shown = interactive[:_max_el]
+
+        new_flags = mark_new_elements(previous_elements or [], shown)
+
         output.append(f"Elements ({len(shown)} of {len(interactive)}):")
         for i, el in enumerate(shown):
-            output.append(f'[{i}] {el["role"]} "{el["name"]}"{el["state"]}')
+            prefix = "*" if new_flags[i] else ""
+            output.append(f'{prefix}[{i}] {el["role"]} "{el["name"]}"{el["state"]}')
     else:
         output.append("Elements: none found")
 
@@ -277,12 +359,14 @@ class AccessibilityExtractor:
         self._max_elements = max_elements
         self._max_headings = max_headings
 
-    def extract(self, page) -> str:
+    def extract(self, page, task: str = "") -> str:
         """Extract page via ARIA tree. Falls back to DOM if empty."""
-        result = extract_aria(page, self._max_elements, self._max_headings)
+        previous = list(self._last_interactive)  # copy before overwriting
+        result = extract_aria(page, self._max_elements, self._max_headings,
+                              task=task, previous_elements=previous)
         if not result or "Elements: none found" in result:
             log.debug("ARIA tree empty — falling back to DOM extraction")
-            self._last_interactive = []  # Clear stale elements from previous step
+            self._last_interactive = []
             from fantoma.dom.extractor import DOMExtractor
             fallback = DOMExtractor()
             return fallback.extract(page)
@@ -408,7 +492,7 @@ class AccessibilityExtractor:
         """Parse the numbered elements from the output string."""
         elements = []
         for line in output.split("\n"):
-            match = re.match(r'\[(\d+)\]\s+(\w+)\s+"([^"]*)"', line)
+            match = re.match(r'\*?\[(\d+)\]\s+(\w+)\s+"([^"]*)"', line)
             if match:
                 elements.append({
                     "index": int(match.group(1)),
