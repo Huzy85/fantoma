@@ -1,5 +1,45 @@
 # Fantoma Development Progress
 
+## Session 7: 2026-03-29 — v0.5.0 (Session Persistence, Agent Upgrades)
+
+### Summary
+Seven features inspired by browser-use analysis, built on Fantoma's code-first architecture. 205 tests passing.
+
+### New Features
+
+| # | Feature | Files | What it does |
+|---|---------|-------|-------------|
+| 1 | Session persistence | session.py (new) | Saves cookies + localStorage to encrypted files per domain+account. Fernet encryption, atomic writes. |
+| 2 | BrowserEngine storage state | engine.py | get_storage_state() / load_storage_state() for full Playwright storageState format. |
+| 3 | Unified login pipeline | agent.py, form_login.py | Session-first → form fill → verify → post-verify check → login-back → save session. One browser, one tab. |
+| 4 | Multi-action steps | action_parser.py, executor.py, prompts.py | LLM returns up to 5 actions per call. Page-change guards abort stale actions. 3-5x fewer LLM calls. |
+| 5 | Paint-order DOM filtering | accessibility.py | Removes elements hidden behind modals/overlays via elementFromPoint(). Reduces LLM noise. |
+| 6 | Free search tools | actions.py, action_parser.py | SEARCH_PAGE (text find) and FIND (CSS selector) — zero LLM cost alternatives to scrolling. |
+| 7 | Message compaction | executor.py, prompts.py | Summarizes old step history via LLM when history exceeds 30 steps. Keeps 6 recent verbatim. |
+| 8 | Sensitive data handling | agent.py, executor.py | Credentials as `<secret:key>` placeholders. Injected at execution time, filtered from logs/history. |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| fantoma/session.py | **New** — SessionManager with Fernet encryption |
+| fantoma/agent.py | Unified login pipeline, _make_browser, _save_session, _enter_verification_code, sensitive_data param |
+| fantoma/executor.py | Multi-action loop, page-change guards, compaction, secrets injection/filtering |
+| fantoma/action_parser.py | parse_actions(), SEARCH_PAGE/FIND patterns and execution |
+| fantoma/browser/actions.py | search_page(), find_elements() |
+| fantoma/browser/engine.py | get_storage_state(), load_storage_state() |
+| fantoma/browser/form_login.py | _looks_logged_in() session expired signals |
+| fantoma/dom/accessibility.py | _filter_occluded() paint-order filtering |
+| fantoma/llm/prompts.py | Updated REACTIVE_SYSTEM, COMPACTION_SYSTEM |
+| pyproject.toml | Version 0.5.0, sessions optional dep |
+| tests/ | 5 new test files, 50+ new tests |
+
+### Test Count
+- Before: 155
+- After: 205
+
+---
+
 ## Session 6: 2026-03-28 — Full Code Audit (13 phases, 48 files)
 
 ### Summary
