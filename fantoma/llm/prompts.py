@@ -60,6 +60,8 @@ SCROLL down
 SCROLL up
 NAVIGATE https://example.com
 PRESS Enter
+SEARCH_PAGE "text to find"
+FIND "css selector"
 DONE
 
 Rules:
@@ -70,6 +72,8 @@ Rules:
 - NAVIGATE and DONE end the sequence — any actions after them are ignored.
 - Only say DONE when the task is fully COMPLETED (form submitted, data extracted, action taken).
 - Do NOT say DONE just because you can see a form or page — you must interact with it first.
+- SEARCH_PAGE finds text on the current page (like Ctrl+F). Free, no scrolling needed.
+- FIND runs a CSS selector query and returns matching elements. Free.
 - Reply with ONLY action lines, nothing else.\
 """
 
