@@ -17,6 +17,8 @@ PATTERNS = {
     "press": re.compile(r'PRESS\s+(\w+)', re.IGNORECASE),
     "wait": re.compile(r'WAIT', re.IGNORECASE),
     "done": re.compile(r'DONE', re.IGNORECASE),
+    "search_page": re.compile(r'SEARCH_PAGE\s*["\'](.+?)["\']', re.IGNORECASE),
+    "find": re.compile(r'FIND\s*["\'](.+?)["\']', re.IGNORECASE),
 }
 
 # Patterns for extracting actions from verbose LLM responses
@@ -27,6 +29,8 @@ EXTRACT_PATTERNS = [
     r'(SCROLL\s+(?:up|down))',
     r'(PRESS\s+\w+)',
     r'(DONE)',
+    r'(SEARCH_PAGE\s*"[^"]*")',
+    r'(FIND\s*"[^"]*")',
 ]
 
 
@@ -130,6 +134,32 @@ def execute_action(action: str, browser, dom_extractor) -> bool:
 
         # DONE
         if PATTERNS["done"].match(action_raw):
+            return True
+
+        # SEARCH_PAGE "query"
+        m = PATTERNS["search_page"].match(action_raw)
+        if m:
+            from fantoma.browser.actions import search_page
+            results = search_page(page, m.group(1))
+            if results:
+                log.info("SEARCH_PAGE found %d matches for '%s'", len(results), m.group(1))
+                for r in results[:5]:
+                    log.info("  [%d] ...%s...", r["index"], r["text"][:60])
+            else:
+                log.info("SEARCH_PAGE: no matches for '%s'", m.group(1))
+            return True
+
+        # FIND "selector"
+        m = PATTERNS["find"].match(action_raw)
+        if m:
+            from fantoma.browser.actions import find_elements
+            results = find_elements(page, m.group(1))
+            if results:
+                log.info("FIND found %d elements for '%s'", len(results), m.group(1))
+                for r in results[:5]:
+                    log.info("  <%s> %s", r["tag"], r["text"][:60] or r["name"] or r["id"])
+            else:
+                log.info("FIND: no elements for '%s'", m.group(1))
             return True
 
         # Free-form fallbacks
