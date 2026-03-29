@@ -57,7 +57,7 @@ LAST_NAME_LABELS = [
 SUBMIT_LABELS = [
     "next", "continue", "log in", "login", "sign in", "signin",
     "sign up", "signup", "register", "create account",
-    "submit", "proceed", "go", "send", "confirm", "verify",
+    "submit", "proceed", "go", "send", "send code", "confirm", "verify",
     "create", "join", "get started", "let's go",
 ]
 
@@ -79,7 +79,7 @@ _EMPTY_RETRY_DELAY = 3.0
 def login(browser, dom_extractor, email="", username="", password="",
           first_name="", last_name="",
           max_steps=5, step_delay=3.0, memory=None, visit_id=None,
-          captcha_config=None, llm=None):
+          config=None, llm=None):
     """Fill a login/signup form using pure code. No LLM needed.
 
     Args:
@@ -92,6 +92,8 @@ def login(browser, dom_extractor, email="", username="", password="",
         step_delay: seconds to wait between steps for page transitions
         memory: optional FormMemory instance for database-assisted matching
         visit_id: optional visit ID for memory recording
+        config: optional FantomaConfig for CAPTCHA solving
+        llm: optional LLMClient for LLM-assisted field labelling
 
     Returns:
         dict with 'success' (bool), 'steps' (int), 'url' (final URL),
@@ -103,8 +105,10 @@ def login(browser, dom_extractor, email="", username="", password="",
     page = browser.get_page()
     fields_filled = []
     filled_purposes = set()  # track what purposes have been filled (email, password, etc.)
-    prev_url = page.url
+    start_url = page.url
+    prev_url = start_url
     prev_tree = ""
+    _last_submit_label = ""  # tracks label of last clicked submit button
     domain = urlparse(page.url).netloc
 
     for step in range(max_steps):
@@ -115,11 +119,48 @@ def login(browser, dom_extractor, email="", username="", password="",
         tree = dom_extractor.extract(page)
         elements = dom_extractor._last_interactive
 
-        # If page hasn't changed since last step, stop — submit didn't work
+        # If page hasn't changed since last step, check for verification
+        # before giving up — SPA forms often show a new step on the same URL
         current_url = page.url
         if step > 0 and current_url == prev_url and tree == prev_tree:
-            log.info("Step %d: page unchanged after submit — stopping", step + 1)
-            break
+            # Re-read body text — SPA might have rendered new content outside ARIA
+            try:
+                post_body = page.inner_text("body")[:2000]
+            except Exception:
+                post_body = ""
+            verification_type = _detect_verification_page(tree, post_body)
+
+            # Heuristic: if the button we clicked was "send code" / "send verification",
+            # that's a strong signal that verification is coming via email
+            if not verification_type and _last_submit_label:
+                label_lower = _last_submit_label.lower()
+                if any(sig in label_lower for sig in ["send code", "send verification",
+                        "email code", "get code", "request code", "verify email",
+                        "send link", "magic link", "email me"]):
+                    verification_type = "code"
+                    log.info("Step %d: submit button '%s' implies verification needed",
+                             step + 1, _last_submit_label)
+
+            if verification_type:
+                log.info("Step %d: verification page detected after submit (type=%s)", step + 1, verification_type)
+                return {
+                    "success": False,
+                    "steps": step,
+                    "url": current_url,
+                    "fields_filled": fields_filled,
+                    "verification_needed": verification_type,
+                }
+            # Wait and re-read — SPA might still be rendering the next step
+            time.sleep(3)
+            tree_retry = dom_extractor.extract(page)
+            if tree_retry != prev_tree:
+                # Page did change, just slowly — continue with fresh tree
+                tree = tree_retry
+                elements = dom_extractor._last_interactive
+                log.info("Step %d: page updated after delayed SPA render", step + 1)
+            else:
+                log.info("Step %d: page unchanged after submit — stopping", step + 1)
+                break
         prev_url = current_url
         prev_tree = tree
 
@@ -195,6 +236,7 @@ def login(browser, dom_extractor, email="", username="", password="",
                     fields_filled.append(first_name_field["name"])
                     filled_labels.append(("first_name", first_name_field["name"]))
                     filled_purposes.add("first_name")
+                    filled_this_step = True
 
         if last_name_field and last_name and "last_name" not in filled_purposes:
             el = _get_element(page, dom_extractor, last_name_field)
@@ -204,6 +246,7 @@ def login(browser, dom_extractor, email="", username="", password="",
                     fields_filled.append(last_name_field["name"])
                     filled_labels.append(("last_name", last_name_field["name"]))
                     filled_purposes.add("last_name")
+                    filled_this_step = True
 
         # Fill email field
         if email_field and email and "email" not in filled_purposes:
@@ -267,15 +310,16 @@ def login(browser, dom_extractor, email="", username="", password="",
             break
 
         # Handle CAPTCHA before submitting
-        if captcha_config and filled_this_step:
+        if config and config.captcha.api and filled_this_step:
             try:
                 from fantoma.captcha.orchestrator import CaptchaOrchestrator
-                captcha = CaptchaOrchestrator(captcha_config)
+                captcha = CaptchaOrchestrator(config)
                 captcha.handle(page, lambda: browser.screenshot())
             except Exception as e:
                 log.debug("CAPTCHA handling: %s", e)
 
         # Click submit/next
+        _last_submit_label = submit_button["name"] if submit_button else ""
         if submit_button:
             el = _get_element(page, dom_extractor, submit_button)
             if el:
@@ -355,7 +399,7 @@ def login(browser, dom_extractor, email="", username="", password="",
 
         # Check if we've left the login page
         new_url = page.url
-        if _looks_logged_in(page, new_url):
+        if _looks_logged_in(page, new_url, start_url):
             log.info("Login complete — landed on: %s", new_url)
             return {
                 "success": True,
@@ -366,7 +410,7 @@ def login(browser, dom_extractor, email="", username="", password="",
 
     final_url = page.url
     return {
-        "success": _looks_logged_in(page, final_url),
+        "success": _looks_logged_in(page, final_url, start_url),
         "steps": max_steps,
         "url": final_url,
         "fields_filled": fields_filled,
@@ -500,7 +544,7 @@ def _classify_fields(page, elements, step, first_name, last_name, llm=None):
         if new_inputs:
             log.info("Step %d: raw DOM found %d additional inputs",
                      step + 1, len(new_inputs))
-            elements = new_inputs + elements
+            elements = elements + new_inputs
             email_f, user_f, pass_f, fn_f, ln_f, submit_f = _do_classify(elements)
 
     # Also find submit button from raw DOM if still missing
@@ -548,7 +592,10 @@ def _detect_verification_page(tree, body_text):
 
     link_signals = ["check your email", "sent you a link", "click the link",
                     "verify your email", "confirmation email", "sent a link",
-                    "open the email", "check your inbox"]
+                    "open the email", "check your inbox", "activation email",
+                    "activate your account", "sent an email", "sent you an email",
+                    "we've sent", "we have sent", "email has been sent",
+                    "verify your account"]
     if any(s in combined for s in link_signals):
         return "link"
 
@@ -693,25 +740,31 @@ def _find_submit(elements):
     return None
 
 
-def _looks_logged_in(page, url):
+def _looks_logged_in(page, url, start_url=""):
     """Quick heuristic: are we past the login page?"""
     url_lower = url.lower()
-    login_indicators = ["/login", "/signin", "/sign-in", "/sign_in",
-                        "/flow/login", "/authenticate", "/auth",
-                        "/signup", "/register", "/join"]
 
-    # If URL still contains login paths, probably not logged in
-    if any(ind in url_lower for ind in login_indicators):
-        return False
+    # Strong signal: URL changed away from the login page
+    if start_url and url_lower != start_url.lower():
+        login_indicators = ["/login", "/signin", "/sign-in", "/sign_in",
+                            "/flow/login", "/authenticate", "/auth/login",
+                            "/signup", "/register", "/join"]
+        # If we left a login URL and the new URL doesn't contain login paths, success
+        start_lower = start_url.lower()
+        was_on_login = any(ind in start_lower for ind in login_indicators)
+        still_on_login = any(ind in url_lower for ind in login_indicators)
+        if was_on_login and not still_on_login:
+            return True
 
-    # Check for common logged-in indicators
+    # Check for common logged-in indicators in body text
     try:
         body = page.inner_text("body")[:500].lower()
         logged_out_indicators = ["sign in", "log in", "create account",
                                   "forgot password", "register"]
         logged_in_indicators = ["dashboard", "feed", "home", "welcome",
                                  "account", "profile", "settings", "logout",
-                                 "sign out", "log out"]
+                                 "sign out", "log out", "products",
+                                 "inventory", "my account"]
 
         out_score = sum(1 for ind in logged_out_indicators if ind in body)
         in_score = sum(1 for ind in logged_in_indicators if ind in body)

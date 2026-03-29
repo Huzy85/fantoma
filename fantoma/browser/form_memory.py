@@ -156,3 +156,15 @@ class FormMemory:
 
     def close(self):
         self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def __del__(self):
+        try:
+            self._conn.close()
+        except Exception:
+            pass

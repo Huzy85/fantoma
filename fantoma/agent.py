@@ -243,7 +243,7 @@ class Agent:
                 last_name=last_name,
                 memory=memory,
                 visit_id=visit_id,
-                captcha_config=self.config,
+                config=self.config,
                 llm=self._llm,
             )
 
