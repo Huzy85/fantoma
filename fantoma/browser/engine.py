@@ -240,99 +240,22 @@ class BrowserEngine:
         except Exception as e:
             # If page crashed, try to recover with a new page
             _log.warning("Navigation failed: %s — trying recovery", e)
-            if self._context:
-                self._page = self._context.new_page()
+            if not self._context:
+                raise
+            old_page = self._page
+            self._page = self._context.new_page()
+            try:
                 self._page.goto(url, wait_until=wait_until, timeout=timeout)
-            else:
+            except Exception:
+                # Recovery also failed — close the new blank page, restore old
+                try:
+                    self._page.close()
+                except Exception:
+                    pass
+                self._page = old_page
                 raise
         if self.humanizer:
             self.humanizer.reading_pause()
-
-    def click(self, selector_or_element, delay_after: bool = True):
-        """Click an element with optional human delay after."""
-        page = self._page
-
-        if isinstance(selector_or_element, str):
-            element = page.query_selector(selector_or_element)
-        else:
-            element = selector_or_element
-
-        if not element:
-            return False
-
-        # Move mouse to element first for human-like behaviour
-        if self.humanizer:
-            if self.humanizer.should_move_mouse():
-                self.humanizer.random_mouse_move(page)
-            self.humanizer.move_to_element(page, element)
-
-        element.click()
-
-        if delay_after and self.humanizer:
-            self.humanizer.action_pause()
-
-        return True
-
-    def type_text(self, selector_or_element, text: str, clear_first: bool = True):
-        """Type text character-by-character with human-like delays.
-
-        Waits for the element to have focus before typing, which prevents
-        keystrokes being lost on React controlled inputs during re-renders.
-        """
-        page = self._page
-
-        if isinstance(selector_or_element, str):
-            element = page.query_selector(selector_or_element)
-        else:
-            element = selector_or_element
-
-        if not element:
-            return False
-
-        element.click()
-
-        # Wait for element to actually receive focus — React controlled inputs
-        # re-render on focus which can briefly unmount/remount the DOM node
-        try:
-            page.wait_for_function(
-                "(el) => document.activeElement === el",
-                element,
-                timeout=3000,
-            )
-        except Exception:
-            # Fallback: element may have been replaced by React re-render,
-            # re-query and click again
-            element.click()
-            time.sleep(0.3)
-
-        if clear_first:
-            page.keyboard.press("Control+a")
-            page.keyboard.press("Backspace")
-
-        for char in text:
-            page.keyboard.type(char)
-            if self.humanizer:
-                time.sleep(self.humanizer.type_char_delay())
-
-        if self.humanizer:
-            self.humanizer.action_pause()
-
-        return True
-
-    def scroll(self, direction: str = "down", amount: int = 300):
-        """Scroll with human-like speed variation."""
-        if self.humanizer:
-            amount = self.humanizer.scroll_distance()
-
-        if direction == "up":
-            amount = -amount
-
-        self._page.mouse.wheel(0, amount)
-
-        if self.humanizer:
-            time.sleep(
-                __import__("random").uniform(*self.humanizer.scroll_delay)
-            )
 
     def screenshot(self) -> bytes:
         """Take a screenshot and return bytes."""
