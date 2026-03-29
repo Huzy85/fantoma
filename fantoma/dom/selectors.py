@@ -42,7 +42,7 @@ def build_selector(element_info: dict) -> str:
     if name:
         return f'{tag}[name="{_escape_attr(name)}"]'
 
-    # 5. placeholder (inputs) — svl
+    # 5. placeholder (inputs)
     placeholder = element_info.get("placeholder", "")
     if placeholder:
         return f'{tag}[placeholder="{_escape_attr(placeholder)}"]'
@@ -72,24 +72,22 @@ def find_by_text(page, text: str, tag: str = None) -> Optional[Any]:
     Returns:
         Playwright ElementHandle or None.
     """
-    # Use Playwright's built-in text selector for robustness
-    if tag:
-        selector = f'{tag}:has-text("{_escape_attr(text)}")'
-    else:
-        selector = f':has-text("{_escape_attr(text)}")'
-
     try:
-        # get_by_text is more reliable for exact/substring matching
-        locator = page.get_by_text(text, exact=False)
+        # get_by_text / locator+filter is more reliable than CSS pseudo-selectors
         if tag:
             locator = page.locator(tag).filter(has_text=text)
-        # Return the first match as an element handle
+        else:
+            locator = page.get_by_text(text, exact=False)
         if locator.count() > 0:
             return locator.first.element_handle()
     except Exception:
         pass
 
-    # Fallback: try CSS :has-text pseudo-selector
+    # Fallback: CSS :has-text pseudo-selector
+    if tag:
+        selector = f'{tag}:has-text("{_escape_attr(text)}")'
+    else:
+        selector = f':has-text("{_escape_attr(text)}")'
     try:
         el = page.query_selector(selector)
         if el:
