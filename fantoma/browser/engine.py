@@ -330,6 +330,69 @@ class BrowserEngine:
         if ctx:
             ctx.add_cookies(cookies)
 
+    def get_storage_state(self) -> dict:
+        """Get full browser state — cookies + localStorage + sessionStorage.
+        Returns Playwright's storageState format:
+        {"cookies": [...], "origins": [{"origin": "https://...", "localStorage": [...]}]}
+        """
+        ctx = self._context if self._context else (
+            self._page.context if self._page else None
+        )
+        if not ctx:
+            return {"cookies": [], "origins": []}
+
+        cookies = ctx.cookies()
+
+        origins = []
+        if self._page:
+            try:
+                storage = self._page.evaluate("""() => {
+                    const items = [];
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const key = localStorage.key(i);
+                        items.push({name: key, value: localStorage.getItem(key)});
+                    }
+                    return {origin: window.location.origin, localStorage: items};
+                }""")
+                if storage and storage["localStorage"]:
+                    origins.append(storage)
+            except Exception:
+                pass
+
+        return {"cookies": cookies, "origins": origins}
+
+    def load_storage_state(self, state: dict):
+        """Load full browser state — cookies + localStorage.
+        Accepts Playwright's storageState format. Cookies injected via context API.
+        localStorage restored via page.evaluate, scoped per origin.
+        """
+        ctx = self._context if self._context else (
+            self._page.context if self._page else None
+        )
+        if not ctx:
+            return
+
+        cookies = state.get("cookies", [])
+        if cookies:
+            ctx.add_cookies(cookies)
+
+        origins = state.get("origins", [])
+        if origins and self._page:
+            for origin_data in origins:
+                items = origin_data.get("localStorage", [])
+                if not items:
+                    continue
+                try:
+                    current_origin = self._page.evaluate("window.location.origin")
+                    if current_origin == origin_data.get("origin"):
+                        for item in items:
+                            self._page.evaluate(
+                                "(args) => localStorage.setItem(args[0], args[1])",
+                                [item["name"], item["value"]]
+                            )
+                except Exception:
+                    pass
+
     def clear_cookies(self):
         """Clear all cookies from the browser context."""
         if self._context:
