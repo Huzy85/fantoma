@@ -1,5 +1,126 @@
 # Fantoma Development Progress
 
+## Session 6: 2026-03-28 — Full Code Audit (13 phases, 48 files)
+
+### Summary
+Top-down data-flow audit of every Python file. 15 commits, 155 tests passing.
+
+### Bugs Fixed (10)
+
+| # | File | Bug | Impact |
+|---|------|-----|--------|
+| 1 | executor.py | `_try_backtrack` used wrong API key on escalation | Auth failures when escalating to cloud API |
+| 2 | executor.py | `execute_reactive` called LLM twice for result extraction | Double cost per task completion |
+| 3 | engine.py | Chromium path ignored proxy config entirely | All Chromium sessions ran without proxy |
+| 4 | engine.py | `navigate()` recovery left engine pointing at blank page on double-failure | Silent bad state after network errors |
+| 5 | form_login.py | Name-only form steps didn't set `filled_this_step` | Multi-step signup forms broke on name-only pages |
+| 6 | email_verify.py | IMAP connection leaked on exception after connect | Connections never closed on error |
+| 7 | orchestrator.py | Human solver discarded the solved token instead of injecting it | Every human-solved CAPTCHA silently failed |
+| 8 | extractor.py | JS fallback element lookup off-by-one (0-based vs 1-based) | Wrong element targeted when all selectors failed |
+| 9 | client.py | Model resolution cached failure ("auto") permanently | LLM calls failed forever after one /v1/models timeout |
+| 10 | weekly_monitor.py | Login test URL pointed to Gmail instead of ProtonMail | Monitor tested wrong site |
+
+### Dead Code Removed
+
+- `DelayConfig` class + `FantomaConfig.delays`, `.verbose`, `.escalation`, `ExtractionConfig.max_content_elements`
+- `BrowserEngine.click()`, `.type_text()`, `.scroll()` (zero callers, diverged from actions.py)
+- `Planner` import + instantiation in agent.py (reactive mode replaced it)
+- `_captcha_telegram` storage in agent.py
+- `SKIP_SELECTORS` and `INTERACTIVE_SELECTORS` constants in extractor.py
+- Unused imports across 8 files (json, typing.Optional, re, typing.Any, logging)
+- Unreachable fingerprint branch, redundant try/except in navigate()
+
+### Naming/Type Fixes
+
+- `captcha_config` param renamed to `config` in form_login.py + all callers
+- `Agent.extract()` return type fixed: `list[dict] | str`, not `dict | str`
+- Stale docstrings updated (planner references, 0-based vs 1-based)
+
+### Infrastructure Fixes
+
+- `tests/conftest.py` added — excludes live test files from pytest collection (fixed suite hangs)
+- Hardcoded credentials redacted in tools/ and scripts, switched to env vars
+- weekly_monitor.py missing port 8080 check added
+- `FormMemory` context manager support added
+
+### Config Fields Wired
+
+- `CaptchaConfig.human_timeout` → orchestrator.py
+- `TimeoutConfig.consent_dismiss` → executor.py
+
+### Follow-up Items (not fixed — larger refactors)
+
+- form_login.py (770 lines) — could split LLM labelling into separate module if it grows past 900
+- verification.py — unused in production, only imported by examples/multi_tab.py
+- selectors.py — utility functions unused by production code
+- api_solver.py — task type names are CapSolver-specific, would need mapping for 2Captcha
+- ProxyRotator created fresh on every resolve_proxy() call, can't rotate across sessions
+- consent.py `timeout` param accepted but unused in function body
+
+---
+
+## Session 5: 2026-03-28 — v0.4.0 Bug Fixes + E2E Verification
+
+### Bugs Fixed (7)
+
+1. **CaptchaOrchestrator type mismatch** — received `CaptchaConfig` but expected `FantomaConfig`. Every CAPTCHA solve from login flow silently crashed. Fixed: pass full config from `agent.py` and `executor.py`.
+2. **Raw DOM inputs overriding ARIA fields** — `_classify_fields` prepended raw DOM inputs, matching `<input name="new-account-password">` as password before ARIA's `textbox "Username"`. Fixed: append raw DOM after ARIA elements.
+3. **Scroll loop not terminating** — env escalation cleared action history, resetting loop counter. Fixed: don't clear on env escalation (only on model escalation).
+4. **Login verification false negatives** — `_looks_logged_in` didn't check URL change from start URL. Fixed: compare final URL to start URL + added more body text indicators.
+5. **Verification page signals incomplete** — missed "activation email", "we've sent", "sent an email". Fixed: added 6 new signal phrases.
+6. **IMAP email matching** — brand matching too strict (`dashboard.render.com` → "dashboard" not "render"), old emails returned, colour codes matched as verification codes. Fixed: subdomain stripping, date filtering, prefer links over codes.
+7. **Overnight test script missing config** — no escalation, empty IMAP password, no crash recovery. Replaced with `tools/live_test.py`.
+
+### End-to-End Verified
+
+**Render.com** (brand new site, never tested):
+- Signup → reCAPTCHA bypassed by Camoufox → email verification (link) via IMAP → account activated → **logged back in to dashboard**
+- Credentials: plus-addressed proton email, standard password
+
+**Notion** (code verification path):
+- Signup → verification code detected → IMAP polled → 6-digit code extracted and typed → verified
+
+**Discourse** (link verification path):
+- Signup → "activation email" detected → IMAP polled → link extracted → navigated → verified
+
+### Infrastructure
+
+- Killed 7 zombie Chromium processes (oldest 19 days, one at 27% CPU)
+- Fixed `process-watcher.sh` — stale browser killer for processes >2h with no active parent
+- Fixed `tmp-cleanup.sh` — added chromium profiles, camoufox, stale screenshots; fixed arithmetic bug
+- New test scripts: `tools/live_test.py` (10-site suite with startup validation), `tools/single_signup_test.py`
+
+### Stats
+
+- 155 unit tests passing
+- 10-site live test: 7/10 passed
+- Full pipeline verified on 3 sites (Render, Notion, Discourse)
+
+---
+
+## Session 4: 2026-03-27 — v0.4.0 (Email Verification)
+
+### New Features
+
+1. **Autonomous Email Verification** — after signup form submission, Fantoma detects verification pages and completes them automatically. Three-tier resolution: IMAP polling (fully autonomous), user callback function, terminal prompt (interactive fallback).
+
+2. **IMAP Polling** (`fantoma/browser/email_verify.py`) — connects to any IMAP server, polls inbox for verification emails matching the site domain. Extracts 4-8 digit codes (regex with year/small-number filtering) or verification links (URL keyword matching + anchor tag parsing). Handles multipart HTML/text emails. Configurable timeout and poll interval.
+
+3. **Verification Page Detection** (`fantoma/browser/form_login.py`) — `_detect_verification_page()` checks ARIA tree + page body text for code signals ("verification code", "enter code", "OTP", etc.) or link signals ("check your email", "sent you a link", etc.). Returns `verification_needed` type in `login()` result dict.
+
+4. **Agent Wiring** (`fantoma/agent.py`) — `login()` catches `verification_needed`, calls `_get_verification()` (IMAP → callback → terminal). For codes: finds textbox on page, types code via `type_into`, presses Enter. For links: navigates browser to the verify URL. New constructor params: `email_imap` (dict) and `verification_callback` (callable).
+
+5. **EmailConfig** (`fantoma/config.py`) — new dataclass: host, port (default 993), user, password, security ("ssl"/"starttls"/"none"). Added to `FantomaConfig` with empty defaults.
+
+### Stats
+
+- 16 new tests in `tests/test_email_verify.py`
+- 146 total unit tests passing (0.35s)
+- 3 files modified, 1 new file, 1 new test file
+- Version bump pending live verification
+
+---
+
 ## Session 3: 2026-03-27 — v0.2.0
 
 ### New Features (5)
