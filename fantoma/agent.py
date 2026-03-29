@@ -361,7 +361,7 @@ class Agent:
             log.info("No interactive terminal — verification cannot be completed")
             return None
 
-    def extract(self, url: str, query: str, schema: dict = None) -> dict | str:
+    def extract(self, url: str, query: str, schema: dict = None) -> list[dict] | str:
         """Navigate to a URL and extract structured data.
 
         Args:
