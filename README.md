@@ -53,10 +53,17 @@ fantoma test         # Verify it works
 - **Fingerprint self-test** — `fantoma test fingerprint` runs 7 in-browser checks
 - **Chromium fallback** — `Agent(browser="chromium")` via [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) for sites that block Firefox
 - Multi-tab sessions, proxy rotation, CAPTCHA solving, verification code extraction
+- **Session persistence** — cookies + localStorage saved to encrypted files per domain + account. Login once, skip forms forever. `pip install fantoma[sessions]` for encryption.
+- **Unified login pipeline** — signup → CAPTCHA → email verification → login-back, all in one `agent.login()` call. Tries saved session first.
+- **Multi-action steps** — LLM returns up to 5 actions per call (3-5x fewer LLM calls). Page-change guards abort stale actions if the page navigates mid-sequence.
+- **Paint-order filtering** — removes elements hidden behind modals and overlays before showing them to the LLM. Fewer confused clicks on invisible buttons.
+- **Free search tools** — `SEARCH_PAGE "text"` and `FIND "css selector"` — the LLM can search page content without extra LLM calls.
+- **Message compaction** — long tasks (50+ steps) don't blow the context window. Old history gets summarized automatically.
+- **Sensitive data** — pass credentials as `sensitive_data={"email": "...", "password": "..."}`. They appear as `<secret:email>` in LLM prompts and logs. Real values injected only at execution time.
 
 ## Login & Signup (No LLM)
 
-`agent.login()` handles forms with pure code — no LLM calls, no tokens, instant.
+`agent.login()` handles the full flow: saved session check → form fill → CAPTCHA → email verification → login-back. No LLM needed for known forms. Sessions saved to encrypted files — login once, instant access next time.
 
 ```python
 # Simple login
@@ -143,6 +150,20 @@ with agent.session("https://example.com/register") as s:
 ```
 
 ```python
+# Python: session persistence — login once, saved for next time
+agent = Agent(llm_url="http://localhost:8080/v1")
+result = agent.login("https://github.com/login", email="me@example.com", password="...")
+# First call: fills form, logs in, saves session to ~/.local/share/fantoma/sessions/
+# Next call: loads saved cookies, skips the form entirely
+
+# Python: sensitive data — credentials never in logs or LLM history
+agent = Agent(
+    llm_url="http://localhost:8080/v1",
+    sensitive_data={"email": "me@example.com", "password": "SecurePass123!"},
+)
+result = agent.run("Sign up at https://example.com/register")
+# LLM sees: TYPE [3] "<secret:email>" — real value injected at execution time
+
 # Python: local model with cloud fallback
 agent = Agent(
     llm_url="http://localhost:8080/v1",
@@ -178,11 +199,11 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | Small model misses buttons | Add escalation to a cloud API for hard steps |
 | Form not filled | Check `fantoma logs --trace` for debug data |
 | Login fields invisible | Fantoma falls back to raw DOM — check trace for details |
-| LLM says DONE without acting | Upgrade to v0.4.0 — prompt fix included |
+| LLM says DONE without acting | Upgrade to v0.5.0 — prompt fix included |
 
 ## Test Results
 
-Tested across 27 real sites with 6 different LLMs. 155 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+Tested across 27 real sites with 6 different LLMs. 205 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 <details>
 <summary>Detailed test breakdown</summary>
@@ -253,6 +274,7 @@ Agent(
     browser="camoufox",                  # Or "chromium" (pip install fantoma[chromium])
     email_imap=None,                     # {"host": ..., "port": 993, "user": ..., "password": ..., "security": "ssl"}
     verification_callback=None,          # callable(domain, message) → code/link string
+    sensitive_data=None,                 # {"email": "...", "password": "..."} — never in logs
 )
 ```
 
@@ -278,9 +300,10 @@ All activity is logged to `~/.fantoma/fantoma.log` — check it with `fantoma lo
 ```
 fantoma/
 ├── agent.py             # Public API (run, login, extract, session)
+├── session.py           # Encrypted session persistence (cookies + localStorage)
 ├── cli.py               # CLI + interactive mode
-├── executor.py          # Reactive loop + environment escalation
-├── action_parser.py     # LLM response → browser action
+├── executor.py          # Reactive loop + multi-action + compaction + secrets
+├── action_parser.py     # LLM response → browser actions (incl. SEARCH_PAGE, FIND)
 ├── config.py            # All settings
 ├── dom/                 # Page reading (ARIA tree + raw DOM fallback)
 ├── browser/             # Camoufox/Chromium, anti-detection, proxy, consent, forms
@@ -319,6 +342,8 @@ Built on top of these projects:
 - [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) — patched Chromium (optional)
 - [Playwright](https://github.com/microsoft/playwright) — browser automation framework
 - [httpx](https://github.com/encode/httpx) — HTTP client for LLM API calls
+
+Inspired by [browser-use](https://github.com/browser-use/browser-use) — the leading open-source browser agent. Fantoma v0.5 adopted several of their patterns: multi-action batching per LLM call, paint-order DOM filtering via `elementFromPoint()`, free JS-based page search tools, history compaction for long tasks, and credential placeholder injection. These patterns were reimplemented from scratch to fit Fantoma's code-first architecture.
 
 ## License
 
