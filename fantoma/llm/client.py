@@ -46,12 +46,11 @@ class LLMClient:
             if models:
                 self._resolved_model = models[0].get("id", "auto")
             else:
-                # No models loaded yet — try "auto" and let the server handle it
-                self._resolved_model = "auto"
-                return self._resolved_model  # Don't cache — retry next time
+                # No models loaded yet — don't cache, retry next call
+                return "auto"
         except (httpx.HTTPError, KeyError, IndexError):
-            self._resolved_model = "auto"
-            return self._resolved_model  # Don't cache
+            # Resolution failed — don't cache, retry next call
+            return "auto"
 
         return self._resolved_model
 
