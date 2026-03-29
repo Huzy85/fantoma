@@ -185,42 +185,67 @@ class Agent:
 
     def login(self, url: str, email: str = "", username: str = "", password: str = "",
               first_name: str = "", last_name: str = "") -> AgentResult:
-        """Log into a site without using the LLM.
+        """Log into a site. Tries saved session first, falls back to full login.
 
-        Reads the accessibility tree, matches fields by label, fills credentials,
-        clicks submit. Handles multi-step flows (email → Next → password → Login).
-
-        Uses FormMemory to learn from past visits — when hardcoded labels don't
-        match, the database provides hints from previous successful logins.
+        Full pipeline: saved cookies → form fill → CAPTCHA → submit →
+        email verification → post-verify login-back → save session.
 
         Args:
-            url: Login page URL
+            url: Login/signup page URL
             email: Email address
-            username: Username (also used for verification challenges)
+            username: Username
             password: Password
+            first_name: First name (signup forms)
+            last_name: Last name (signup forms)
 
         Returns:
             AgentResult with success status and login details.
         """
-        from fantoma.browser.form_login import login as form_login
+        from fantoma.browser.form_login import login as form_login, _looks_logged_in
         from fantoma.browser.form_memory import FormMemory
         from fantoma.dom.accessibility import AccessibilityExtractor
+        from fantoma.session import SessionManager
         from urllib.parse import urlparse
         from uuid import uuid4
 
-        log.info("Login: %s (email=%s)", url, email[:3] + "***" if email else "none")
+        account = email or username or "default"
+        domain = urlparse(url).netloc
+        log.info("Login: %s (account=%s)", url, account[:20])
 
+        sessions = SessionManager()
         memory = FormMemory()
         visit_id = uuid4().hex
-        domain = urlparse(url).netloc
 
+        # ── Step 1: Try saved session ──────────────────────────
+        saved = sessions.load(domain, account)
+        if saved:
+            log.info("Found saved session for %s — validating", domain)
+            try:
+                browser = self._make_browser()
+                browser.start()
+                browser.load_storage_state(saved["storage_state"])
+                browser.navigate(saved.get("login_url", url))
+                time.sleep(3)
+                page = browser.get_page()
+                if _looks_logged_in(page, page.url, url):
+                    log.info("Saved session valid — already logged in")
+                    browser.stop()
+                    memory.close()
+                    return AgentResult(success=True, data={"url": page.url, "from_session": True}, steps_taken=0)
+                log.info("Saved session expired — proceeding with full login")
+                sessions.delete(domain, account)
+                browser.stop()
+            except Exception as e:
+                log.warning("Session validation failed: %s", e)
+                sessions.delete(domain, account)
+                try:
+                    browser.stop()
+                except Exception:
+                    pass
+
+        # ── Steps 2-4: Full login flow ─────────────────────────
         try:
-            browser = BrowserEngine(
-                headless=self.config.browser.headless,
-                profile_dir=self.config.browser.profile_dir,
-                proxy=self._proxy,
-                browser_engine=self.config.browser.browser_engine,
-            )
+            browser = self._make_browser()
             browser.start()
         except Exception as e:
             log.error("Browser start failed: %s", e)
@@ -250,79 +275,94 @@ class Agent:
                 llm=self._llm,
             )
 
-            # Handle email verification if needed
+            page = browser.get_page()
+
+            # ── Step 4: Check if already logged in ─────────────
+            if result.get("success") and _looks_logged_in(page, page.url, url):
+                log.info("Login successful after form fill")
+                self._save_session(sessions, browser, domain, account, url)
+                memory.record_visit(domain, True)
+                memory.close()
+                browser.stop()
+                return AgentResult(success=True, data=result, steps_taken=result.get("steps", 0))
+
+            # ── Step 5: Email verification ─────────────────────
             if result.get("verification_needed"):
                 vtype = result["verification_needed"]
                 log.info("Verification needed: %s", vtype)
-                code = self._get_verification(vtype, domain)
-                if code and vtype == "code":
-                    # Type the code into the verification field on the page
-                    from fantoma.browser.actions import type_into
-                    page = browser.get_page()
-                    typed = False
+                value = self._get_verification(vtype, domain)
 
-                    # Strategy 1: find textbox via ARIA tree
-                    post_tree = dom.extract(page)
-                    post_elements = dom._last_interactive
-                    for el in post_elements:
-                        if el.get("role") in ("textbox", "input"):
-                            handle = dom.get_element_by_index(page, el["index"])
-                            if handle:
-                                type_into(browser, handle, code)
-                                typed = True
-                                break
+                if value and vtype == "code":
+                    self._enter_verification_code(browser, dom, value)
+                elif value and vtype == "link":
+                    browser.navigate(value)
+                    time.sleep(5)
 
-                    # Strategy 2: find input via raw DOM (OTP fields, code inputs)
-                    if not typed:
-                        try:
-                            handle = page.query_selector(
-                                'input[type="text"], input[type="number"], '
-                                'input[type="tel"], input:not([type])[autocomplete*="one-time"], '
-                                'input[name*="code"], input[name*="otp"], '
-                                'input[name*="token"], input[name*="verify"], '
-                                'input[placeholder*="code"], input[placeholder*="Code"]'
-                            )
-                            if handle and handle.is_visible():
-                                type_into(browser, handle, code)
-                                typed = True
-                        except Exception as e:
-                            log.debug("Raw DOM code input search: %s", e)
-
-                    # Strategy 3: find any visible, empty, focused-looking input
-                    if not typed:
-                        try:
-                            inputs = page.query_selector_all('input[type="text"], input[type="number"], input[type="tel"], input:not([type])')
-                            for inp in inputs:
-                                if inp.is_visible() and inp.get_attribute("value") in ("", None):
-                                    type_into(browser, inp, code)
-                                    typed = True
-                                    break
-                        except Exception as e:
-                            log.debug("Fallback code input search: %s", e)
-
-                    if typed:
-                        log.info("Entered verification code: %s", code[:2] + "****")
-                        page.keyboard.press("Enter")
-                        time.sleep(5)
-                        result["success"] = True
-                        result["verification_completed"] = True
-                    else:
-                        log.warning("Could not find verification code input on page")
-
-                elif code and vtype == "link":
-                    browser.navigate(code)
+                # Step 5b: Check verification accepted
+                if value:
                     time.sleep(3)
-                    result["success"] = True
-                    result["verification_completed"] = True
+                    page = browser.get_page()
+                    try:
+                        post_body = page.inner_text("body")[:2000].lower()
+                    except Exception:
+                        post_body = ""
 
-            memory.record_visit(domain, result.get("success", False))
+                    error_signals = ["invalid code", "incorrect code", "expired",
+                                     "try again", "wrong code", "invalid link"]
+                    if any(s in post_body for s in error_signals):
+                        log.warning("Verification rejected — error detected on page")
+                        memory.record_visit(domain, False)
+                        memory.close()
+                        browser.stop()
+                        return AgentResult(success=False, data=result,
+                                           steps_taken=result.get("steps", 0),
+                                           error="Verification code/link rejected")
 
-            return AgentResult(
-                success=result["success"],
-                data=result,
-                steps_taken=result["steps"],
-                error="" if result["success"] else "Login not confirmed",
+            # ── Step 6: Post-verification check ────────────────
+            page = browser.get_page()
+            if _looks_logged_in(page, page.url, url):
+                log.info("Logged in after verification")
+                self._save_session(sessions, browser, domain, account, url)
+                memory.record_visit(domain, True)
+                memory.close()
+                browser.stop()
+                return AgentResult(success=True, data=result, steps_taken=result.get("steps", 0))
+
+            # Not logged in — try login-back with same credentials
+            log.info("Not logged in after verification — attempting login-back")
+            browser.navigate(url)
+            time.sleep(3)
+
+            login_result = form_login(
+                browser=browser,
+                dom_extractor=dom,
+                email=email,
+                username=username,
+                password=password,
+                memory=memory,
+                visit_id=visit_id + "_loginback",
+                config=self.config,
+                llm=self._llm,
             )
+
+            # ── Step 7: Final check ────────────────────────────
+            page = browser.get_page()
+            if _looks_logged_in(page, page.url, url):
+                log.info("Login-back successful")
+                self._save_session(sessions, browser, domain, account, url)
+                memory.record_visit(domain, True)
+                memory.close()
+                browser.stop()
+                return AgentResult(success=True, data=login_result, steps_taken=login_result.get("steps", 0))
+
+            log.warning("Login failed — not logged in after all attempts")
+            memory.record_visit(domain, False)
+            memory.close()
+            browser.stop()
+            return AgentResult(success=False, data=login_result,
+                               steps_taken=login_result.get("steps", 0),
+                               error="Login not confirmed after verification + login-back")
+
         except Exception as e:
             log.error("Login failed: %s", e)
             return AgentResult(success=False, error=str(e))
@@ -332,6 +372,72 @@ class Agent:
             except Exception:
                 pass
             memory.close()
+
+    def _make_browser(self) -> BrowserEngine:
+        """Create a BrowserEngine with current config."""
+        return BrowserEngine(
+            headless=self.config.browser.headless,
+            profile_dir=self.config.browser.profile_dir,
+            proxy=self._proxy,
+            trace=self.config.browser.trace,
+            browser_engine=self.config.browser.browser_engine,
+        )
+
+    def _save_session(self, sessions, browser, domain, account, login_url):
+        """Save browser state to session manager."""
+        try:
+            state = browser.get_storage_state()
+            sessions.save(domain, account, state, login_url)
+        except Exception as e:
+            log.warning("Failed to save session: %s", e)
+
+    def _enter_verification_code(self, browser, dom, code):
+        """Find the verification code input on the page and type the code."""
+        from fantoma.browser.actions import type_into
+        page = browser.get_page()
+
+        # Strategy 1: ARIA tree textbox
+        dom.extract(page)
+        for el in dom._last_interactive:
+            if el.get("role") in ("textbox", "input"):
+                handle = dom.get_element_by_index(page, el["index"])
+                if handle:
+                    type_into(browser, handle, code)
+                    page.keyboard.press("Enter")
+                    log.info("Entered verification code via ARIA textbox")
+                    return
+
+        # Strategy 2: raw DOM selectors for code/OTP inputs
+        selectors = [
+            'input[name*="code"]', 'input[name*="otp"]', 'input[name*="token"]',
+            'input[name*="verify"]', 'input[placeholder*="code"]',
+            'input[placeholder*="Code"]', 'input[autocomplete*="one-time"]',
+            'input[type="text"]', 'input[type="number"]', 'input[type="tel"]',
+        ]
+        for sel in selectors:
+            try:
+                handle = page.query_selector(sel)
+                if handle and handle.is_visible():
+                    type_into(browser, handle, code)
+                    page.keyboard.press("Enter")
+                    log.info("Entered verification code via selector: %s", sel)
+                    return
+            except Exception:
+                continue
+
+        # Strategy 3: any visible empty input
+        try:
+            inputs = page.query_selector_all('input[type="text"], input[type="number"], input[type="tel"], input:not([type])')
+            for inp in inputs:
+                if inp.is_visible() and inp.get_attribute("value") in ("", None):
+                    type_into(browser, inp, code)
+                    page.keyboard.press("Enter")
+                    log.info("Entered verification code via fallback empty input")
+                    return
+        except Exception:
+            pass
+
+        log.warning("Could not find verification code input on page")
 
     def _get_verification(self, vtype, domain):
         """Get verification code/link. Priority: IMAP → callback → terminal → None."""
