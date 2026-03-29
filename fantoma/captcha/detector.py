@@ -28,21 +28,32 @@ class CaptchaDetector:
 
     def detect(self, page) -> dict | None:
         """Check page for CAPTCHA. Returns {"type": "recaptcha", "element": ...} or None."""
-        # Check for specific CAPTCHA elements (not raw HTML — avoids false positives
-        # from comments, scripts, and API references like Wikipedia's MediaWiki)
+        # Check for type-specific elements first (class, id, src, iframe) — NOT
+        # data-sitekey, which is shared across reCAPTCHA/hCaptcha/Turnstile and
+        # would match whichever type we check first.
         for captcha_type, signatures in CAPTCHA_SIGNATURES.items():
             for sig in signatures:
-                # Look for actual elements with these signatures (class, id, src, data attributes)
                 try:
                     element = page.query_selector(
                         f'[class*="{sig}"], [id*="{sig}"], [src*="{sig}"], '
-                        f'[data-sitekey], iframe[src*="{sig}"]'
+                        f'iframe[src*="{sig}"]'
                     )
                     if element:
                         log.info("Detected %s CAPTCHA (element found)", captcha_type)
                         return {"type": captcha_type, "signature": sig}
                 except Exception:
                     pass
+
+        # Fallback: data-sitekey present but no type-specific match above.
+        # Disambiguate by checking which provider's scripts/iframes are on the page.
+        try:
+            has_sitekey = page.query_selector('[data-sitekey]')
+            if has_sitekey:
+                resolved = self._resolve_sitekey_type(page)
+                log.info("Detected %s CAPTCHA (via data-sitekey fallback)", resolved)
+                return {"type": resolved, "signature": "data-sitekey"}
+        except Exception:
+            pass
 
         # Check for Cloudflare challenge page (visible text indicators)
         try:
@@ -54,6 +65,32 @@ class CaptchaDetector:
             pass
 
         return None
+
+    def _resolve_sitekey_type(self, page) -> str:
+        """Determine CAPTCHA type when only a data-sitekey element is present.
+
+        Checks for provider-specific scripts and iframes to disambiguate.
+        Falls back to 'recaptcha' if nothing else matches.
+        """
+        try:
+            provider = page.evaluate("""() => {
+                if (document.querySelector('script[src*="hcaptcha.com"]')
+                    || document.querySelector('iframe[src*="hcaptcha.com"]'))
+                    return 'hcaptcha';
+                if (document.querySelector('script[src*="challenges.cloudflare.com"]')
+                    || document.querySelector('iframe[src*="challenges.cloudflare.com"]'))
+                    return 'turnstile';
+                if (document.querySelector('script[src*="recaptcha"]')
+                    || document.querySelector('script[src*="google.com/recaptcha"]')
+                    || document.querySelector('iframe[src*="recaptcha"]'))
+                    return 'recaptcha';
+                return null;
+            }""")
+            if provider:
+                return provider
+        except Exception:
+            pass
+        return "recaptcha"
 
     def is_blocked(self, page) -> bool:
         """Check if the page shows a block/challenge page (Cloudflare, DataDome, etc.)."""

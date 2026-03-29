@@ -5,9 +5,11 @@ Sites load CAPTCHAs in different ways:
   2. Iframe: <iframe src="...recaptcha...?k=SITEKEY"> (Reddit, most sites)
   3. JS globals: window.___grecaptcha_cfg or similar config objects
 
-This module tries all three in order and returns the first key found.
+CAPTCHAs are third-party iframes that load after the page itself, so
+extraction retries with a backoff until the widget appears.
 """
 import logging
+import time
 
 log = logging.getLogger("fantoma.captcha")
 
@@ -57,16 +59,8 @@ _JS_GLOBALS = {
 }
 
 
-def extract_sitekey(page, captcha_type: str) -> str | None:
-    """Try multiple strategies to find the CAPTCHA sitekey on the page.
-
-    Args:
-        page: Playwright page object.
-        captcha_type: One of 'recaptcha', 'hcaptcha', 'turnstile'.
-
-    Returns:
-        Sitekey string or None if not found.
-    """
+def _try_extract_sitekey(page, captcha_type: str) -> str | None:
+    """Single-pass extraction across all three strategies."""
     # Strategy 1: data-sitekey attribute (inline)
     try:
         key = page.evaluate("""() => {
@@ -110,7 +104,51 @@ def extract_sitekey(page, captcha_type: str) -> str | None:
         except Exception as e:
             log.debug("JS global sitekey extraction failed: %s", e)
 
-    log.warning("Could not extract %s sitekey from page", captcha_type)
+    return None
+
+
+def extract_sitekey(page, captcha_type: str, max_wait: float = 10.0) -> str | None:
+    """Try multiple strategies to find the CAPTCHA sitekey, retrying as it loads.
+
+    CAPTCHAs are third-party widgets that load after the main page. This
+    retries extraction with increasing delays (0.5s → 1s → 2s → 2s → ...)
+    up to max_wait seconds total.
+
+    Args:
+        page: Playwright page object.
+        captcha_type: One of 'recaptcha', 'hcaptcha', 'turnstile'.
+        max_wait: Maximum seconds to wait for the CAPTCHA to appear.
+
+    Returns:
+        Sitekey string or None if not found.
+    """
+    # First try — immediate, no delay
+    key = _try_extract_sitekey(page, captcha_type)
+    if key:
+        return key
+
+    # Retry with backoff: 0.5, 1.0, 2.0, 2.0, 2.0 ...
+    delays = [0.5, 1.0, 2.0]
+    elapsed = 0.0
+    attempt = 0
+
+    while elapsed < max_wait:
+        delay = delays[attempt] if attempt < len(delays) else 2.0
+        if elapsed + delay > max_wait:
+            delay = max_wait - elapsed
+            if delay < 0.1:
+                break
+        log.debug("Waiting %.1fs for %s widget to load (%.1fs elapsed)", delay, captcha_type, elapsed)
+        time.sleep(delay)
+        elapsed += delay
+        attempt += 1
+
+        key = _try_extract_sitekey(page, captcha_type)
+        if key:
+            log.info("Sitekey found after %.1fs wait", elapsed)
+            return key
+
+    log.warning("Could not extract %s sitekey after %.1fs", captcha_type, elapsed)
     return None
 
 

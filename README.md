@@ -114,15 +114,28 @@ books = agent.extract(
 )
 
 # Python: multi-tab session (signup + email verification)
-from fantoma.browser.verification import extract_verification_code
+# Automatic email verification (IMAP polling)
+agent = Agent(
+    llm_url="http://localhost:8080/v1",
+    email_imap={
+        "host": "127.0.0.1", "port": 1143,
+        "user": "me@example.com", "password": "bridge-pass",
+        "security": "starttls",
+    },
+)
+result = agent.login("https://example.com/register",
+                     email="me@example.com", password="SecurePass123!")
+# If the site sends a verification email, Fantoma polls IMAP,
+# extracts the code/link, and completes verification automatically.
 
+# Manual multi-tab verification (no IMAP needed)
 with agent.session("https://example.com/register") as s:
     s.act("Type 'user@email.com' in the email field")
     s.act("Click Sign Up")
 
     s.new_tab("https://mail.example.com", name="email")
     s.act("Open the verification email")
-    code = extract_verification_code(s._browser.get_page())  # Regex, no LLM
+    code = s.extract("Get the verification code")
 
     s.switch_tab("main")
     s.act(f"Type '{code}' in the verification field")
@@ -165,16 +178,16 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | Small model misses buttons | Add escalation to a cloud API for hard steps |
 | Form not filled | Check `fantoma logs --trace` for debug data |
 | Login fields invisible | Fantoma falls back to raw DOM — check trace for details |
-| LLM says DONE without acting | Upgrade to v0.2.0 — prompt fix included |
+| LLM says DONE without acting | Upgrade to v0.4.0 — prompt fix included |
 
 ## Test Results
 
-Tested across 27 real sites with 6 different LLMs. 130+ unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+Tested across 27 real sites with 6 different LLMs. 155 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 <details>
 <summary>Detailed test breakdown</summary>
 
-**Login/signup tests (v0.3.0, code path + LLM brain):**
+**Login/signup tests (v0.4.0, code path + LLM brain):**
 
 | Site | Type | Fields Filled | Result |
 |------|------|---------------|--------|
@@ -194,7 +207,7 @@ Tested across 27 real sites with 6 different LLMs. 130+ unit tests. Passed finge
 | Clerk | Signup | Email, Password | All filled |
 | Wandb | Signup | Email, Password | All filled |
 
-**27 sites tested total, zero bot detections, zero form failures on v0.3.**
+**27 sites tested total, zero bot detections, zero form failures on v0.4.**
 
 **Overnight stress test (7 hours, 3 cloud APIs):**
 
@@ -238,6 +251,8 @@ Agent(
     max_steps=50,                        # Max actions before giving up
     trace=False,                         # Save Playwright debug traces
     browser="camoufox",                  # Or "chromium" (pip install fantoma[chromium])
+    email_imap=None,                     # {"host": ..., "port": 993, "user": ..., "password": ..., "security": "ssl"}
+    verification_callback=None,          # callable(domain, message) → code/link string
 )
 ```
 
@@ -270,6 +285,7 @@ fantoma/
 ├── dom/                 # Page reading (ARIA tree + raw DOM fallback)
 ├── browser/             # Camoufox/Chromium, anti-detection, proxy, consent, forms
 │   ├── form_login.py    # LLM-free login/signup (label matching + raw DOM)
+│   ├── email_verify.py  # IMAP polling — extracts codes and verify links
 │   ├── form_memory.py   # SQLite — learns from every login page
 │   ├── fingerprint.py   # Anti-detection self-test (7 checks)
 │   ├── engine.py        # Browser lifecycle (Camoufox + Patchright)
