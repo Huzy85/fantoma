@@ -47,6 +47,10 @@ class Executor:
         self._completed_steps: list[str] = []
         self._consecutive_failures = 0
         self._env_level = 1
+        self._step_history: list[str] = []
+        self._compacted_memory: str = ""
+        self._compact_threshold = 30
+        self._compact_keep_recent = 6
 
     # ── Plan-based execution ──────────────────────────────────────
 
@@ -254,6 +258,11 @@ class Executor:
             # Ask LLM for next action(s)
             failed = self.memory.get_failed_actions(dom_hash)
             user_msg = f"Task: {task}\n\n{dom_text}"
+            if self._compacted_memory:
+                user_msg += f"\n\n[Previous progress (unverified summary):\n{self._compacted_memory}]"
+            if self._step_history:
+                recent = "\n".join(f"  {s}" for s in self._step_history[-self._compact_keep_recent:])
+                user_msg += f"\n\nRecent steps:\n{recent}"
             if failed:
                 user_msg += f"\n\nFailed (don't repeat): {', '.join(failed)}"
 
@@ -350,6 +359,11 @@ class Executor:
                     log.info("Step %d: no visible change", step_num)
                     self._consecutive_failures += 1
                     self._maybe_escalate()
+
+            # Record step for history tracking
+            if actions_batch:
+                self._step_history.append(actions_batch[0][:60])
+                self._compact_history()
 
             if done_signalled:
                 return AgentResult(
@@ -531,6 +545,35 @@ class Executor:
             return True
 
         return False
+
+    def _compact_history(self):
+        """Summarize old step history when it gets too long.
+        Keeps the last N steps verbatim, summarizes the rest via one LLM call.
+        Prevents context window overflow on long tasks (50+ steps).
+        """
+        if len(self._step_history) < self._compact_threshold:
+            return
+
+        from fantoma.llm.prompts import COMPACTION_SYSTEM
+
+        old_steps = self._step_history[:-self._compact_keep_recent]
+        recent_steps = self._step_history[-self._compact_keep_recent:]
+
+        history_text = "\n".join(f"Step {i+1}: {s}" for i, s in enumerate(old_steps))
+
+        try:
+            summary = self.llm.chat(
+                [{"role": "system", "content": COMPACTION_SYSTEM},
+                 {"role": "user", "content": f"Steps completed so far:\n{history_text}"}],
+                max_tokens=300,
+            )
+            if summary:
+                self._compacted_memory = summary.strip()
+                self._step_history = recent_steps
+                log.info("History compacted: %d steps → summary + %d recent",
+                         len(old_steps), len(recent_steps))
+        except Exception as e:
+            log.warning("History compaction failed: %s", e)
 
     @staticmethod
     def _task_wants_login(task, dom_text):
