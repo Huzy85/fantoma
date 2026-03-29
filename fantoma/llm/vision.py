@@ -1,7 +1,6 @@
 """Optional vision fallback for when DOM extraction is insufficient."""
 
 import base64
-from typing import Optional
 
 from fantoma.llm.client import LLMClient
 
@@ -32,7 +31,7 @@ class VisionFallback:
             }
         ]
 
-    def describe_page(self, screenshot_bytes: bytes) -> Optional[str]:
+    def describe_page(self, screenshot_bytes: bytes) -> str | None:
         """Send a screenshot to a vision LLM and get a text description.
 
         Args:
@@ -57,7 +56,7 @@ class VisionFallback:
 
     def find_element(
         self, screenshot_bytes: bytes, description: str
-    ) -> Optional[str]:
+    ) -> str | None:
         """Ask the vision LLM to locate a specific element in a screenshot.
 
         Args:
