@@ -283,6 +283,9 @@ class Executor:
         _login_attempted = False
 
         for step_num in range(1, self.config.resilience.max_steps + 1):
+            # Refresh page reference — browser restarts (level 3 escalation) or
+            # popup handling in engine.py replace self._page between iterations.
+            page = self.browser.get_page()
             dismiss_consent(page, timeout=self.config.timeouts.consent_dismiss)
             self.captcha.handle(page, self.browser.screenshot)
 
@@ -438,7 +441,8 @@ class Executor:
                         steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
                         log.warning("Step %d: TYPE failed — element not found or not typeable", step_num)
                         self._consecutive_failures += 1
-                        self._maybe_escalate()
+                        if self._maybe_escalate():
+                            break  # browser restarted — page ref stale, restart step loop
                     continue
 
                 # NAVIGATE: wait for load, then terminate batch (page changed)
@@ -456,7 +460,8 @@ class Executor:
                     steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
                     log.warning("Step %d: action failed to execute", step_num)
                     self._consecutive_failures += 1
-                    self._maybe_escalate()
+                    if self._maybe_escalate():
+                        break  # browser restarted — page ref stale, restart step loop
                     continue
 
                 # CLICK and others: check page change
@@ -511,7 +516,8 @@ class Executor:
                 else:
                     log.info("Step %d: no visible change", step_num)
                     self._consecutive_failures += 1
-                    self._maybe_escalate()
+                    if self._maybe_escalate():
+                        break  # browser restarted — page ref stale, restart step loop
 
             # Observation masking: compact only when approaching context limit
             if actions_batch:
@@ -848,17 +854,25 @@ class Executor:
         )
         return bool(result.get("fields_filled"))
 
-    def _maybe_escalate(self):
-        """Escalate after 3+ consecutive failures — model first, then environment."""
+    def _maybe_escalate(self) -> bool:
+        """Escalate after 3+ consecutive failures — model first, then environment.
+
+        Returns True if a browser restart occurred (level 3 env escalation), so
+        the caller can break out of the action batch before using a stale page ref.
+        """
         if self._consecutive_failures < 3:
-            return
+            return False
         if self.escalation.can_escalate():
             new_endpoint = self.escalation.escalate()
             self.llm = LLMClient(base_url=new_endpoint, api_key=self.escalation.current_api_key())
             log.info("Escalated to %s after %d consecutive failures", new_endpoint, self._consecutive_failures)
             self._consecutive_failures = 0
+            return False
         elif self._try_env_escalation():
             self._consecutive_failures = 0
+            # Level 3 restarts the browser — page ref is now stale
+            return self._env_level >= 3
+        return False
 
     def _check_page_change(self, page, before, dom_hash: str, action: str, step_num: int) -> bool:
         """Wait for page to settle and check if it changed after an action."""

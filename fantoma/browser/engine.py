@@ -274,16 +274,13 @@ class BrowserEngine:
                 except Exception:
                     pass
 
-            # Clear the closed event loop reference so the next run creates
-            # a fresh one. Without this, asyncio.get_running_loop() returns
-            # the closed loop and Playwright crashes with "Event loop is closed".
+            # Clear the stale "running loop" reference left by Playwright's _sync_base.py.
+            # After playwright.stop() closes the loop, asyncio._set_running_loop() still
+            # holds a pointer to it. The next test's PlaywrightContextManager.__enter__()
+            # calls asyncio.get_running_loop() which returns the closed loop instead of
+            # raising RuntimeError, causing "Event loop is closed! Is Playwright stopped?".
             import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_closed():
-                    asyncio.set_event_loop(asyncio.new_event_loop())
-            except RuntimeError:
-                asyncio.set_event_loop(asyncio.new_event_loop())
+            asyncio._set_running_loop(None)
 
             self._page = None
             self._context = None

@@ -1,5 +1,24 @@
 # Fantoma Development Progress
 
+## Session 12: 2026-03-30 — Three Sequential-Test Bug Fixes
+
+### Summary
+Tracked down and fixed three bugs that prevented the 25-site live test suite from running reliably. Best result before stopping: tests 1–5 all passed (Guardian 15s, Reuters 30s, TechCrunch 61s, PyPI 29s, npm/npmcharts 88s).
+
+### Changes
+
+| # | Change | Files | What it does |
+|---|--------|-------|-------------|
+| 1 | asyncio running-loop fix | browser/engine.py | `stop()` now calls `asyncio._set_running_loop(None)` (not `set_event_loop`). Playwright's `_sync_base.py` leaves a stale pointer to the closed loop via `asyncio._set_running_loop()`. The next test's `PlaywrightContextManager.__enter__()` calls `asyncio.get_running_loop()`, finds the closed loop, and immediately errors with "Event loop is closed". Clearing the running-loop pointer (not the current-loop pointer) fixes this. Verified with 6 sequential browser sessions. |
+| 2 | Stale page reference after browser restart | fantoma/executor.py | `execute_reactive()` set `page` once before the step loop. Level-3 environment escalation calls `browser.restart_with_new_fingerprint()` which replaces `self._page`. Now: (a) `page` refreshed at top of every step loop iteration, (b) `_maybe_escalate()` returns `bool` signalling restart, (c) all 3 call sites `break` the action batch on `True`. |
+| 3 | DeepSeek response_format 400 error | fantoma/llm/client.py | `response_format` (JSON mode) was sent to all endpoints. DeepSeek and other cloud APIs return 400 "response_format type unavailable". Now only sent to local endpoints (`localhost` / `127.0.0.1`). |
+
+### Known Issues (not yet fixed)
+- SIGALRM + greenlet deadlock: when the 180s alarm fires inside a Playwright greenlet, `browser.stop()` hangs forever. Requires a timeout approach that doesn't use `signal.alarm` inside greenlets.
+- libxul.so SIGSEGV: Firefox 135.0.1-beta.24 crashes at offset `0x30a02e8` after many SIGKILL'd browser processes accumulate system state. Clears on reboot.
+
+---
+
 ## Session 11: 2026-03-30 — Event Loop Fix + Popups + Test Coverage Push
 
 ### Summary
