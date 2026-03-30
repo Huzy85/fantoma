@@ -1,5 +1,31 @@
 # Fantoma Development Progress
 
+## Session 11: 2026-03-30 — Event Loop Fix + Auto-Follow Popups
+
+### Summary
+Two fixes preparing v0.6 for merge: event loop crash on sequential `agent.run()` calls, and automatic popup/new tab handling.
+
+### Changes
+
+| # | Change | Files | What it does |
+|---|--------|-------|-------------|
+| 1 | Event loop fix | browser/engine.py, agent.py | `stop()` replaces closed asyncio event loop with fresh one. Removed 2s sleep workaround from agent.py retry. |
+| 2 | Auto-follow popups | browser/engine.py | `context.on("page")` listener auto-switches to popups/new tabs (OAuth, target="_blank"). Switches back on close. |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| fantoma/browser/engine.py | Added `_setup_popup_handling()`, event loop cleanup in `stop()` |
+| fantoma/agent.py | Removed 2-second sleep from retry workaround |
+| tests/test_popup_handling.py | **New** — 7 tests |
+
+### Test Count
+- Before: 365
+- After: 372
+
+---
+
 ## Session 10: 2026-03-30 — v0.6.0 Phase 3 (Competitive Edge Features)
 
 ### Summary
