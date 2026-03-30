@@ -140,3 +140,61 @@ def format_mutations(mutations: dict) -> str:
 
 def _empty_result() -> dict:
     return {"added": [], "removed": [], "changed_attrs": [], "text_changes": []}
+
+
+_DOM_STABLE_JS = """(args) => {
+    const timeout = args[0];
+    const debounce = args[1];
+    return new Promise((resolve) => {
+        let timer;
+        const timeoutId = setTimeout(() => {
+            if (observer) observer.disconnect();
+            resolve(false);
+        }, timeout);
+
+        const observer = new MutationObserver(() => {
+            clearTimeout(timer);
+            timer = setTimeout(() => {
+                observer.disconnect();
+                clearTimeout(timeoutId);
+                resolve(true);
+            }, debounce);
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            characterData: true
+        });
+
+        // Start debounce immediately (resolve if no mutations at all)
+        timer = setTimeout(() => {
+            observer.disconnect();
+            clearTimeout(timeoutId);
+            resolve(true);
+        }, debounce);
+    });
+}"""
+
+
+def wait_for_dom_stable(page, timeout: int = 5000, debounce: int = 300) -> bool:
+    """Wait until the DOM stops changing for `debounce` ms.
+
+    Uses a MutationObserver that resets a timer on every mutation.
+    Resolves True when DOM is stable, False on hard timeout.
+    Returns True on exception (assume navigation occurred).
+
+    Args:
+        page: Playwright page object
+        timeout: Hard timeout in ms (default 5000)
+        debounce: Quiet period in ms (default 300)
+
+    Returns:
+        True if DOM stabilized, False if hard timeout hit
+    """
+    try:
+        return page.evaluate(_DOM_STABLE_JS, [timeout, debounce])
+    except Exception as e:
+        log.debug("DOM stability wait failed: %s — assuming navigation", e)
+        return True
