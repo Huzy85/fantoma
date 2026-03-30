@@ -129,9 +129,8 @@ class Agent:
             )
             browser.start()
         except Exception as e:
-            # Retry once — Camoufox can leave stale event loops between runs
+            # Retry once for transient failures (resource contention, etc.)
             log.warning("Browser start failed (%s), retrying...", e)
-            time.sleep(2)
             try:
                 browser = BrowserEngine(
                     headless=self.config.browser.headless,
