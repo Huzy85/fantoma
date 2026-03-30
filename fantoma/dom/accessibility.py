@@ -29,6 +29,12 @@ SKIP_ROLES = {
     "img",  # Images without interaction
 }
 
+# ARIA landmark roles — tracked for parent-context grouping
+LANDMARK_ROLES = {
+    "form", "navigation", "region", "main", "banner",
+    "contentinfo", "complementary", "search",
+}
+
 # Defaults — overridden by ExtractionConfig when available
 MAX_ELEMENTS = 15
 MAX_HEADINGS = 25
@@ -257,7 +263,31 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
     interactive = []
     headings = []
 
+    # Landmark tracking: detect ARIA landmarks and tag child elements
+    current_landmark = None       # e.g. "form: Login"
+    landmark_indent = -1          # indent level of current landmark line
+
     for line in lines:
+        # Measure indent before parsing — needed for landmark scope tracking
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+
+        # Check if indent has dropped out of the current landmark scope
+        if current_landmark is not None and indent <= landmark_indent:
+            current_landmark = None
+            landmark_indent = -1
+
+        # Detect landmark roles from the raw line BEFORE _parse_aria_line
+        # Format: "- navigation "Main nav":" or "- form "Login":" (colon = has children)
+        landmark_match = re.match(r'^-\s+(\w+)(?:\s+"([^"]*)")?', stripped)
+        if landmark_match:
+            lm_role = landmark_match.group(1)
+            if lm_role in LANDMARK_ROLES:
+                lm_name = landmark_match.group(2) or ""
+                current_landmark = f"{lm_role}: {lm_name}" if lm_name else lm_role
+                landmark_indent = indent
+                continue  # Don't parse this line as an interactive element
+
         parsed = _parse_aria_line(line)
         if not parsed:
             continue
@@ -293,6 +323,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
                 "name": name,
                 "state": state,
                 "raw": parsed,
+                "_landmark": current_landmark,
             })
 
     # Form mode: override caps and sort inputs to the top
@@ -332,10 +363,35 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
         new_flags = mark_new_elements(previous_elements or [], shown)
 
         output.append(f"Elements ({len(shown)} of {len(interactive)}):")
+
+        # Group elements by landmark for output
+        groups = []  # list of (landmark_label, [(global_idx, el, new_flag)])
+        current_group_label = None
+        current_group_items = []
+
         for i, el in enumerate(shown):
-            prefix = "*" if new_flags[i] else ""
-            state = enrich_field_state(el) or el["state"]
-            output.append(f'{prefix}[{i}] {el["role"]} "{el["name"]}"{state}')
+            landmark = el.get("_landmark")
+            label = landmark if landmark else None
+            if label != current_group_label:
+                if current_group_items:
+                    groups.append((current_group_label, current_group_items))
+                current_group_label = label
+                current_group_items = []
+            current_group_items.append((i, el, new_flags[i]))
+
+        if current_group_items:
+            groups.append((current_group_label, current_group_items))
+
+        for label, items in groups:
+            if label:
+                output.append(f"\n[{label}]")
+            elif any(lbl is not None for lbl, _ in groups):
+                # Only show [Other] if there are landmark groups too
+                output.append("\n[Other]")
+            for idx, el, is_new in items:
+                prefix = "*" if is_new else ""
+                state = enrich_field_state(el) or el["state"]
+                output.append(f'{prefix}[{idx}] {el["role"]} "{el["name"]}"{state}')
     else:
         output.append("Elements: none found")
 
