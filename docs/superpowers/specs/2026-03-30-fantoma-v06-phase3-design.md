@@ -18,9 +18,12 @@ Four code-only features that close gaps identified through competitive analysis 
 Features 1 & 2 are independent and can be built in parallel. Feature 4 depends on neither. Feature 3 depends on Feature 4 (uses `assess_progress()` during cache replay validation).
 
 ```
-Feature 1 (Adaptive DOM Modes) ─┐
-                                 ├──► Feature 4 (Success Criteria) ──► Feature 3 (Cache + Self-Healing)
-Feature 2 (Parent-Context Labels)┘
+Feature 1 (Adaptive DOM Modes)   ─── independent ───┐
+Feature 2 (Parent-Context Labels) ── independent ───┤  all can build in parallel
+Feature 4 (Success Criteria)      ── independent ───┘
+                                          │
+                                          ▼
+Feature 3 (Cache + Self-Healing)  ── depends on Feature 4 (uses assess_progress)
 ```
 
 ---
