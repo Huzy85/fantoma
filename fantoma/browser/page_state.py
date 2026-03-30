@@ -130,3 +130,127 @@ def dom_hash(page) -> str:
         return hashlib.md5(body_text.encode()).hexdigest()[:12]
     except Exception:
         return "unknown"
+
+
+# ── Task intent inference and progress assessment ───────────────
+
+_AUTH_KEYWORDS = ("login", "sign in", "log in", "authenticate", "signin")
+_EXTRACT_KEYWORDS = ("extract", "scrape", "read", "copy", "get")
+_NAVIGATE_KEYWORDS = ("go to", "visit", "open", "navigate")
+
+_AUTH_URL_SEGMENTS = ("login", "signin", "sign-in", "sign_in", "authenticate", "auth")
+_SUBMIT_NAMES = ("submit", "sign in", "login", "log in", "send", "confirm", "register")
+
+
+def _infer_task_intent(task: str) -> str | None:
+    """Map a task description to an intent category.
+
+    Returns "auth", "extract", "navigate", or None.
+    Uses word-boundary matching to avoid false positives (e.g. "target" matching "get").
+    """
+    import re
+    task_lower = task.lower()
+    for kw in _AUTH_KEYWORDS:
+        if re.search(r'\b' + re.escape(kw) + r'\b', task_lower):
+            return "auth"
+    for kw in _EXTRACT_KEYWORDS:
+        if re.search(r'\b' + re.escape(kw) + r'\b', task_lower):
+            return "extract"
+    for kw in _NAVIGATE_KEYWORDS:
+        if re.search(r'\b' + re.escape(kw) + r'\b', task_lower):
+            return "navigate"
+    return None
+
+
+def assess_progress(page, action: str, task: str, dom_extractor,
+                    pre_url: str = None, action_element: dict = None) -> dict:
+    """Assess whether an action achieved its intent and whether the task is progressing.
+
+    Returns {"action_ok": bool, "progress_ok": bool|None, "reason": str}
+    """
+    import re
+
+    action_verb = action.strip().split()[0].upper() if action.strip() else ""
+    current_url = page.url
+    reasons = []
+
+    # ── Layer 1: Action-level verification ──────────────────────
+    action_ok = True  # default for unchecked actions
+
+    if action_verb == "TYPE":
+        # Read active element value, check typed text is present
+        match = re.search(r"""['"](.+?)['"]""", action)
+        typed_text = match.group(1) if match else ""
+        try:
+            value = page.evaluate("() => document.activeElement?.value || ''")
+        except Exception:
+            value = ""
+        action_ok = bool(typed_text and typed_text.lower() in (value or "").lower())
+        reasons.append(f"TYPE: value={'present' if action_ok else 'missing'}")
+
+    elif action_verb == "SELECT":
+        match = re.search(r"""['"](.+?)['"]""", action)
+        selected_text = match.group(1) if match else ""
+        try:
+            value = page.evaluate("() => document.activeElement?.value || ''")
+        except Exception:
+            value = ""
+        action_ok = bool(selected_text and selected_text.lower() in (value or "").lower())
+        reasons.append(f"SELECT: value={'present' if action_ok else 'missing'}")
+
+    elif action_verb == "CLICK":
+        url_changed = pre_url is not None and current_url != pre_url
+        if action_element:
+            role = (action_element.get("role") or "").lower()
+            name = (action_element.get("name") or "").lower()
+
+            is_submit = (role == "button" and
+                         any(sn in name for sn in _SUBMIT_NAMES))
+            is_link = role == "link"
+
+            if is_submit or is_link:
+                action_ok = url_changed
+                reasons.append(f"CLICK {'submit' if is_submit else 'link'}: URL {'changed' if url_changed else 'unchanged'}")
+            else:
+                reasons.append("CLICK: non-submit/link element")
+        else:
+            reasons.append("CLICK: no element info")
+
+    elif action_verb in ("SCROLL", "WAIT"):
+        action_ok = True
+        reasons.append(f"{action_verb}: auto-ok")
+    else:
+        reasons.append(f"{action_verb}: auto-ok")
+
+    # ── Layer 2: Task-level progress ────────────────────────────
+    intent = _infer_task_intent(task)
+    progress_ok = None
+
+    if intent == "auth":
+        # URL no longer contains login/signin/etc segments
+        url_lower = current_url.lower()
+        still_on_auth = any(seg in url_lower for seg in _AUTH_URL_SEGMENTS)
+        progress_ok = not still_on_auth
+        reasons.append(f"auth: {'left' if progress_ok else 'still on'} auth page")
+
+    elif intent == "extract":
+        try:
+            body_len = len(page.inner_text("body"))
+        except Exception:
+            body_len = 0
+        progress_ok = body_len > 200
+        reasons.append(f"extract: body {body_len} chars")
+
+    elif intent == "navigate":
+        if pre_url is not None:
+            progress_ok = current_url != pre_url
+            reasons.append(f"navigate: URL {'changed' if progress_ok else 'unchanged'}")
+        else:
+            progress_ok = None
+            reasons.append("navigate: no pre_url")
+
+    return {
+        "action_ok": action_ok,
+        "progress_ok": progress_ok,
+        "reason": "; ".join(reasons),
+    }
