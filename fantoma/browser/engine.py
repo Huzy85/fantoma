@@ -72,6 +72,7 @@ class BrowserEngine:
                 humanize=True,
                 os=["linux"],
                 proxy=proxy,
+                main_world_eval=True,
                 **stealth_config,
             )
             if screen:
@@ -90,6 +91,7 @@ class BrowserEngine:
                 humanize=True,
                 os=["linux"],
                 proxy=proxy,
+                main_world_eval=True,
                 **stealth_config,
             )
             if screen:

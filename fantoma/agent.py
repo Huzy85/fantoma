@@ -359,9 +359,10 @@ class Agent:
             memory.record_visit(domain, False)
             memory.close()
             browser.stop()
+            error_msg = result.get("errors", [""])[0] if result.get("errors") else "Login failed"
             return AgentResult(success=False, data=login_result,
                                steps_taken=login_result.get("steps", 0),
-                               error="Login not confirmed after verification + login-back")
+                               error=error_msg)
 
         except Exception as e:
             log.error("Login failed: %s", e)
