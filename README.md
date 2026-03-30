@@ -72,6 +72,10 @@ fantoma test         # Verify it works
 - **Iframe ARIA extraction** — payment forms, embedded logins, and consent dialogs inside iframes are now visible. Up to 5 iframes scanned per page.
 - **Adaptive DOM wait** — replaces fixed `network_idle` with a debounced MutationObserver. Waits until the DOM stops changing for 300ms, not until the network quiets. Faster on SPAs, more reliable on slow CDNs.
 - **Inline field state** — `aria-invalid`, `required`, current value, and error text shown directly in the element list. LLM sees `[3] textbox "Email" [invalid: "Please enter a valid email"]` instead of guessing why a submit failed.
+- **Adaptive DOM modes** — three extraction modes (form/content/navigate) inferred per step from task keywords and page state. Form mode boosts inputs to top with tighter caps. Content mode strips UI for scraping. Inspired by Agent-E's DOM distillation.
+- **ARIA landmark grouping** — interactive elements grouped under their nearest ARIA landmark (`[form: Login]`, `[navigation: Main nav]`). LLM sees structural context, not a flat list. Novel approach supported by LCoW (ICLR 2025) research.
+- **Per-step success criteria** — after every action, code verifies it worked (TYPE checks field value, CLICK checks URL/form). Task-level progress tracking detects stalls. Inspired by Skyvern 2.0's validator pattern.
+- **Self-healing selectors** — cached scripts survive page changes. When an element moves or gets renamed, fuzzy matching (difflib SequenceMatcher) finds it by role + name similarity. Inspired by Stagehand v3 and Healenium.
 
 ## Login & Signup (No LLM)
 
@@ -216,7 +220,7 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 
 ## Test Results
 
-Tested across 27 real sites with 6 different LLMs. 279 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+Tested across 27 real sites with 6 different LLMs. 365 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 <details>
 <summary>Detailed test breakdown</summary>
@@ -315,15 +319,15 @@ fantoma/
 ├── agent.py             # Public API (run, login, extract, session)
 ├── session.py           # Encrypted session persistence (cookies + localStorage)
 ├── cli.py               # CLI + interactive mode
-├── executor.py          # Reactive loop + observation masking + verification + secrets
+├── executor.py          # Reactive loop + DOM mode inference + cache replay + stall detection
 ├── action_parser.py     # LLM response → browser actions (incl. SEARCH_PAGE, FIND)
 ├── config.py            # All settings
 ├── dom/                 # Page reading (ARIA tree + raw DOM fallback)
-│   ├── accessibility.py # ARIA snapshot, smart pruning, tree diffing, dedup, field state
+│   ├── accessibility.py # ARIA snapshot, smart pruning, dedup, landmarks, adaptive modes
 │   └── frames.py        # Iframe ARIA extraction — elements from child frames
 ├── browser/             # Camoufox/Chromium, anti-detection, proxy, consent, forms
 │   ├── form_login.py    # LLM-free login/signup (label matching + raw DOM)
-│   ├── page_state.py    # Action verification + inline error detection
+│   ├── page_state.py    # Action verification + progress assessment + stall detection
 │   ├── observer.py      # MutationObserver change tracking + adaptive DOM wait
 │   ├── email_verify.py  # IMAP polling — extracts codes and verify links
 │   ├── form_memory.py   # SQLite — learns from every login page
@@ -331,7 +335,7 @@ fantoma/
 │   ├── engine.py        # Browser lifecycle (Camoufox + Patchright)
 │   └── ...              # consent, humanize, proxy, verification, actions
 ├── captcha/             # Detection + solving (PoW, API, human fallback)
-├── resilience/          # Action memory, checkpoints, escalation, script cache
+├── resilience/          # Action memory, checkpoints, escalation, script cache + self-healing
 └── llm/                 # OpenAI-compatible client, prompts
     └── structured.py    # JSON schema for action output, parse + validate
 ```
