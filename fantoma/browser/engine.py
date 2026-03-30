@@ -132,6 +132,9 @@ class BrowserEngine:
             except Exception:
                 pass  # Non-critical — works without these
 
+        # Auto-follow popups and new tabs
+        self._setup_popup_handling()
+
         # Start trace recording if enabled
         if self._trace and self._context:
             try:
@@ -175,7 +178,47 @@ class BrowserEngine:
                 _log.warning("Tracing not available: %s", e)
                 self._trace_active = False
 
+        # Auto-follow popups and new tabs
+        self._setup_popup_handling()
+
         _log.info("Chromium (Patchright) started, headless=%s", self.headless)
+
+    def _setup_popup_handling(self):
+        """Register listeners to auto-follow popups and new tabs.
+
+        When a site opens a new tab/popup (OAuth flow, target="_blank", payment page),
+        automatically switch _page to it. When the popup closes, switch back.
+        """
+        ctx = self._context
+        if not ctx:
+            return
+
+        def on_new_page(new_page):
+            try:
+                new_page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass  # Page may have already loaded or navigated away
+            self._previous_page = self._page
+            self._page = new_page
+            _log.info("Auto-switched to new tab: %s", new_page.url)
+
+            def on_close():
+                if self._page is new_page and self._previous_page:
+                    try:
+                        # Verify the previous page is still open
+                        _ = self._previous_page.url
+                        self._page = self._previous_page
+                        _log.info("Popup closed, switched back to: %s", self._page.url)
+                    except Exception:
+                        # Previous page was also closed — use last remaining
+                        remaining = ctx.pages
+                        if remaining:
+                            self._page = remaining[-1]
+
+            new_page.on("close", lambda: on_close())
+
+        ctx.on("page", on_new_page)
+        self._previous_page = None
 
     def stop(self):
         """Close browser gracefully."""
