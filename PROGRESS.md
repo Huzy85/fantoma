@@ -1,28 +1,24 @@
 # Fantoma Development Progress
 
-## Session 11: 2026-03-30 — Event Loop Fix + Auto-Follow Popups
+## Session 11: 2026-03-30 — Event Loop Fix + Popups + Test Coverage Push
 
 ### Summary
-Two fixes preparing v0.6 for merge: event loop crash on sequential `agent.run()` calls, and automatic popup/new tab handling.
+Event loop crash fix, automatic popup/new tab handling, and 136 new unit tests covering previously untested core modules. 508 total tests.
 
 ### Changes
 
 | # | Change | Files | What it does |
 |---|--------|-------|-------------|
-| 1 | Event loop fix | browser/engine.py, agent.py | `stop()` replaces closed asyncio event loop with fresh one. Removed 2s sleep workaround from agent.py retry. |
+| 1 | Event loop fix | browser/engine.py, agent.py | `stop()` replaces closed asyncio event loop with fresh one. Removed 2s sleep workaround. |
 | 2 | Auto-follow popups | browser/engine.py | `context.on("page")` listener auto-switches to popups/new tabs (OAuth, target="_blank"). Switches back on close. |
-
-### Files Changed
-
-| File | Change |
-|------|--------|
-| fantoma/browser/engine.py | Added `_setup_popup_handling()`, event loop cleanup in `stop()` |
-| fantoma/agent.py | Removed 2-second sleep from retry workaround |
-| tests/test_popup_handling.py | **New** — 7 tests |
+| 3 | Action parser tests | tests/test_action_parser.py | 55 tests: normalize_action + execute_action for every action type |
+| 4 | Verification flow tests | tests/test_verification_flow.py | 30 tests: _get_verification 3-tier fallback + _enter_verification_code |
+| 5 | Form assist tests | tests/test_form_assist.py | 23 tests: after_type, _try_autocomplete, _try_form_submit |
+| 6 | Executor logic tests | tests/test_executor_logic.py | 28 tests: _compact_history, _page_likely_has_answer, _task_wants_login, _check_page_change, _maybe_escalate |
 
 ### Test Count
 - Before: 365
-- After: 372
+- After: 508
 
 ---
 
