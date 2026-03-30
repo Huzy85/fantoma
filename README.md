@@ -67,6 +67,11 @@ fantoma test         # Verify it works
 - **Tree diffing** — new elements (from dropdowns, modals, next form steps) marked with `*` prefix so the LLM sees what just appeared.
 - **Observation masking** — action outcomes kept verbatim, old DOM snapshots dropped. LLM compaction only kicks in at 40% of context window. Most tasks use zero compaction calls.
 - **Script caching** — after a successful task, saves the action sequence to SQLite. Next time, replays without any LLM calls. Falls back to LLM if the page changed.
+- **Structured JSON output** — LLM returns `{"actions": [...]}` instead of free text. Schema-constrained via `response_format`. Falls back to text parsing if JSON fails (backward-compatible with all models).
+- **DOM element deduplication** — removes repeated nav/footer/header elements before the LLM sees them. Sites repeat the same links in three places; Fantoma shows each once.
+- **Iframe ARIA extraction** — payment forms, embedded logins, and consent dialogs inside iframes are now visible. Up to 5 iframes scanned per page.
+- **Adaptive DOM wait** — replaces fixed `network_idle` with a debounced MutationObserver. Waits until the DOM stops changing for 300ms, not until the network quiets. Faster on SPAs, more reliable on slow CDNs.
+- **Inline field state** — `aria-invalid`, `required`, current value, and error text shown directly in the element list. LLM sees `[3] textbox "Email" [invalid: "Please enter a valid email"]` instead of guessing why a submit failed.
 
 ## Login & Signup (No LLM)
 
@@ -211,7 +216,7 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 
 ## Test Results
 
-Tested across 27 real sites with 6 different LLMs. 240 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+Tested across 27 real sites with 6 different LLMs. 279 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 <details>
 <summary>Detailed test breakdown</summary>
@@ -314,11 +319,12 @@ fantoma/
 ├── action_parser.py     # LLM response → browser actions (incl. SEARCH_PAGE, FIND)
 ├── config.py            # All settings
 ├── dom/                 # Page reading (ARIA tree + raw DOM fallback)
-│   └── accessibility.py # ARIA snapshot, smart pruning, tree diffing, dedup
+│   ├── accessibility.py # ARIA snapshot, smart pruning, tree diffing, dedup, field state
+│   └── frames.py        # Iframe ARIA extraction — elements from child frames
 ├── browser/             # Camoufox/Chromium, anti-detection, proxy, consent, forms
 │   ├── form_login.py    # LLM-free login/signup (label matching + raw DOM)
 │   ├── page_state.py    # Action verification + inline error detection
-│   ├── observer.py      # MutationObserver change tracking
+│   ├── observer.py      # MutationObserver change tracking + adaptive DOM wait
 │   ├── email_verify.py  # IMAP polling — extracts codes and verify links
 │   ├── form_memory.py   # SQLite — learns from every login page
 │   ├── fingerprint.py   # Anti-detection self-test (7 checks)
@@ -327,6 +333,7 @@ fantoma/
 ├── captcha/             # Detection + solving (PoW, API, human fallback)
 ├── resilience/          # Action memory, checkpoints, escalation, script cache
 └── llm/                 # OpenAI-compatible client, prompts
+    └── structured.py    # JSON schema for action output, parse + validate
 ```
 
 ## Example Scripts

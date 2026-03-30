@@ -1,5 +1,63 @@
 # Fantoma Development Progress
 
+## Session 9: 2026-03-30 — v0.6.0 Phase 2 (DOM Intelligence)
+
+### Summary
+Five code-only features that improve what the LLM sees and how reliably it communicates. Zero additional LLM calls. 39 new tests, 279 total passing.
+
+### New Features
+
+| # | Feature | Files | What it does |
+|---|---------|-------|-------------|
+| 1 | Structured JSON output | llm/structured.py (new), llm/client.py, executor.py | LLM returns `{"actions": [...]}` via JSON schema. Falls back to text parsing. Eliminates free-text parse failures. |
+| 2 | DOM element deduplication | dom/accessibility.py | Removes repeated nav/footer elements by (role, name, state) tuple before pruning. Sites repeat links 3x — LLM now sees each once. |
+| 3 | Iframe ARIA extraction | dom/frames.py (new), dom/accessibility.py | Payment forms, embedded logins, consent dialogs in iframes now visible. Up to 5 iframes per page, tagged with source frame. |
+| 4 | Adaptive DOM wait | browser/observer.py, executor.py | Debounced MutationObserver replaces fixed network_idle. Resolves when DOM quiet for 300ms. Faster on SPAs. |
+| 5 | Inline field state | dom/accessibility.py | `aria-invalid`, `required`, current value, error text shown inline. LLM sees `[3] textbox "Email" [invalid: "Please enter a valid email"]`. |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| fantoma/llm/structured.py | **New** — ACTION_SCHEMA, parse_structured(), get_response_format() |
+| fantoma/dom/frames.py | **New** — extract_frame_elements(), collect_all_frame_elements() |
+| fantoma/llm/client.py | Added `response_format` param to chat() |
+| fantoma/dom/accessibility.py | Added dedup_elements(), enrich_field_state(), iframe merge, _find_in_frame() |
+| fantoma/browser/observer.py | Added wait_for_dom_stable() |
+| fantoma/executor.py | Wired structured output + adaptive wait |
+| tests/test_structured.py | **New** — 12 tests |
+| tests/test_dedup.py | **New** — 7 tests |
+| tests/test_frames.py | **New** — 7 tests |
+| tests/test_adaptive_wait.py | **New** — 4 tests |
+| tests/test_field_state.py | **New** — 9 tests |
+
+### Test Count
+- Before: 240
+- After: 279
+
+### Credits
+- browser-use: structured JSON output design and DOM element deduplication pattern
+- MDN MutationObserver + Playwright issues: adaptive wait debounce approach
+- Playwright frames API: iframe enumeration and ARIA extraction
+
+---
+
+## Session 8: 2026-03-29 — v0.6.0 Phase 1 (Navigation Intelligence)
+
+### Summary
+Seven code-only features for better navigation and DOM intelligence. 240 tests passing, 7 commits.
+
+### New Features
+1. Action verification + error detection (page_state.py)
+2. Smart element pruning — relevance-based scoring (accessibility.py)
+3. MutationObserver change tracking (observer.py)
+4. Tree diffing — new elements marked with `*` (diff.py)
+5. Observation masking — action outcomes verbatim, old DOM dropped (executor.py)
+6. Script caching — replays successful sequences without LLM (resilience/)
+7. Reactive loop wiring of all above
+
+---
+
 ## Session 7: 2026-03-29 — v0.5.0 (Session Persistence, Agent Upgrades)
 
 ### Summary
