@@ -22,6 +22,50 @@ from fantoma.browser.observer import inject_observer, collect_mutations, format_
 
 log = logging.getLogger("fantoma.executor")
 
+# ── DOM mode inference ───────────────────────────────────────
+
+_FORM_KEYWORDS = {
+    "login", "sign in", "register", "checkout", "search",
+    "fill", "enter", "submit", "subscribe", "signup", "sign up",
+}
+
+_CONTENT_KEYWORDS = {
+    "extract", "read", "scrape", "copy", "get text",
+    "find information", "summarize",
+}
+
+
+def _infer_dom_mode(task: str, page, element_count: int) -> str:
+    """Infer the best DOM extraction mode for the current step.
+
+    Returns "form", "content", or "navigate".
+
+    Rules:
+      1. 5+ textboxes on page forces "form" (page state override).
+      2. Form keywords in task → "form".
+      3. Content keywords in task → "content".
+      4. Default → "navigate".
+
+    Re-evaluated every step — mode can change as the agent progresses.
+    """
+    task_lower = task.lower()
+
+    # Page state override: many textboxes = form page
+    if element_count >= 5:
+        return "form"
+
+    # Keyword matching: form keywords
+    for kw in _FORM_KEYWORDS:
+        if kw in task_lower:
+            return "form"
+
+    # Keyword matching: content keywords
+    for kw in _CONTENT_KEYWORDS:
+        if kw in task_lower:
+            return "content"
+
+    return "navigate"
+
 
 class Executor:
     """Orchestrates browser steps with DOM extraction, LLM action selection, and resilience."""
@@ -210,7 +254,15 @@ class Executor:
             dismiss_consent(page, timeout=self.config.timeouts.consent_dismiss)
             self.captcha.handle(page, self.browser.screenshot)
 
-            dom_text = self.dom.extract(page, task=task)
+            # Infer DOM mode: count textboxes from previous extraction
+            textbox_count = sum(
+                1 for el in self.dom._last_interactive
+                if el.get("role") in ("textbox", "combobox", "searchbox")
+            )
+            dom_mode = _infer_dom_mode(task, page, textbox_count)
+            log.debug("Step %d: DOM mode=%s (textboxes=%d)", step_num, dom_mode, textbox_count)
+
+            dom_text = self.dom.extract(page, task=task, mode=dom_mode)
             dom_hash = self.memory.hash_dom(dom_text)
 
             # Code-assisted form fill: if task involves login/signup and page
@@ -223,7 +275,7 @@ class Executor:
                         _login_attempted = True
                         steps_detail.append({"step": step_num, "action": "CODE_FORM_FILL", "success": True, "url": self.browser.get_url()})
                         # Re-read page after filling
-                        dom_text = self.dom.extract(page, task=task)
+                        dom_text = self.dom.extract(page, task=task, mode=dom_mode)
                         dom_hash = self.memory.hash_dom(dom_text)
                         continue
 
@@ -422,8 +474,12 @@ class Executor:
                     escalations=self.escalation.total_escalations,
                 )
 
-        # Hit max steps
-        dom_text = self.dom.extract(page, task=task)
+        # Hit max steps — re-infer mode for final extraction
+        textbox_count = sum(
+            1 for el in self.dom._last_interactive
+            if el.get("role") in ("textbox", "combobox", "searchbox")
+        )
+        dom_text = self.dom.extract(page, task=task, mode=_infer_dom_mode(task, page, textbox_count))
         data = self._extract_result(task, dom_text)
         return AgentResult(
             success=bool(data), data=data, steps_taken=self._total_actions,

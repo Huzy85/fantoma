@@ -223,14 +223,26 @@ def _parse_aria_line(line: str) -> dict | None:
     return result
 
 
-def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None) -> str:
+def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate") -> str:
     """Extract page content via ARIA accessibility tree.
 
     Returns a numbered element map similar to DOMExtractor but using
     ARIA roles and names instead of HTML tags and selectors.
 
+    Modes:
+      "navigate" — default, current behaviour unchanged.
+      "form" — inputs sorted first, max_elements=20, max_headings=5.
+      "content" — delegates to extract_aria_content() (text only, no numbered elements).
+
     This is what a screen reader sees — clean, structured, legally protected.
     """
+    if mode not in ("navigate", "form", "content"):
+        raise ValueError(f"Invalid mode: {mode!r} — expected 'navigate', 'form', or 'content'")
+
+    # Content mode: delegate entirely to the content extractor
+    if mode == "content":
+        return extract_aria_content(page)
+
     title = page.title()
     url = page.url
 
@@ -283,18 +295,36 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
                 "raw": parsed,
             })
 
+    # Form mode: override caps and sort inputs to the top
+    if mode == "form":
+        _max_el = max_elements or 20
+        _max_hd = max_headings or 5
+        # Sort: textbox/combobox/searchbox first, then others
+        input_roles = {"textbox", "combobox", "searchbox"}
+        inputs = [el for el in interactive if el["role"] in input_roles]
+        others = [el for el in interactive if el["role"] not in input_roles]
+        interactive = inputs + others
+    else:
+        _max_el = max_elements or MAX_ELEMENTS
+        _max_hd = max_headings or MAX_HEADINGS
+
     # Build output
     output = []
     output.append(f"Page: {title}")
     output.append(f"URL: {url}")
     output.append("")
 
-    _max_el = max_elements or MAX_ELEMENTS
-    _max_hd = max_headings or MAX_HEADINGS
-
     if interactive:
         interactive = dedup_elements(interactive)
-        if task:
+
+        # Form mode: sort again after dedup to keep inputs on top
+        if mode == "form":
+            input_roles = {"textbox", "combobox", "searchbox"}
+            inputs = [el for el in interactive if el["role"] in input_roles]
+            others = [el for el in interactive if el["role"] not in input_roles]
+            interactive = inputs + others
+
+        if task and mode != "form":
             shown = prune_elements(interactive, task, _max_el)
         else:
             shown = interactive[:_max_el]
@@ -419,11 +449,18 @@ class AccessibilityExtractor:
         self._max_elements = max_elements
         self._max_headings = max_headings
 
-    def extract(self, page, task: str = "") -> str:
-        """Extract page via ARIA tree. Falls back to DOM if empty."""
+    def extract(self, page, task: str = "", mode: str = "navigate") -> str:
+        """Extract page via ARIA tree. Falls back to DOM if empty.
+
+        mode: "navigate" (default), "form", or "content".
+        """
+        # Content mode: delegate to extract_content, no interactive caching needed
+        if mode == "content":
+            return self.extract_content(page)
+
         previous = list(self._last_interactive)  # copy before overwriting
         result = extract_aria(page, self._max_elements, self._max_headings,
-                              task=task, previous_elements=previous)
+                              task=task, previous_elements=previous, mode=mode)
         if not result or "Elements: none found" in result:
             log.debug("ARIA tree empty — falling back to DOM extraction")
             self._last_interactive = []
