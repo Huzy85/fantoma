@@ -69,6 +69,82 @@ class TestScriptCacheSaveAndLookup:
         assert "secret123" not in result[1]["action"]
 
 
+class TestHealAction:
+    """Tests for heal_action() — self-healing selector resolution."""
+
+    def test_exact_match_at_original_index(self):
+        from fantoma.resilience.script_cache import heal_action
+        elements = [
+            {"role": "button", "name": "Login"},
+            {"role": "textbox", "name": "Email"},
+            {"role": "textbox", "name": "Password"},
+        ]
+        result = heal_action("textbox", "Email", 1, elements)
+        assert result == 1
+
+    def test_exact_match_at_different_index(self):
+        from fantoma.resilience.script_cache import heal_action
+        elements = [
+            {"role": "button", "name": "Login"},
+            {"role": "textbox", "name": "Password"},
+            {"role": "textbox", "name": "Email"},  # moved from index 1 to 2
+        ]
+        result = heal_action("textbox", "Email", 1, elements)
+        assert result == 2
+
+    def test_fuzzy_match_single_above_threshold(self):
+        from fantoma.resilience.script_cache import heal_action
+        elements = [
+            {"role": "button", "name": "Login"},
+            {"role": "textbox", "name": "Email Address"},  # similar to "Email"
+        ]
+        # "Email" vs "Email Address" — SequenceMatcher ratio should be above 0.7
+        result = heal_action("textbox", "Email Address", 0, elements, threshold=0.6)
+        assert result == 1
+
+    def test_role_must_match_exactly(self):
+        from fantoma.resilience.script_cache import heal_action
+        elements = [
+            {"role": "link", "name": "Email"},  # role mismatch
+            {"role": "button", "name": "Submit"},
+        ]
+        result = heal_action("textbox", "Email", 0, elements)
+        assert result is None
+
+    def test_no_match_returns_none(self):
+        from fantoma.resilience.script_cache import heal_action
+        elements = [
+            {"role": "button", "name": "Submit"},
+            {"role": "textbox", "name": "Phone"},
+        ]
+        result = heal_action("textbox", "Email", 0, elements)
+        assert result is None
+
+    def test_multiple_fuzzy_matches_returns_none(self):
+        from fantoma.resilience.script_cache import heal_action
+        elements = [
+            {"role": "textbox", "name": "Email work"},
+            {"role": "textbox", "name": "Email home"},
+        ]
+        # Both fuzzy match "Email xxx" — should return None (ambiguous)
+        result = heal_action("textbox", "Email", 0, elements, threshold=0.5)
+        assert result is None
+
+    def test_empty_elements_returns_none(self):
+        from fantoma.resilience.script_cache import heal_action
+        result = heal_action("button", "Login", 0, [])
+        assert result is None
+
+    def test_original_index_out_of_range(self):
+        from fantoma.resilience.script_cache import heal_action
+        elements = [
+            {"role": "button", "name": "Login"},
+        ]
+        # original_index=5 is out of range, but Login is at 0
+        result = heal_action("button", "Login", 5, elements)
+        assert result == 0
+
+
 class TestScriptCacheValidation:
     def test_rejects_long_sequences(self, cache):
         elements = _make_elements(["A"])
