@@ -230,6 +230,18 @@ class BrowserEngine:
                     self._camoufox_cm.__exit__(None, None, None)
                 except Exception:
                     pass
+
+            # Clear the closed event loop reference so the next run creates
+            # a fresh one. Without this, asyncio.get_running_loop() returns
+            # the closed loop and Playwright crashes with "Event loop is closed".
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+            except RuntimeError:
+                asyncio.set_event_loop(asyncio.new_event_loop())
+
             self._page = None
             self._context = None
             self._browser = None
