@@ -17,7 +17,7 @@ from fantoma.resilience.checkpoint import CheckpointManager
 from fantoma.resilience.escalation import EscalationChain
 from fantoma.captcha.orchestrator import CaptchaOrchestrator
 from fantoma.config import FantomaConfig
-from fantoma.browser.page_state import verify_action, dom_hash as compute_dom_hash
+from fantoma.browser.page_state import verify_action, dom_hash as compute_dom_hash, assess_progress
 from fantoma.browser.observer import inject_observer, collect_mutations, format_mutations, wait_for_dom_stable
 
 log = logging.getLogger("fantoma.executor")
@@ -35,7 +35,7 @@ _CONTENT_KEYWORDS = {
 }
 
 
-def _infer_dom_mode(task: str, page, element_count: int) -> str:
+def _infer_dom_mode(task: str, page, element_count: int = 0) -> str:
     """Infer the best DOM extraction mode for the current step.
 
     Returns "form", "content", or "navigate".
@@ -100,6 +100,7 @@ class Executor:
         self._compact_threshold = 50
         self._compact_keep_recent = 10
         self._secrets = sensitive_data or {}
+        self._stall_counter = 0
 
     # ── Plan-based execution ──────────────────────────────────────
 
@@ -328,6 +329,8 @@ class Executor:
                 user_msg += f"\n\nAvailable secrets: {secret_list}"
             if failed:
                 user_msg += f"\n\nFailed (don't repeat): {', '.join(failed)}"
+            if self._stall_counter >= 3:
+                user_msg += "\n\nWarning: actions are succeeding but task isn't progressing. Try a different approach."
 
             from fantoma.llm.structured import parse_structured, get_response_format
             raw = self.llm.chat(
@@ -451,6 +454,22 @@ class Executor:
                     outcome_parts.append("no visible change" if not changed else "page changed")
 
                 self._action_outcomes.append(f"Step {step_num}: {action[:30]} → {', '.join(outcome_parts)}")
+
+                # Per-step success criteria: assess progress
+                _el_idx_match = re.match(r'\w+\s*\[(\d+)\]', action)
+                _action_element = None
+                if _el_idx_match:
+                    _el_idx = int(_el_idx_match.group(1))
+                    if _el_idx < len(self.dom._last_interactive):
+                        _action_element = self.dom._last_interactive[_el_idx]
+                progress = assess_progress(
+                    page, action, task, self.dom,
+                    pre_url=pre_batch_url, action_element=_action_element,
+                )
+                if progress["action_ok"] is True and progress["progress_ok"] is False:
+                    self._stall_counter += 1
+                else:
+                    self._stall_counter = 0
 
                 if changed:
                     # If URL changed, stop executing further batch actions
