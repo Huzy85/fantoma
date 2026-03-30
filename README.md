@@ -222,7 +222,7 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 
 ## Test Results
 
-Tested across 27 real sites with 6 different LLMs. 372 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+Tested across 27 real sites with 6 different LLMs. 508 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 <details>
 <summary>Detailed test breakdown</summary>
