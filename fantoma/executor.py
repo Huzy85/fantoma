@@ -18,7 +18,7 @@ from fantoma.resilience.escalation import EscalationChain
 from fantoma.captcha.orchestrator import CaptchaOrchestrator
 from fantoma.config import FantomaConfig
 from fantoma.browser.page_state import verify_action, dom_hash as compute_dom_hash
-from fantoma.browser.observer import inject_observer, collect_mutations, format_mutations
+from fantoma.browser.observer import inject_observer, collect_mutations, format_mutations, wait_for_dom_stable
 
 log = logging.getLogger("fantoma.executor")
 
@@ -277,17 +277,22 @@ class Executor:
             if failed:
                 user_msg += f"\n\nFailed (don't repeat): {', '.join(failed)}"
 
+            from fantoma.llm.structured import parse_structured, get_response_format
             raw = self.llm.chat(
                 [{"role": "system", "content": REACTIVE_SYSTEM},
                  {"role": "user", "content": user_msg}],
                 max_tokens=300,
+                response_format=get_response_format(),
             )
             raw = (raw or "").strip()
             if not raw:
                 log.warning("Step %d: LLM returned empty action", step_num)
                 continue
 
-            actions_batch = parse_actions(raw, max_actions=5)
+            # Parse: try structured JSON first, fall back to text
+            actions_batch = parse_structured(raw)
+            if actions_batch is None:
+                actions_batch = parse_actions(raw, max_actions=5)
             if not actions_batch:
                 log.warning("Step %d: no valid actions parsed from LLM response", step_num)
                 continue
@@ -721,8 +726,12 @@ class Executor:
 
     def _check_page_change(self, page, before, dom_hash: str, action: str, step_num: int) -> bool:
         """Wait for page to settle and check if it changed after an action."""
+        # Primary: wait for DOM to stabilize (debounced MutationObserver)
+        wait_for_dom_stable(page, timeout=5000, debounce=300)
+
+        # Fallback: wait for any in-flight navigation
         try:
-            wait_for_navigation(self.browser, timeout=5000)
+            wait_for_navigation(self.browser, timeout=3000)
         except Exception:
             pass
 
