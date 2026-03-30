@@ -124,6 +124,64 @@ def mark_new_elements(previous: list[dict], current: list[dict]) -> list[bool]:
     return [(el.get("role", ""), el.get("name", "")) not in prev_set for el in current]
 
 
+def dedup_elements(elements: list[dict]) -> list[dict]:
+    """Remove duplicate interactive elements by (role, name, state) tuple.
+
+    Keeps the first occurrence. Sites repeat the same link/button in nav,
+    footer, and main content — this removes the noise.
+
+    Textboxes with the same name but different state (value) are kept
+    as separate fields (e.g., two "Email" fields on different forms).
+    """
+    seen = set()
+    result = []
+    for el in elements:
+        key = (el.get("role", ""), el.get("name", ""), el.get("state", ""))
+        if key not in seen:
+            seen.add(key)
+            result.append(el)
+    return result
+
+
+def enrich_field_state(el: dict) -> str:
+    """Build a state string from element attributes.
+
+    Shows validation state (invalid, required) and error descriptions
+    inline with the element, so the LLM sees why a field is failing.
+
+    Returns a state string like ' [invalid: "Please enter a valid email"]'
+    or empty string if no relevant state.
+    """
+    parts = []
+    raw = el.get("raw", {})
+
+    if raw.get("invalid"):
+        error_text = el.get("_error", "")
+        if error_text:
+            parts.append(f'invalid: "{error_text}"')
+        else:
+            parts.append("invalid")
+
+    if raw.get("required"):
+        parts.append("required")
+
+    if raw.get("checked"):
+        parts.append("checked")
+
+    if raw.get("disabled"):
+        parts.append("disabled")
+
+    if raw.get("value"):
+        val = raw["value"]
+        if len(val) > 30:
+            val = val[:27] + "..."
+        parts.append(f'value="{val}"')
+
+    if not parts:
+        return ""
+    return " [" + ", ".join(parts) + "]"
+
+
 def _parse_aria_line(line: str) -> dict | None:
     """Parse one line of ARIA snapshot into a structured dict.
 
@@ -235,6 +293,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
     _max_hd = max_headings or MAX_HEADINGS
 
     if interactive:
+        interactive = dedup_elements(interactive)
         if task:
             shown = prune_elements(interactive, task, _max_el)
         else:
@@ -245,7 +304,8 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
         output.append(f"Elements ({len(shown)} of {len(interactive)}):")
         for i, el in enumerate(shown):
             prefix = "*" if new_flags[i] else ""
-            output.append(f'{prefix}[{i}] {el["role"]} "{el["name"]}"{el["state"]}')
+            state = enrich_field_state(el) or el["state"]
+            output.append(f'{prefix}[{i}] {el["role"]} "{el["name"]}"{state}')
     else:
         output.append("Elements: none found")
 
@@ -375,6 +435,21 @@ class AccessibilityExtractor:
         self._last_interactive = self._parse_interactive_from_output(result)
         if self._last_interactive:
             self._last_interactive = self._filter_occluded(page, self._last_interactive)
+
+        # Merge iframe elements
+        from fantoma.dom.frames import collect_all_frame_elements
+        iframe_elements = collect_all_frame_elements(page)
+        if iframe_elements:
+            base_idx = len(self._last_interactive)
+            self._last_interactive.extend(iframe_elements)
+            iframe_section = [f"\nIframe elements ({len(iframe_elements)}):"]
+            for i, el in enumerate(iframe_elements):
+                frame_tag = f" [{el['_frame']}]" if el.get("_frame") else ""
+                iframe_section.append(
+                    f'[{base_idx + i}] {el["role"]} "{el["name"]}"{el["state"]}{frame_tag}'
+                )
+            result = result + "\n".join(iframe_section)
+
         return result
 
     def _filter_occluded(self, page, elements: list[dict]) -> list[dict]:
@@ -461,6 +536,10 @@ class AccessibilityExtractor:
         role = el["role"]
         name = el["name"]
 
+        # If element is from an iframe, search in that frame
+        if el.get("_frame"):
+            return self._find_in_frame(page, el)
+
         # Use Playwright's role-based locator (the modern, recommended way)
         try:
             locator = page.get_by_role(role, name=name)
@@ -485,6 +564,19 @@ class AccessibilityExtractor:
         except Exception:
             pass
 
+        return None
+
+    def _find_in_frame(self, page, el: dict) -> Optional[Any]:
+        """Find an element inside an iframe by frame name and role/name."""
+        frame_name = el["_frame"]
+        for frame in page.frames:
+            if frame.name == frame_name or frame.url.split("/")[-1][:20] == frame_name:
+                try:
+                    locator = frame.get_by_role(el["role"], name=el["name"])
+                    if locator.count() > 0:
+                        return locator.first.element_handle()
+                except Exception:
+                    pass
         return None
 
     @staticmethod
