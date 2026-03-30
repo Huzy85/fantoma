@@ -101,7 +101,8 @@ class LLMClient:
         if "localhost" in self.base_url or "127.0.0.1" in self.base_url:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
 
-        if response_format:
+        # Only send response_format to local endpoints — cloud APIs (DeepSeek etc.) reject it
+        if response_format and ("localhost" in self.base_url or "127.0.0.1" in self.base_url):
             payload["response_format"] = response_format
 
         # Single retry on transient failures (timeout, connection error)
