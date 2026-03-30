@@ -17,6 +17,8 @@ from fantoma.resilience.checkpoint import CheckpointManager
 from fantoma.resilience.escalation import EscalationChain
 from fantoma.captcha.orchestrator import CaptchaOrchestrator
 from fantoma.config import FantomaConfig
+from fantoma.browser.page_state import verify_action, dom_hash as compute_dom_hash
+from fantoma.browser.observer import inject_observer, collect_mutations, format_mutations
 
 log = logging.getLogger("fantoma.executor")
 
@@ -49,9 +51,10 @@ class Executor:
         self._consecutive_failures = 0
         self._env_level = 1
         self._step_history: list[str] = []
+        self._action_outcomes: list[str] = []
         self._compacted_memory: str = ""
-        self._compact_threshold = 30
-        self._compact_keep_recent = 6
+        self._compact_threshold = 50
+        self._compact_keep_recent = 10
         self._secrets = sensitive_data or {}
 
     # ── Plan-based execution ──────────────────────────────────────
@@ -207,7 +210,7 @@ class Executor:
             dismiss_consent(page, timeout=self.config.timeouts.consent_dismiss)
             self.captcha.handle(page, self.browser.screenshot)
 
-            dom_text = self.dom.extract(page)
+            dom_text = self.dom.extract(page, task=task)
             dom_hash = self.memory.hash_dom(dom_text)
 
             # Code-assisted form fill: if task involves login/signup and page
@@ -220,7 +223,7 @@ class Executor:
                         _login_attempted = True
                         steps_detail.append({"step": step_num, "action": "CODE_FORM_FILL", "success": True, "url": self.browser.get_url()})
                         # Re-read page after filling
-                        dom_text = self.dom.extract(page)
+                        dom_text = self.dom.extract(page, task=task)
                         dom_hash = self.memory.hash_dom(dom_text)
                         continue
 
@@ -257,14 +260,17 @@ class Executor:
                         escalations=self.escalation.total_escalations,
                     )
 
-            # Ask LLM for next action(s)
+            # Ask LLM for next action(s) — observation masking: outcomes + current DOM
             failed = self.memory.get_failed_actions(dom_hash)
             user_msg = f"Task: {task}\n\n{dom_text}"
+
+            # Action history: verbatim outcomes
+            if self._action_outcomes:
+                history_text = "\n".join(f"  {s}" for s in self._action_outcomes[-15:])
+                user_msg += f"\n\nAction history:\n{history_text}"
+
             if self._compacted_memory:
-                user_msg += f"\n\n[Previous progress (unverified summary):\n{self._compacted_memory}]"
-            if self._step_history:
-                recent = "\n".join(f"  {s}" for s in self._step_history[-self._compact_keep_recent:])
-                user_msg += f"\n\nRecent steps:\n{recent}"
+                user_msg += f"\n\n[Earlier progress summary:\n{self._compacted_memory}]"
             if self._secrets:
                 secret_list = ", ".join(f"<secret:{k}>" for k in self._secrets.keys())
                 user_msg += f"\n\nAvailable secrets: {secret_list}"
@@ -294,6 +300,11 @@ class Executor:
                      ", ".join(self._filter_secrets(a, self._secrets)[:40] if self._secrets else a[:40] for a in actions_batch))
 
             pre_batch_url = self.browser.get_url()
+
+            # v0.6: inject observer before action batch
+            inject_observer(page)
+            pre_batch_hash = compute_dom_hash(page)
+
             done_signalled = False
 
             for action in actions_batch:
@@ -313,6 +324,7 @@ class Executor:
                 # SCROLL/WAIT: auto-succeed, no page change check, continue batch
                 if action_verb in ("SCROLL", "WAIT"):
                     self.memory.record(action, dom_hash, "success", True, step_num)
+                    self._action_outcomes.append(f"Step {step_num}: {action[:40]} → ok")
                     steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
                     self._consecutive_failures = 0
                     continue
@@ -326,10 +338,12 @@ class Executor:
                         if assist:
                             log.info("Step %d: form assist — %s", step_num, assist)
                         self.memory.record(action, dom_hash, "typed", True, step_num)
+                        self._action_outcomes.append(f"Step {step_num}: TYPE → typed into field")
                         steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
                         self._consecutive_failures = 0
                     else:
                         self.memory.record(action, dom_hash, dom_hash, False, step_num)
+                        self._action_outcomes.append(f"Step {step_num}: TYPE → failed, element not found")
                         steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
                         log.warning("Step %d: TYPE failed — element not found or not typeable", step_num)
                         self._consecutive_failures += 1
@@ -340,12 +354,14 @@ class Executor:
                 if action_verb == "NAVIGATE":
                     wait_for_navigation(self.browser, timeout=10000)
                     self.memory.record(action, dom_hash, "navigated", True, step_num)
+                    self._action_outcomes.append(f"Step {step_num}: NAVIGATE → loaded {self.browser.get_url()}")
                     steps_detail.append({"step": step_num, "action": action, "success": True, "url": self.browser.get_url()})
                     self._consecutive_failures = 0
                     break
 
                 if not executed:
                     self.memory.record(action, dom_hash, dom_hash, False, step_num)
+                    self._action_outcomes.append(f"Step {step_num}: {action[:30]} → failed to execute")
                     steps_detail.append({"step": step_num, "action": action, "success": False, "url": self.browser.get_url()})
                     log.warning("Step %d: action failed to execute", step_num)
                     self._consecutive_failures += 1
@@ -359,6 +375,27 @@ class Executor:
                 if changed:
                     log.info("Step %d: page changed after %s", step_num, action_verb)
                     self._consecutive_failures = 0
+
+                # v0.6: collect mutations and build outcome
+                mutations = collect_mutations(page)
+                outcome = verify_action(page, pre_batch_url, pre_batch_hash, self.dom)
+
+                outcome_parts = []
+                if outcome["url_changed"]:
+                    outcome_parts.append(f"URL → {self.browser.get_url()[:60]}")
+                if outcome["error_found"]:
+                    outcome_parts.append(f'error: "{outcome["error_found"]}"')
+                if outcome["new_elements"] > 0:
+                    outcome_parts.append(f"{outcome['new_elements']} elements")
+                mut_str = format_mutations(mutations)
+                if mut_str:
+                    outcome_parts.append(mut_str)
+                if not outcome_parts:
+                    outcome_parts.append("no visible change" if not changed else "page changed")
+
+                self._action_outcomes.append(f"Step {step_num}: {action[:30]} → {', '.join(outcome_parts)}")
+
+                if changed:
                     # If URL changed, stop executing further batch actions
                     post_action_url = self.browser.get_url()
                     if action_verb == "CLICK" and post_action_url != pre_batch_url:
@@ -369,12 +406,8 @@ class Executor:
                     self._consecutive_failures += 1
                     self._maybe_escalate()
 
-            # Record step for history tracking
+            # Observation masking: compact only when approaching context limit
             if actions_batch:
-                step_summary = actions_batch[0][:60]
-                if self._secrets:
-                    step_summary = self._filter_secrets(step_summary, self._secrets)
-                self._step_history.append(step_summary)
                 self._compact_history()
 
             if done_signalled:
@@ -385,7 +418,7 @@ class Executor:
                 )
 
         # Hit max steps
-        dom_text = self.dom.extract(page)
+        dom_text = self.dom.extract(page, task=task)
         data = self._extract_result(task, dom_text)
         return AgentResult(
             success=bool(data), data=data, steps_taken=self._total_actions,
@@ -559,31 +592,35 @@ class Executor:
         return False
 
     def _compact_history(self):
-        """Summarize old step history when it gets too long.
-        Keeps the last N steps verbatim, summarizes the rest via one LLM call.
-        Prevents context window overflow on long tasks (50+ steps).
+        """Compact action history when approaching context window limits.
+
+        Observation masking: keep action outcomes verbatim, only compact when
+        history exceeds 40% of estimated context window (~2 chars/token).
         """
-        if len(self._step_history) < self._compact_threshold:
+        history_text = "\n".join(self._action_outcomes)
+        estimated_chars = len(history_text)
+        char_threshold = 49000 * 2 * 0.4  # 49K ctx * 2 chars/token * 40%
+
+        if estimated_chars < char_threshold:
             return
 
         from fantoma.llm.prompts import COMPACTION_SYSTEM
 
-        old_steps = self._step_history[:-self._compact_keep_recent]
-        recent_steps = self._step_history[-self._compact_keep_recent:]
-
-        history_text = "\n".join(f"Step {i+1}: {s}" for i, s in enumerate(old_steps))
+        old = self._action_outcomes[:-self._compact_keep_recent]
+        recent = self._action_outcomes[-self._compact_keep_recent:]
+        old_text = "\n".join(old)
 
         try:
             summary = self.llm.chat(
                 [{"role": "system", "content": COMPACTION_SYSTEM},
-                 {"role": "user", "content": f"Steps completed so far:\n{history_text}"}],
+                 {"role": "user", "content": f"Steps completed so far:\n{old_text}"}],
                 max_tokens=300,
             )
             if summary:
                 self._compacted_memory = summary.strip()
-                self._step_history = recent_steps
-                log.info("History compacted: %d steps → summary + %d recent",
-                         len(old_steps), len(recent_steps))
+                self._action_outcomes = recent
+                log.info("History compacted: %d entries → summary + %d recent",
+                         len(old), len(recent))
         except Exception as e:
             log.warning("History compaction failed: %s", e)
 
