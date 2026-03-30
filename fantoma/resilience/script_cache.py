@@ -8,6 +8,7 @@ Storage: SQLite at ~/.local/share/fantoma/script_cache.db
 Cache key: domain + sorted (role, name) tuples from initial page elements
 Match: fuzzy overlap >80% (sites change minor elements between visits)
 """
+import difflib
 import json
 import logging
 import os
@@ -145,3 +146,52 @@ def _mask_secrets(actions: list[dict], secrets: dict) -> list[dict]:
         a["action"] = text
         masked.append(a)
     return masked
+
+
+def heal_action(target_role: str, target_name: str, original_index: int,
+                current_elements: list[dict], threshold: float = 0.7) -> int | None:
+    """Find the element that matches a cached target, even if its index shifted.
+
+    Resolution order:
+      1. Element at original_index still matches (exact role+name) → return it
+      2. Exact name match at a different index (role must match) → return it
+      3. Single fuzzy name match above threshold (role must match) → return it
+      4. Multiple matches or none → return None
+
+    Args:
+        target_role: Expected ARIA role (must match exactly)
+        target_name: Expected accessible name
+        original_index: Index from the cached action
+        current_elements: Current page elements (list of dicts with role, name)
+        threshold: Minimum SequenceMatcher ratio for fuzzy matching
+
+    Returns:
+        Element index or None if healing failed.
+    """
+    if not current_elements:
+        return None
+
+    # 1. Check original index first
+    if original_index < len(current_elements):
+        el = current_elements[original_index]
+        if el.get("role", "") == target_role and el.get("name", "") == target_name:
+            return original_index
+
+    # 2. Scan for exact match at different index
+    for i, el in enumerate(current_elements):
+        if el.get("role", "") == target_role and el.get("name", "") == target_name:
+            return i
+
+    # 3. Fuzzy match on name (role must still be exact)
+    fuzzy_matches = []
+    for i, el in enumerate(current_elements):
+        if el.get("role", "") != target_role:
+            continue
+        ratio = difflib.SequenceMatcher(None, target_name, el.get("name", "")).ratio()
+        if ratio >= threshold:
+            fuzzy_matches.append((i, ratio))
+
+    if len(fuzzy_matches) == 1:
+        return fuzzy_matches[0][0]
+
+    return None
