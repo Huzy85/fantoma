@@ -1,5 +1,46 @@
 # Fantoma Development Progress
 
+## Session 10: 2026-03-30 — v0.6.0 Phase 3 (Competitive Edge Features)
+
+### Summary
+Four features from competitive analysis against Agent-E, Stagehand v3, Skyvern 2.0, and browser-use. Closes the gaps that matter while keeping Fantoma's code-first philosophy. 86 new tests, 365 total passing.
+
+### New Features
+
+| # | Feature | Files | What it does |
+|---|---------|-------|-------------|
+| 1 | Adaptive DOM modes | dom/accessibility.py, executor.py | Three extraction modes (form/content/navigate) inferred per step. Form mode boosts inputs, content mode strips UI for scraping. |
+| 2 | ARIA landmark grouping | dom/accessibility.py | Elements grouped under nearest landmark parent: [form: Login], [navigation: Main nav]. Structural context for the LLM. |
+| 3 | Per-step success criteria | browser/page_state.py, executor.py | Action-level verification (TYPE checks value, CLICK checks URL) + task-level progress tracking. Stall detection warns LLM after 3 stuck steps. |
+| 4 | Script cache + self-healing | resilience/script_cache.py, executor.py | ScriptCache wired into executor. Fuzzy element matching (SequenceMatcher) heals renamed/moved elements during replay. |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| fantoma/dom/accessibility.py | Added `mode` param, LANDMARK_ROLES, landmark tracking + grouped output |
+| fantoma/executor.py | Added _infer_dom_mode(), cache lookup, _replay_cached(), stall detection |
+| fantoma/browser/page_state.py | Added assess_progress(), _infer_task_intent() |
+| fantoma/resilience/script_cache.py | Added heal_action() with difflib fuzzy matching |
+| tests/test_dom_modes.py | **New** — 10 tests |
+| tests/test_landmarks.py | **New** — 19 tests |
+| tests/test_progress.py | **New** — 34 tests |
+| tests/test_cache_replay.py | **New** — 8 tests |
+| tests/test_script_cache.py | Extended — 8 new heal_action tests |
+
+### Test Count
+- Before: 279
+- After: 365
+
+### Credits
+- Agent-E: adaptive DOM distillation concept (form/content/navigate modes)
+- Stagehand v3: self-healing selector pattern
+- Skyvern 2.0: planner-actor-validator loop (per-step success criteria)
+- Healenium: fuzzy element matching approach
+- LCoW (ICLR 2025): research validating contextualized observations (+15-24% LLM success)
+
+---
+
 ## Session 9: 2026-03-30 — v0.6.0 Phase 2 (DOM Intelligence)
 
 ### Summary
