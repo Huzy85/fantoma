@@ -48,7 +48,9 @@ fantoma test         # Verify it works
 - **ARIA + raw DOM** — always reads both. No form is invisible, even old-school HTML without ARIA labels.
 - **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
-- **Resilience** — 3-level model escalation (local → cloud → back), 3-level environment escalation (cookies → proxy → fresh fingerprint), retry on slow SPAs
+- **Resilience** — 3-level model escalation (local → cloud → back), 3-level environment escalation (cookies → proxy → fresh fingerprint), retry on slow SPAs. Page reference auto-refreshed after each browser restart so stale handles never cause crashes.
+- **Multi-API compatible** — JSON mode (`response_format`) only sent to local endpoints. Cloud APIs (DeepSeek, OpenAI, Anthropic) work without 400 errors.
+- **Sequential session safety** — after each browser session closes, the asyncio "running loop" pointer is cleared so the next session starts clean. Prevents "Event loop is closed" errors when running many tests back-to-back.
 - **Playwright traces** — `Agent(trace=True)` records full debug sessions
 - **Fingerprint self-test** — `fantoma test fingerprint` runs 7 in-browser checks
 - **Chromium fallback** — `Agent(browser="chromium")` via [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) for sites that block Firefox
