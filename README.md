@@ -52,6 +52,7 @@ fantoma test         # Verify it works
 - **Playwright traces** — `Agent(trace=True)` records full debug sessions
 - **Fingerprint self-test** — `fantoma test fingerprint` runs 7 in-browser checks
 - **Chromium fallback** — `Agent(browser="chromium")` via [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) for sites that block Firefox
+- **Auto-follow popups** — OAuth flows, `target="_blank"` links, and payment pages in new tabs are automatically followed. When the popup closes, focus returns to the original tab. No LLM actions needed.
 - Multi-tab sessions, proxy rotation, CAPTCHA solving, verification code extraction
 - **Session persistence** — cookies + localStorage saved to encrypted files per domain + account. Login once, skip forms forever. `pip install fantoma[sessions]` for encryption.
 - **Unified login pipeline** — signup → CAPTCHA → email verification → login-back, all in one `agent.login()` call. Tries saved session first.
@@ -217,10 +218,11 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | Login fields invisible | Fantoma falls back to raw DOM — check trace for details |
 | LLM says DONE without acting | Upgrade to v0.5.0+ — prompt fix included |
 | Same action repeating | v0.6 action verification tells LLM what happened — upgrade to see outcomes |
+| "Event loop is closed" on second run | Fixed in v0.6 — `stop()` now cleans up the asyncio event loop |
 
 ## Test Results
 
-Tested across 27 real sites with 6 different LLMs. 365 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+Tested across 27 real sites with 6 different LLMs. 372 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 <details>
 <summary>Detailed test breakdown</summary>
@@ -332,7 +334,7 @@ fantoma/
 │   ├── email_verify.py  # IMAP polling — extracts codes and verify links
 │   ├── form_memory.py   # SQLite — learns from every login page
 │   ├── fingerprint.py   # Anti-detection self-test (7 checks)
-│   ├── engine.py        # Browser lifecycle (Camoufox + Patchright)
+│   ├── engine.py        # Browser lifecycle (Camoufox + Patchright) + auto-follow popups
 │   └── ...              # consent, humanize, proxy, verification, actions
 ├── captcha/             # Detection + solving (PoW, API, human fallback)
 ├── resilience/          # Action memory, checkpoints, escalation, script cache + self-healing
