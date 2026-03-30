@@ -380,6 +380,19 @@ def login(browser, dom_extractor, email="", username="", password="",
         # Wait for page to settle
         time.sleep(step_delay)
 
+        # v0.6: inline error detection
+        from fantoma.browser.page_state import detect_errors
+        errors = detect_errors(page)
+        if errors:
+            log.info("Step %d: form errors detected: %s", step + 1, errors)
+            return {
+                "success": False,
+                "steps": step + 1,
+                "url": page.url,
+                "fields_filled": fields_filled,
+                "errors": errors,
+            }
+
         # Check if we've landed on a verification page
         post_tree = dom_extractor.extract(page)
         try:
