@@ -15,6 +15,7 @@ from fantoma.llm.vision import VisionFallback
 from fantoma.resilience.memory import ActionMemory
 from fantoma.resilience.checkpoint import CheckpointManager
 from fantoma.resilience.escalation import EscalationChain
+from fantoma.resilience.script_cache import ScriptCache, heal_action
 from fantoma.captcha.orchestrator import CaptchaOrchestrator
 from fantoma.config import FantomaConfig
 from fantoma.browser.page_state import verify_action, dom_hash as compute_dom_hash, assess_progress
@@ -87,6 +88,7 @@ class Executor:
         self.diff = PageDiff()
         self.memory = ActionMemory()
         self.checkpoints = CheckpointManager()
+        self.cache = ScriptCache()
         self.captcha = CaptchaOrchestrator(config)
         self.vision = VisionFallback(llm)
 
@@ -245,9 +247,38 @@ class Executor:
         """
         from fantoma.agent import AgentResult
         from fantoma.llm.prompts import REACTIVE_SYSTEM
+        from urllib.parse import urlparse
 
         steps_detail = []
         page = self.browser.get_page()
+
+        # ── Cache lookup: try replaying a cached script ──────────
+        _initial_elements = None
+        _cache_domain = None
+        try:
+            _cache_domain = urlparse(self.browser.get_url()).netloc
+            self.dom.extract(page, task=task)
+            _initial_elements = list(self.dom._last_interactive)
+            cached_actions = self.cache.lookup(_cache_domain, _initial_elements)
+            if cached_actions:
+                log.info("Cache hit for %s — attempting replay (%d actions)",
+                         _cache_domain, len(cached_actions))
+                if self._replay_cached(page, cached_actions, task):
+                    log.info("Cache replay succeeded for %s", _cache_domain)
+                    dom_text = self.dom.extract(page, task=task)
+                    return AgentResult(
+                        success=True,
+                        data=self._extract_result(task, dom_text),
+                        steps_taken=len(cached_actions),
+                        steps_detail=[{"step": "cache_replay", "success": True}],
+                        escalations=0,
+                    )
+                else:
+                    log.info("Cache replay failed for %s — falling through to LLM",
+                             _cache_domain)
+                    self._total_actions = 0
+        except Exception as e:
+            log.warning("Cache lookup failed: %s", e)
 
         _login_attempted = False
 
@@ -487,6 +518,36 @@ class Executor:
                 self._compact_history()
 
             if done_signalled:
+                # Save successful sequence to cache
+                try:
+                    if _cache_domain and _initial_elements:
+                        cacheable_actions = []
+                        for sd in steps_detail:
+                            action_str = sd.get("action", "")
+                            if not action_str or not sd.get("success"):
+                                continue
+                            # Resolve target element metadata
+                            t_role, t_name = "", ""
+                            idx_match = re.match(r'\w+\s*\[(\d+)\]', action_str)
+                            if idx_match:
+                                idx = int(idx_match.group(1))
+                                if idx < len(self.dom._last_interactive):
+                                    el = self.dom._last_interactive[idx]
+                                    t_role = el.get("role", "")
+                                    t_name = el.get("name", "")
+                            cacheable_actions.append({
+                                "action": action_str,
+                                "target_role": t_role,
+                                "target_name": t_name,
+                            })
+                        if cacheable_actions:
+                            self.cache.save(
+                                _cache_domain, _initial_elements,
+                                cacheable_actions, sensitive_data=self._secrets,
+                            )
+                except Exception as e:
+                    log.warning("Cache save failed: %s", e)
+
                 return AgentResult(
                     success=True, data=self._extract_result(task, dom_text),
                     steps_taken=step_num, steps_detail=steps_detail,
@@ -823,3 +884,71 @@ class Executor:
 
         self.memory.record(action, dom_hash, after_hash, changed, step_num)
         return changed
+
+    def _replay_cached(self, page, cached_actions: list[dict], task: str) -> bool:
+        """Replay a cached action sequence with self-healing selectors.
+
+        For each cached action:
+          - Verify the target element is still at the expected index
+          - If not, use heal_action() to find it
+          - Execute the action (with secret injection)
+          - Assess progress — abandon on failure
+
+        Returns True if all actions succeeded, False to fall through to LLM.
+        """
+        for cached in cached_actions:
+            action_str = cached.get("action", "")
+            target_role = cached.get("target_role", "")
+            target_name = cached.get("target_name", "")
+
+            # Parse element index from action string
+            idx_match = re.match(r'(\w+)\s*\[(\d+)\]', action_str)
+            action_verb = action_str.strip().split()[0].upper() if action_str.strip() else ""
+
+            if idx_match and target_role:
+                original_index = int(idx_match.group(2))
+
+                # Re-extract DOM to get current elements
+                self.dom.extract(page, task=task)
+                current_elements = self.dom._last_interactive
+
+                # Check if element still matches
+                needs_heal = True
+                if original_index < len(current_elements):
+                    el = current_elements[original_index]
+                    if el.get("role", "") == target_role and el.get("name", "") == target_name:
+                        needs_heal = False
+
+                if needs_heal:
+                    healed_index = heal_action(
+                        target_role, target_name, original_index, current_elements,
+                    )
+                    if healed_index is None:
+                        log.info("Cache replay: healing failed for %s — abandoning", action_str)
+                        return False
+                    # Rewrite action string with new index
+                    action_str = re.sub(r'\[(\d+)\]', f'[{healed_index}]', action_str, count=1)
+                    log.info("Cache replay: healed %s → index %d", cached["action"], healed_index)
+
+            # Inject secrets
+            if self._secrets:
+                action_str = self._inject_secrets(action_str, self._secrets)
+
+            # Execute
+            self._total_actions += 1
+            executed = execute_action(action_str, self.browser, self.dom)
+            if not executed:
+                log.info("Cache replay: action failed to execute — abandoning")
+                return False
+
+            # Assess progress
+            progress = assess_progress(page, action_str, task, self.dom)
+            if progress.get("action_ok") is False:
+                log.info("Cache replay: action not ok — abandoning (%s)", progress.get("reason", ""))
+                return False
+
+            # Wait for DOM stable between non-SCROLL/WAIT actions
+            if action_verb not in ("SCROLL", "WAIT"):
+                wait_for_dom_stable(page, timeout=5000, debounce=300)
+
+        return True
