@@ -66,6 +66,7 @@ DONE
 
 Rules:
 - Match [number] to the element list shown after the task.
+- Elements marked with * are NEW (just appeared from your last action) — focus on these.
 - You may return multiple actions (one per line) to execute in sequence.
 - To fill a form: TYPE each field, then CLICK submit — all in one response.
 - After typing in a search field, add PRESS Enter.
@@ -75,6 +76,8 @@ Rules:
 - SEARCH_PAGE finds text on the current page (like Ctrl+F). Free, no scrolling needed.
 - FIND runs a CSS selector query and returns matching elements. Free.
 - If secrets are available, use them with <secret:name> syntax (e.g., TYPE [3] "<secret:email>").
+- After each action you'll see an outcome (URL change, errors, new elements). Use this feedback.
+- If you see an error message after your action, adjust your approach — don't repeat the same action.
 - Reply with ONLY action lines, nothing else.\
 """
 
