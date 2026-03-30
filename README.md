@@ -60,6 +60,13 @@ fantoma test         # Verify it works
 - **Free search tools** — `SEARCH_PAGE "text"` and `FIND "css selector"` — the LLM can search page content without extra LLM calls.
 - **Message compaction** — long tasks (50+ steps) don't blow the context window. Old history gets summarized automatically.
 - **Sensitive data** — pass credentials as `sensitive_data={"email": "...", "password": "..."}`. They appear as `<secret:email>` in LLM prompts and logs. Real values injected only at execution time.
+- **Action verification** — after every click or submit, code checks what happened: URL change, new elements, error messages. The LLM sees `"After CLICK [5]: error — Invalid email"` instead of just `"failed"`.
+- **Inline error detection** — JS scans for `role="alert"`, `aria-invalid`, error CSS classes, and common error text patterns. No LLM needed.
+- **Smart element pruning** — relevance-based scoring replaces the hard cap. The LLM sees the 15 most relevant elements for the current task, not the first 15 on the page.
+- **MutationObserver tracking** — precise feedback on what each action changed in the DOM. Added nodes, removed nodes, changed attributes, new text — all reported to the LLM.
+- **Tree diffing** — new elements (from dropdowns, modals, next form steps) marked with `*` prefix so the LLM sees what just appeared.
+- **Observation masking** — action outcomes kept verbatim, old DOM snapshots dropped. LLM compaction only kicks in at 40% of context window. Most tasks use zero compaction calls.
+- **Script caching** — after a successful task, saves the action sequence to SQLite. Next time, replays without any LLM calls. Falls back to LLM if the page changed.
 
 ## Login & Signup (No LLM)
 
@@ -199,11 +206,12 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | Small model misses buttons | Add escalation to a cloud API for hard steps |
 | Form not filled | Check `fantoma logs --trace` for debug data |
 | Login fields invisible | Fantoma falls back to raw DOM — check trace for details |
-| LLM says DONE without acting | Upgrade to v0.5.0 — prompt fix included |
+| LLM says DONE without acting | Upgrade to v0.5.0+ — prompt fix included |
+| Same action repeating | v0.6 action verification tells LLM what happened — upgrade to see outcomes |
 
 ## Test Results
 
-Tested across 27 real sites with 6 different LLMs. 205 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+Tested across 27 real sites with 6 different LLMs. 240 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 <details>
 <summary>Detailed test breakdown</summary>
@@ -302,19 +310,22 @@ fantoma/
 ├── agent.py             # Public API (run, login, extract, session)
 ├── session.py           # Encrypted session persistence (cookies + localStorage)
 ├── cli.py               # CLI + interactive mode
-├── executor.py          # Reactive loop + multi-action + compaction + secrets
+├── executor.py          # Reactive loop + observation masking + verification + secrets
 ├── action_parser.py     # LLM response → browser actions (incl. SEARCH_PAGE, FIND)
 ├── config.py            # All settings
 ├── dom/                 # Page reading (ARIA tree + raw DOM fallback)
+│   └── accessibility.py # ARIA snapshot, smart pruning, tree diffing, dedup
 ├── browser/             # Camoufox/Chromium, anti-detection, proxy, consent, forms
 │   ├── form_login.py    # LLM-free login/signup (label matching + raw DOM)
+│   ├── page_state.py    # Action verification + inline error detection
+│   ├── observer.py      # MutationObserver change tracking
 │   ├── email_verify.py  # IMAP polling — extracts codes and verify links
 │   ├── form_memory.py   # SQLite — learns from every login page
 │   ├── fingerprint.py   # Anti-detection self-test (7 checks)
 │   ├── engine.py        # Browser lifecycle (Camoufox + Patchright)
 │   └── ...              # consent, humanize, proxy, verification, actions
 ├── captcha/             # Detection + solving (PoW, API, human fallback)
-├── resilience/          # Action memory, checkpoints, model + env escalation
+├── resilience/          # Action memory, checkpoints, escalation, script cache
 └── llm/                 # OpenAI-compatible client, prompts
 ```
 
@@ -343,7 +354,14 @@ Built on top of these projects:
 - [Playwright](https://github.com/microsoft/playwright) — browser automation framework
 - [httpx](https://github.com/encode/httpx) — HTTP client for LLM API calls
 
-Inspired by [browser-use](https://github.com/browser-use/browser-use) — the leading open-source browser agent. Fantoma v0.5 adopted several of their patterns: multi-action batching per LLM call, paint-order DOM filtering via `elementFromPoint()`, free JS-based page search tools, history compaction for long tasks, and credential placeholder injection. These patterns were reimplemented from scratch to fit Fantoma's code-first architecture.
+Inspired by these projects and research:
+
+- [browser-use](https://github.com/browser-use/browser-use) — the leading open-source browser agent. Fantoma adopted several of their patterns: multi-action batching per LLM call, paint-order DOM filtering via `elementFromPoint()`, free JS-based page search tools, history compaction for long tasks, credential placeholder injection, and DOM element deduplication. Their structured JSON output approach (schema-constrained responses) informed Fantoma's structured output design. All patterns were reimplemented from scratch to fit Fantoma's code-first architecture.
+- [WebVoyager](https://arxiv.org/abs/2401.13919) — web agent benchmark. Tree diffing (marking new elements with `*` prefix) was inspired by their set-of-marks approach, adapted for DOM-only operation without screenshots.
+- [AgentQ](https://arxiv.org/abs/2408.07199) — Monte Carlo Tree Search web agent. Their action verification and outcome reporting pattern (checking URL changes, error detection, DOM mutations after each action) influenced Fantoma's post-action verification pipeline. Fantoma implements this as pure code checks rather than AgentQ's LLM self-reflection.
+- [SWE-bench](https://swe-bench.github.io/) / JetBrains research on observation masking — keeping action history verbatim while dropping old observations. Fantoma's observation masking (action outcomes kept, old DOM snapshots discarded) is based on this principle.
+- [MutationObserver debounce pattern](https://developer.mozilla.org/en-US/docs/Web/API/MutationObserver) — DOM stability detection via debounced MutationObserver (wait until mutations stop for 300ms). Used for both change tracking and adaptive wait strategies.
+- [Playwright](https://playwright.dev/docs/frames) — iframe frame traversal and ARIA snapshot APIs used for iframe element extraction.
 
 ## License
 
