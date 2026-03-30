@@ -75,6 +75,7 @@ class LLMClient:
         messages: list[dict[str, str]],
         temperature: float = 0.3,
         max_tokens: int = 2048,
+        response_format: dict | None = None,
     ) -> str:
         """Send a chat completion request and return the content string.
 
@@ -99,6 +100,9 @@ class LLMClient:
         # Cloud APIs (OpenAI, Anthropic, Moonshot) reject unknown parameters
         if "localhost" in self.base_url or "127.0.0.1" in self.base_url:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+        if response_format:
+            payload["response_format"] = response_format
 
         # Single retry on transient failures (timeout, connection error)
         for attempt in range(2):
