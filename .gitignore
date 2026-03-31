@@ -65,3 +65,7 @@ fantoma_demo.mp4
 
 # Backup files
 *.backup-*
+
+# Docker secrets
+.env
+.worktrees/
