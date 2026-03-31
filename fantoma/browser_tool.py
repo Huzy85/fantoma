@@ -9,10 +9,13 @@ import time
 from fantoma.browser.actions import click_element, type_into, scroll_page
 from fantoma.browser.engine import BrowserEngine
 from fantoma.browser.consent import dismiss_consent
+from fantoma.browser.form_login import login as form_login, _looks_logged_in
+from fantoma.browser.form_memory import FormMemory
 from fantoma.browser.observer import inject_observer, collect_mutations, wait_for_dom_stable
 from fantoma.browser.page_state import verify_action, detect_errors
 from fantoma.dom.accessibility import AccessibilityExtractor
 from fantoma.config import FantomaConfig
+from fantoma.session import SessionManager
 
 log = logging.getLogger("fantoma")
 
@@ -231,3 +234,236 @@ class Fantoma:
             log.warning("Navigate failed: %s", e)
             return self._action_result(False, pre_url)
         return self._action_result(True, pre_url)
+
+    # ── Tabs ─────────────────────────────────────────────────
+
+    def new_tab(self, url: str) -> dict:
+        """Open a new tab and navigate to url."""
+        self._engine.new_tab(url)
+        time.sleep(2)
+        return {"state": self.get_state()}
+
+    def switch_tab(self, tab: int | str) -> dict:
+        """Switch to a tab by index."""
+        self._engine.switch_tab(tab)
+        return {"state": self.get_state()}
+
+    def close_tab(self, tab: int | str = None) -> dict:
+        """Close a tab. Defaults to current."""
+        if tab is not None:
+            self._engine.close_tab(tab)
+        else:
+            self._engine.close_tab()
+        return {"state": self.get_state()}
+
+    def list_tabs(self) -> list[dict]:
+        """List open tabs with index and URL."""
+        ctx = getattr(self._engine, '_context', None)
+        if not ctx:
+            page = self._engine.get_page()
+            return [{"index": 0, "url": page.url}]
+        return [{"index": i, "url": p.url} for i, p in enumerate(ctx.pages)]
+
+    # ── High-level operations ────────────────────────────────
+
+    def login(self, url: str, email: str = "", username: str = "",
+              password: str = "", first_name: str = "", last_name: str = "") -> dict:
+        """Log into a site. Navigates to url, fills form, handles CAPTCHA and verification.
+
+        Browser must be started first via start().
+        Does NOT stop the browser after -- caller may want to continue browsing.
+        """
+        from fantoma.captcha.orchestrator import CaptchaOrchestrator
+        from urllib.parse import urlparse
+        from uuid import uuid4
+
+        account = email or username or "default"
+        domain = urlparse(url).netloc
+        log.info("Login: %s (account=%s)", url, account[:20])
+
+        sessions = SessionManager()
+        memory = FormMemory()
+        visit_id = uuid4().hex
+
+        # Try saved session first
+        saved = sessions.load(domain, account)
+        if saved:
+            log.info("Found saved session for %s -- validating", domain)
+            try:
+                self._engine.load_storage_state(saved["storage_state"])
+                self._engine.navigate(saved.get("login_url", url))
+                time.sleep(3)
+                page = self._engine.get_page()
+                if _looks_logged_in(page, page.url, url):
+                    log.info("Saved session valid")
+                    memory.close()
+                    return {"success": True, "url": page.url, "from_session": True,
+                            "fields_filled": [], "steps": 0}
+                log.info("Saved session expired")
+                sessions.delete(domain, account)
+            except Exception as e:
+                log.warning("Session validation failed: %s", e)
+                sessions.delete(domain, account)
+
+        # Full login flow
+        self._engine.navigate(url)
+        time.sleep(3)
+        page = self._engine.get_page()
+
+        # Handle CAPTCHA
+        captcha = CaptchaOrchestrator(self.config)
+        captcha.handle(page, self._engine.screenshot)
+
+        result = form_login(
+            browser=self._engine,
+            dom_extractor=self._dom,
+            email=email, username=username, password=password,
+            first_name=first_name, last_name=last_name,
+            memory=memory, visit_id=visit_id,
+            config=self.config, llm=self._llm,
+        )
+
+        page = self._engine.get_page()
+
+        # Check if logged in
+        if result.get("success") and _looks_logged_in(page, page.url, url):
+            log.info("Login successful")
+            try:
+                state = self._engine.get_storage_state()
+                sessions.save(domain, account, state, url)
+            except Exception as e:
+                log.warning("Failed to save session: %s", e)
+            memory.record_visit(domain, True)
+            memory.close()
+            return result
+
+        # Handle verification if needed
+        if result.get("verification_needed"):
+            vtype = result["verification_needed"]
+            log.info("Verification needed: %s", vtype)
+            value = self._get_verification(vtype, domain)
+            if value and vtype == "code":
+                self._enter_verification_code(value)
+            elif value and vtype == "link":
+                self._engine.navigate(value)
+                time.sleep(5)
+
+            page = self._engine.get_page()
+            if _looks_logged_in(page, page.url, url):
+                log.info("Logged in after verification")
+                try:
+                    state = self._engine.get_storage_state()
+                    sessions.save(domain, account, state, url)
+                except Exception:
+                    pass
+                memory.record_visit(domain, True)
+                memory.close()
+                result["success"] = True
+                return result
+
+        memory.record_visit(domain, False)
+        memory.close()
+        return result
+
+    def extract(self, query: str, schema: dict = None) -> dict | list | str:
+        """Extract data from the current page.
+
+        With LLM: sends page text + query to LLM, returns structured data.
+        Without LLM: returns raw ARIA tree text.
+        """
+        if not self._llm:
+            return self._dom.extract(self._engine.get_page())
+
+        import json as _json
+        page = self._engine.get_page()
+        main = page.locator("main, [role=main]")
+        if main.count() > 0:
+            full_text = main.first.inner_text()[:6000]
+        else:
+            full_text = page.inner_text("body")[:6000]
+
+        if schema:
+            type_map = {str: "string", int: "integer", float: "number", bool: "boolean"}
+            schema_desc = ", ".join(f'"{k}": {type_map.get(v, "string")}' for k, v in schema.items())
+            system = (f"Extract data as a JSON array. Each item must have these fields: {{{schema_desc}}}.\n"
+                      "Return ONLY a valid JSON array. No explanation. No markdown.")
+        else:
+            system = "Extract the requested information. Return only the data, no explanation."
+
+        response = self._llm.chat(
+            [{"role": "system", "content": system},
+             {"role": "user", "content": f"Extract: {query}\n\nPage content:\n{full_text}"}],
+            max_tokens=2000,
+        )
+        if not response:
+            return [] if schema else ""
+        response = response.strip()
+        if schema:
+            if response.startswith("```"):
+                response = response.split("\n", 1)[1].rsplit("```", 1)[0]
+            try:
+                data = _json.loads(response)
+                return data if isinstance(data, list) else [data]
+            except _json.JSONDecodeError:
+                return []
+        return response
+
+    # ── Utilities ────────────────────────────────────────────
+
+    def get_cookies(self) -> list[dict]:
+        return self._engine.get_cookies()
+
+    def set_cookies(self, cookies: list[dict]) -> None:
+        self._engine.set_cookies(cookies)
+
+    def get_storage_state(self) -> dict:
+        return self._engine.get_storage_state()
+
+    def load_storage_state(self, state: dict) -> None:
+        self._engine.load_storage_state(state)
+
+    # ── Private helpers ──────────────────────────────────────
+
+    def _get_verification(self, vtype, domain):
+        """Get verification code/link. IMAP -> callback -> terminal."""
+        if self.config.email.host:
+            from fantoma.browser.email_verify import check_inbox
+            result = check_inbox(self.config.email, domain, prefer=vtype)
+            if result:
+                return result["value"]
+        if self._verification_callback:
+            try:
+                msg = f"Enter verification {vtype} from {domain}"
+                value = self._verification_callback(domain, msg)
+                if value:
+                    return value.strip()
+            except Exception as e:
+                log.warning("Verification callback failed: %s", e)
+        try:
+            value = input(f"\nVerification {vtype} from {domain}: ")
+            return value.strip() if value else None
+        except (EOFError, OSError):
+            return None
+
+    def _enter_verification_code(self, code):
+        """Find verification input and enter the code."""
+        page = self._engine.get_page()
+        self._dom.extract(page)
+        for el in self._dom._last_interactive:
+            if el.get("role") in ("textbox", "input"):
+                handle = self._dom.get_element_by_index(page, el["index"])
+                if handle:
+                    type_into(self._engine, handle, code)
+                    page.keyboard.press("Enter")
+                    return
+        selectors = ['input[name*="code"]', 'input[name*="otp"]', 'input[name*="verify"]',
+                     'input[placeholder*="code"]', 'input[type="text"]', 'input[type="number"]']
+        for sel in selectors:
+            try:
+                handle = page.query_selector(sel)
+                if handle and handle.is_visible():
+                    type_into(self._engine, handle, code)
+                    page.keyboard.press("Enter")
+                    return
+            except Exception:
+                continue

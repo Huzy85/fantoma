@@ -240,3 +240,133 @@ class TestFantomaActions:
 
         assert result["success"] is True
         mock_element.select_option.assert_called_once_with(label="Option A")
+
+
+class TestFantomaTabs:
+    """Test tab management methods."""
+
+    def _make_fantoma(self):
+        from fantoma.browser_tool import Fantoma
+        f = Fantoma()
+        f._engine = MagicMock()
+        f._dom = MagicMock()
+        mock_page = MagicMock()
+        f._engine.get_page.return_value = mock_page
+        mock_page.url = "https://example.com"
+        mock_page.title.return_value = "Test"
+        f._dom.extract.return_value = ""
+        f._dom._last_interactive = []
+        return f, mock_page
+
+    def test_new_tab_returns_state(self):
+        from fantoma.browser_tool import Fantoma
+        f, page = self._make_fantoma()
+        f._engine.new_tab.return_value = 1
+
+        with patch("fantoma.browser_tool.detect_errors", return_value=[]):
+            result = f.new_tab("https://other.com")
+
+        assert "state" in result
+        f._engine.new_tab.assert_called_once_with("https://other.com")
+
+    def test_list_tabs(self):
+        from fantoma.browser_tool import Fantoma
+        f, page = self._make_fantoma()
+        mock_ctx = MagicMock()
+        mock_page1 = MagicMock()
+        mock_page1.url = "https://example.com"
+        mock_page2 = MagicMock()
+        mock_page2.url = "https://other.com"
+        mock_ctx.pages = [mock_page1, mock_page2]
+        f._engine._context = mock_ctx
+
+        tabs = f.list_tabs()
+        assert len(tabs) == 2
+        assert tabs[0]["url"] == "https://example.com"
+        assert tabs[1]["url"] == "https://other.com"
+
+
+class TestFantomaLogin:
+    """Test login delegation."""
+
+    def test_login_navigates_and_fills(self):
+        from fantoma.browser_tool import Fantoma
+        f = Fantoma()
+        f._engine = MagicMock()
+        f._dom = MagicMock()
+        mock_page = MagicMock()
+        f._engine.get_page.return_value = mock_page
+        mock_page.url = "https://example.com/dashboard"
+        mock_page.title.return_value = "Dashboard"
+        f._dom.extract.return_value = ""
+        f._dom._last_interactive = []
+
+        with patch("fantoma.browser_tool.form_login") as mock_form_login:
+            mock_form_login.return_value = {
+                "success": True, "steps": 1, "url": "https://example.com/dashboard",
+                "fields_filled": ["email", "password"],
+            }
+            with patch("fantoma.browser_tool._looks_logged_in", return_value=True):
+                with patch("fantoma.browser_tool.detect_errors", return_value=[]):
+                    result = f.login("https://example.com/login",
+                                     email="test@test.com", password="pass")
+
+        assert result["success"] is True
+
+
+class TestFantomaExtract:
+    """Test extraction with and without LLM."""
+
+    def test_extract_without_llm_returns_aria(self):
+        from fantoma.browser_tool import Fantoma
+        f = Fantoma()  # No llm_url
+        f._engine = MagicMock()
+        f._dom = MagicMock()
+        mock_page = MagicMock()
+        f._engine.get_page.return_value = mock_page
+        f._dom.extract.return_value = "[1] heading 'Books'\n[2] text 'Python for Beginners'"
+        f._dom._last_interactive = []
+
+        result = f.extract("What books are listed?")
+        assert "Books" in result
+        assert "Python for Beginners" in result
+
+    def test_extract_with_llm_calls_chat(self):
+        from fantoma.browser_tool import Fantoma
+        f = Fantoma(llm_url="http://localhost:8080/v1")
+        f._engine = MagicMock()
+        f._dom = MagicMock()
+        mock_page = MagicMock()
+        f._engine.get_page.return_value = mock_page
+        # Mock the locator chain so main.count() returns 0 (no <main> element)
+        mock_locator = MagicMock()
+        mock_locator.count.return_value = 0
+        mock_page.locator.return_value = mock_locator
+        mock_page.inner_text.return_value = "Book: Python, Price: $10"
+        f._dom.extract.return_value = ""
+        f._dom._last_interactive = []
+        f._llm = MagicMock()
+        f._llm.chat.return_value = '{"title": "Python", "price": "$10"}'
+
+        result = f.extract("Extract books", schema={"title": str, "price": str})
+        f._llm.chat.assert_called_once()
+
+
+class TestFantomaUtilities:
+    """Test cookie and storage methods."""
+
+    def test_get_cookies(self):
+        from fantoma.browser_tool import Fantoma
+        f = Fantoma()
+        f._engine = MagicMock()
+        f._engine.get_cookies.return_value = [{"name": "sid", "value": "abc"}]
+        cookies = f.get_cookies()
+        assert cookies == [{"name": "sid", "value": "abc"}]
+
+    def test_get_storage_state(self):
+        from fantoma.browser_tool import Fantoma
+        f = Fantoma()
+        f._engine = MagicMock()
+        f._engine.get_storage_state.return_value = {"cookies": [], "origins": []}
+        state = f.get_storage_state()
+        assert "cookies" in state
