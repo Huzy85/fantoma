@@ -50,6 +50,20 @@ class BrowserEngine:
 
     def _start_camoufox(self):
         """Launch Camoufox browser. Uses persistent profile if profile_dir is set."""
+        # glibc 2.42+ (Fedora 43 / Linux 6.7+): madvise(MADV_GUARD_INSTALL) is
+        # blocked by Camoufox's seccomp filter, causing SIGSEGV on browser start.
+        # An LD_PRELOAD shim fixes this by intercepting the seccomp install paths.
+        # Place the compiled shim at ~/.local/share/fantoma/madvise_shim.so —
+        # Fantoma will detect and load it automatically.
+        # LIBGL_ALWAYS_SOFTWARE: Mesa software renderer for glxtest child process.
+        # DISPLAY: required for glxtest on headless machines running Xvfb.
+        import pathlib
+        shim = pathlib.Path.home() / ".local/share/fantoma/madvise_shim.so"
+        if shim.exists():
+            existing = os.environ.get("LD_PRELOAD", "")
+            os.environ["LD_PRELOAD"] = f"{shim}:{existing}".rstrip(":")
+            os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+            os.environ.setdefault("DISPLAY", ":99")
         proxy = self._proxy_dict()
 
         # When using virtual display, sync Xvfb resolution with Camoufox's
@@ -72,7 +86,6 @@ class BrowserEngine:
                 humanize=True,
                 os=["linux"],
                 proxy=proxy,
-                main_world_eval=True,
                 **stealth_config,
             )
             if screen:
@@ -91,7 +104,6 @@ class BrowserEngine:
                 humanize=True,
                 os=["linux"],
                 proxy=proxy,
-                main_world_eval=True,
                 **stealth_config,
             )
             if screen:
@@ -131,9 +143,6 @@ class BrowserEngine:
                 }""")
             except Exception:
                 pass  # Non-critical — works without these
-
-        # Auto-follow popups and new tabs
-        self._setup_popup_handling()
 
         # Start trace recording if enabled
         if self._trace and self._context:
@@ -178,47 +187,7 @@ class BrowserEngine:
                 _log.warning("Tracing not available: %s", e)
                 self._trace_active = False
 
-        # Auto-follow popups and new tabs
-        self._setup_popup_handling()
-
         _log.info("Chromium (Patchright) started, headless=%s", self.headless)
-
-    def _setup_popup_handling(self):
-        """Register listeners to auto-follow popups and new tabs.
-
-        When a site opens a new tab/popup (OAuth flow, target="_blank", payment page),
-        automatically switch _page to it. When the popup closes, switch back.
-        """
-        ctx = self._context
-        if not ctx:
-            return
-
-        def on_new_page(new_page):
-            try:
-                new_page.wait_for_load_state("domcontentloaded", timeout=10000)
-            except Exception:
-                pass  # Page may have already loaded or navigated away
-            self._previous_page = self._page
-            self._page = new_page
-            _log.info("Auto-switched to new tab: %s", new_page.url)
-
-            def on_close():
-                if self._page is new_page and self._previous_page:
-                    try:
-                        # Verify the previous page is still open
-                        _ = self._previous_page.url
-                        self._page = self._previous_page
-                        _log.info("Popup closed, switched back to: %s", self._page.url)
-                    except Exception:
-                        # Previous page was also closed — use last remaining
-                        remaining = ctx.pages
-                        if remaining:
-                            self._page = remaining[-1]
-
-            new_page.on("close", lambda: on_close())
-
-        ctx.on("page", on_new_page)
-        self._previous_page = None
 
     def stop(self):
         """Close browser gracefully."""
@@ -273,15 +242,6 @@ class BrowserEngine:
                     self._camoufox_cm.__exit__(None, None, None)
                 except Exception:
                     pass
-
-            # Clear the stale "running loop" reference left by Playwright's _sync_base.py.
-            # After playwright.stop() closes the loop, asyncio._set_running_loop() still
-            # holds a pointer to it. The next test's PlaywrightContextManager.__enter__()
-            # calls asyncio.get_running_loop() which returns the closed loop instead of
-            # raising RuntimeError, causing "Event loop is closed! Is Playwright stopped?".
-            import asyncio
-            asyncio._set_running_loop(None)
-
             self._page = None
             self._context = None
             self._browser = None
