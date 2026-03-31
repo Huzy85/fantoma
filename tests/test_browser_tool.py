@@ -370,3 +370,41 @@ class TestFantomaUtilities:
         f._engine.get_storage_state.return_value = {"cookies": [], "origins": []}
         state = f.get_storage_state()
         assert "cookies" in state
+
+
+class TestAgentWrapper:
+    """Test Agent delegates to Fantoma."""
+
+    def test_agent_creates_fantoma(self):
+        from fantoma.agent import Agent
+        with patch("fantoma.agent.Fantoma") as MockFantoma:
+            agent = Agent(llm_url="http://localhost:8080/v1")
+            MockFantoma.assert_called_once()
+
+    def test_agent_login_delegates(self):
+        from fantoma.agent import Agent
+        with patch("fantoma.agent.Fantoma") as MockFantoma:
+            mock_f = MagicMock()
+            MockFantoma.return_value = mock_f
+            mock_f.login.return_value = {"success": True, "fields_filled": ["email"], "steps": 1, "url": "https://x.com"}
+            mock_f.start.return_value = {"url": "about:blank", "title": "", "aria_tree": "", "errors": [], "tab_count": 1}
+
+            agent = Agent(llm_url="http://localhost:8080/v1")
+            result = agent.login("https://x.com/login", email="a@b.com", password="pass")
+
+            mock_f.login.assert_called_once()
+            assert result.success is True
+
+    def test_agent_extract_delegates(self):
+        from fantoma.agent import Agent
+        with patch("fantoma.agent.Fantoma") as MockFantoma:
+            mock_f = MagicMock()
+            MockFantoma.return_value = mock_f
+            mock_f.start.return_value = {"url": "https://books.com", "title": "", "aria_tree": "", "errors": [], "tab_count": 1}
+            mock_f.extract.return_value = [{"title": "Python"}]
+
+            agent = Agent(llm_url="http://localhost:8080/v1")
+            result = agent.extract("https://books.com", "Get books", schema={"title": str})
+
+            mock_f.start.assert_called()
+            mock_f.extract.assert_called_once()
