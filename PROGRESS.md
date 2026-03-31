@@ -1,5 +1,65 @@
 # Fantoma Development Progress
 
+## Session 13: 2026-03-31 — Camoufox glibc 2.42 Fix + 25-Site Live Test
+
+### Summary
+Fixed Camoufox SIGSEGV on Fedora 43 / glibc 2.42 using an LD_PRELOAD shim. Validated the fix with a full 25-site live test run using Hermes (9B local model). Result: 23/25 passing (92%). Zero browser crashes across all 25 tests.
+
+### Root Cause
+
+glibc 2.42 calls `madvise(MADV_GUARD_INSTALL)` (arg 102) during `pthread_create` for thread stack guard pages — a Linux 6.7 feature. Camoufox's seccomp BPF filter was compiled before these `madvise` values existed. Child processes (content, RDD, utility) receive SIGSYS and die, causing `TargetClosedError: Page crashed` on any navigation including `data:` URIs.
+
+Firefox installs the seccomp filter via two paths: `prctl(PR_SET_SECCOMP)` and `syscall(SYS_seccomp)`. Both must be intercepted to fix the issue.
+
+### Fix
+
+LD_PRELOAD shim at `/home/steamvibe/tools/madvise_shim.so` (source: `madvise_shim.c`). Intercepts both seccomp install paths and converts `MADV_GUARD_INSTALL`/`MADV_GUARD_REMOVE` calls to no-ops before they reach the seccomp filter. Uses inline assembly for the `syscall()` intercept path to avoid breaking other syscalls via va_arg forwarding.
+
+Required env vars set in `engine.py _start_camoufox()`:
+- `LD_PRELOAD=/home/steamvibe/tools/madvise_shim.so`
+- `DISPLAY=:99` (Xvfb)
+- `LIBGL_ALWAYS_SOFTWARE=1` (Mesa software renderer for glxtest)
+
+Also requires `glxtest` binary copied from `/usr/lib64/firefox/glxtest` to `~/.cache/camoufox/`.
+
+**Wrong approaches (do not use):** Binary-patching JNE/JE in camoufox-bin or libxul.so made it worse. Intercepting madvise at the glibc wrapper level does nothing because glibc uses inline syscalls internally, not its own wrapper. daijro/camoufox#551 was closed with the wrong fix.
+
+**Upgrade warning:** Camoufox upgrades wipe `~/.cache/camoufox/`. After any upgrade: re-copy glxtest, verify Xvfb is on :99, run one test to confirm the shim still works.
+
+### 25-Site Live Test Results (Hermes 9B, 2026-03-31)
+
+| # | Site | Result | Time | Notes |
+|---|------|--------|------|-------|
+| 1 | Guardian | PASS | 44s | |
+| 2 | Reuters | FAIL | 2s | Stale context — agent gave up immediately |
+| 3 | TechCrunch | PASS | 181s | |
+| 4 | PyPI | PASS | 44s | |
+| 5 | npm | PASS | 119s | |
+| 6 | Regex101 | FAIL | 457s | Custom code editor — 87 steps, success_check timeout |
+| 7 | Python docs | PASS | 249s | |
+| 8 | Wayback Machine | PASS | 150s | |
+| 9 | CodePen | PASS | 25s | |
+| 10 | Reddit | PASS | 63s | React SPA |
+| 11 | GitLab | PASS | 34s | |
+| 12 | WordPress.com | PASS | 75s | |
+| 13 | Twitch | PASS | 52s | Bot-protected |
+| 14 | Discord | PASS | 55s | React |
+| 15 | Spotify | PASS | 27s | |
+| 16 | Dev.to | PASS | 99s | |
+| 17 | Disqus | PASS | 78s | |
+| 18 | Etsy | PASS | 151s | |
+| 19 | eBay UK | PASS | 16s | |
+| 20 | Argos | PASS | 56s | |
+| 21 | Reed.co.uk | PASS | 43s | |
+| 22 | Glassdoor UK | PASS | 34s | |
+| 23 | Rightmove | PASS | 19s | |
+| 24 | Ticketmaster UK | PASS | 38s | |
+| 25 | TotalJobs | PASS | 144s | |
+
+**23/25 passing. Zero browser crashes.** Both failures are agent logic (stale context, custom editor loop), not browser stability.
+
+---
+
 ## Session 12: 2026-03-30 — Three Sequential-Test Bug Fixes
 
 ### Summary
