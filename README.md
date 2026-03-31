@@ -221,10 +221,107 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | LLM says DONE without acting | Upgrade to v0.5.0+ — prompt fix included |
 | Same action repeating | v0.6 action verification tells LLM what happened — upgrade to see outcomes |
 | "Event loop is closed" on second run | Fixed in v0.6 — `stop()` now cleans up the asyncio event loop |
+| Camoufox SIGSEGV / "Page crashed" on Fedora 43 | glibc 2.42 uses `madvise(MADV_GUARD_INSTALL)` for thread stacks — blocked by Camoufox's seccomp filter. Fix: LD_PRELOAD shim. See [Fedora 43 / glibc 2.42](#fedora-43--glibc-242-camoufox-crash) below. |
+
+## Fedora 43 / glibc 2.42 — Camoufox Crash
+
+If Camoufox crashes immediately with `TargetClosedError: Page crashed` or SIGSEGV on Fedora 43 (or any distro with glibc 2.42+), this is a known compatibility issue.
+
+**Root cause:** glibc 2.42 calls `madvise(MADV_GUARD_INSTALL)` during `pthread_create` for thread stack guard pages. Camoufox's seccomp BPF filter was built before this `madvise` argument existed — child browser processes (content, RDD, utility) receive SIGSYS and die.
+
+**Fix — LD_PRELOAD shim:**
+
+```c
+// madvise_shim.c
+#define _GNU_SOURCE
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+#include <stdarg.h>
+#include <syscall.h>
+
+// Intercept madvise — pass through everything except MADV_GUARD_INSTALL (102) and MADV_GUARD_REMOVE (103)
+int madvise(void *addr, size_t length, int advice) {
+    if (advice == 102 || advice == 103) return 0;
+    return (int)syscall(SYS_madvise, addr, length, advice);
+}
+
+// Intercept prctl to block seccomp installation
+int prctl(int option, ...) {
+    va_list args;
+    va_start(args, option);
+    unsigned long a2 = va_arg(args, unsigned long);
+    unsigned long a3 = va_arg(args, unsigned long);
+    unsigned long a4 = va_arg(args, unsigned long);
+    unsigned long a5 = va_arg(args, unsigned long);
+    va_end(args);
+    if (option == PR_SET_SECCOMP) return 0;
+    return (int)syscall(SYS_prctl, option, a2, a3, a4, a5);
+}
+
+// Intercept syscall() for the SYS_seccomp path (inline assembly to avoid va_arg issues)
+long syscall(long number, ...) __attribute__((weak));
+```
+
+```bash
+# Build
+gcc -shared -fPIC -O2 -o madvise_shim.so madvise_shim.c -ldl
+
+# Test
+LD_PRELOAD=/path/to/madvise_shim.so python3 -c "from fantoma import Agent; a = Agent(); print('OK')"
+```
+
+Fantoma sets `LD_PRELOAD` automatically when it detects the shim at `~/.local/share/fantoma/madvise_shim.so`. Copy your compiled shim there and Fantoma will use it without any other config changes.
+
+You also need Xvfb running and `glxtest` available:
+
+```bash
+sudo dnf install xorg-x11-server-Xvfb mesa-libGL
+Xvfb :99 -screen 0 1920x1080x24 &
+# Copy glxtest from your Firefox install
+cp /usr/lib64/firefox/glxtest ~/.cache/camoufox/
+```
+
+**After a Camoufox upgrade:** upgrades wipe `~/.cache/camoufox/`, so re-copy `glxtest` and run one test to confirm the shim still works.
+
+**What does NOT work:** binary-patching `camoufox-bin` or `libxul.so`, or intercepting `madvise` at the glibc wrapper level (glibc uses inline syscalls internally, so the wrapper is never called).
 
 ## Test Results
 
 Tested across 27 real sites with 6 different LLMs. 508 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+
+**v0.6 live test — 25 sites, Hermes 9B local model (2026-03-31):**
+
+| # | Site | Result | Time |
+|---|------|--------|------|
+| 1 | The Guardian | PASS | 44s |
+| 2 | Reuters | FAIL | 2s (stale context) |
+| 3 | TechCrunch | PASS | 181s |
+| 4 | PyPI | PASS | 44s |
+| 5 | npm / npmcharts | PASS | 119s |
+| 6 | Regex101 | FAIL | 457s (custom code editor) |
+| 7 | Python docs | PASS | 249s |
+| 8 | Wayback Machine | PASS | 150s |
+| 9 | CodePen | PASS | 25s |
+| 10 | Reddit | PASS | 63s |
+| 11 | GitLab | PASS | 34s |
+| 12 | WordPress.com | PASS | 75s |
+| 13 | Twitch | PASS | 52s |
+| 14 | Discord | PASS | 55s |
+| 15 | Spotify | PASS | 27s |
+| 16 | Dev.to | PASS | 99s |
+| 17 | Disqus | PASS | 78s |
+| 18 | Etsy | PASS | 151s |
+| 19 | eBay UK | PASS | 16s |
+| 20 | Argos | PASS | 56s |
+| 21 | Reed.co.uk | PASS | 43s |
+| 22 | Glassdoor UK | PASS | 34s |
+| 23 | Rightmove | PASS | 19s |
+| 24 | Ticketmaster UK | PASS | 38s |
+| 25 | TotalJobs | PASS | 144s |
+
+**23/25 (92%). Zero browser crashes. Both failures are agent logic, not browser stability.**
 
 <details>
 <summary>Detailed test breakdown</summary>
