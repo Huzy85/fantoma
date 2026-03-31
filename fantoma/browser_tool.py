@@ -6,6 +6,7 @@ No mouse movements, no pixel coordinates, no visual layer signals for anti-bot t
 import logging
 import time
 
+from fantoma.browser.actions import click_element, type_into, scroll_page
 from fantoma.browser.engine import BrowserEngine
 from fantoma.browser.consent import dismiss_consent
 from fantoma.browser.observer import inject_observer, collect_mutations, wait_for_dom_stable
@@ -132,3 +133,101 @@ class Fantoma:
     def screenshot(self) -> bytes:
         """Take a PNG screenshot of the current viewport."""
         return self._engine.screenshot()
+
+    # ── Actions ──────────────────────────────────────────────
+
+    def _action_result(self, success: bool, pre_url: str = None) -> dict:
+        """Build a standard action result with fresh state."""
+        state = self.get_state()
+        return {
+            "success": success,
+            "changed": pre_url is not None and state["url"] != pre_url,
+            "url_changed": pre_url is not None and state["url"] != pre_url,
+            "errors": state["errors"],
+            "state": state,
+        }
+
+    def click(self, element_id: int) -> dict:
+        """Click an element by its ARIA tree index."""
+        page = self._engine.get_page()
+        pre_url = page.url
+        element = self._dom.get_element_by_index(page, element_id)
+        if not element:
+            log.warning("Element [%d] not found", element_id)
+            return self._action_result(False, pre_url)
+        try:
+            inject_observer(page)
+            click_element(self._engine, element)
+            wait_for_dom_stable(page)
+        except Exception as e:
+            log.warning("Click [%d] failed: %s", element_id, e)
+            return self._action_result(False, pre_url)
+        return self._action_result(True, pre_url)
+
+    def type_text(self, element_id: int, text: str) -> dict:
+        """Type text into an element by its ARIA tree index."""
+        page = self._engine.get_page()
+        pre_url = page.url
+        element = self._dom.get_element_by_index(page, element_id)
+        if not element:
+            log.warning("Element [%d] not found", element_id)
+            return self._action_result(False, pre_url)
+        try:
+            inject_observer(page)
+            type_into(self._engine, element, text)
+            wait_for_dom_stable(page)
+        except Exception as e:
+            log.warning("Type [%d] failed: %s", element_id, e)
+            return self._action_result(False, pre_url)
+        return self._action_result(True, pre_url)
+
+    def select(self, element_id: int, value: str) -> dict:
+        """Select an option from a dropdown by its ARIA tree index."""
+        page = self._engine.get_page()
+        pre_url = page.url
+        element = self._dom.get_element_by_index(page, element_id)
+        if not element:
+            log.warning("Element [%d] not found", element_id)
+            return self._action_result(False, pre_url)
+        try:
+            inject_observer(page)
+            element.select_option(label=value)
+            wait_for_dom_stable(page)
+        except Exception as e:
+            log.warning("Select [%d] failed: %s", element_id, e)
+            return self._action_result(False, pre_url)
+        return self._action_result(True, pre_url)
+
+    def scroll(self, direction: str = "down") -> dict:
+        """Scroll the page. Direction: 'up', 'down', 'left', 'right'."""
+        pre_url = self._engine.get_page().url
+        try:
+            scroll_page(self._engine, direction)
+        except Exception as e:
+            log.warning("Scroll failed: %s", e)
+            return self._action_result(False, pre_url)
+        return self._action_result(True, pre_url)
+
+    def press_key(self, key: str) -> dict:
+        """Press a keyboard key (Enter, Tab, Escape, etc.)."""
+        page = self._engine.get_page()
+        pre_url = page.url
+        try:
+            page.keyboard.press(key)
+        except Exception as e:
+            log.warning("Press %s failed: %s", key, e)
+            return self._action_result(False, pre_url)
+        return self._action_result(True, pre_url)
+
+    def navigate(self, url: str) -> dict:
+        """Navigate to a URL."""
+        pre_url = self._engine.get_page().url
+        try:
+            self._engine.navigate(url)
+            time.sleep(2)
+            dismiss_consent(self._engine.get_page())
+            wait_for_dom_stable(self._engine.get_page())
+        except Exception as e:
+            log.warning("Navigate failed: %s", e)
+            return self._action_result(False, pre_url)
+        return self._action_result(True, pre_url)
