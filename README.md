@@ -45,42 +45,29 @@ fantoma test         # Verify it works
 - **Gets through the gate** — login, signup, CAPTCHA solving. Code handles the forms, LLM handles the unexpected.
 - **LLM as brain, code as hands** — Code matches form fields by label (fast, zero tokens). When it can't match, one LLM call labels all fields at once. Code fills based on the LLM's answer. Results cached in SQLite — LLM never called twice for the same site.
 - **Signup forms** — fills first name, last name, email, username, password, confirm password. Clicks terms checkboxes. Tracks what's been filled to avoid double-submission.
-- **27 real sites tested** — MongoDB Atlas, Stripe, Twilio, Zapier, GitHub, HN, Notion, Supabase, and 19 more. Zero bot detections.
+- **25 real sites tested** — GitHub, HN, Etsy, eBay, Reddit, Discord, Spotify, and 18 more. Zero bot detections.
 - [Camoufox](https://github.com/daijro/camoufox) anti-detection — passes bot.sannysoft.com and nowsecure.nl. 2,241 stress tests, zero fingerprint detections.
 - **ARIA + raw DOM** — always reads both. No form is invisible, even old-school HTML without ARIA labels.
 - **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
-- **Resilience** — 3-level model escalation (local → cloud → back), 3-level environment escalation (cookies → proxy → fresh fingerprint), retry on slow SPAs. Page reference auto-refreshed after each browser restart so stale handles never cause crashes.
+- **Resilience** — 3-level model escalation (local → cloud → back), retry on slow SPAs.
 - **Multi-API compatible** — JSON mode (`response_format`) only sent to local endpoints. Cloud APIs (DeepSeek, OpenAI, Anthropic) work without 400 errors.
 - **Sequential session safety** — after each browser session closes, the asyncio "running loop" pointer is cleared so the next session starts clean. Prevents "Event loop is closed" errors when running many tests back-to-back.
 - **Playwright traces** — `Agent(trace=True)` records full debug sessions
 - **Fingerprint self-test** — `fantoma test fingerprint` runs 7 in-browser checks
 - **Chromium fallback** — `Agent(browser="chromium")` via [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) for sites that block Firefox
-- **Auto-follow popups** — OAuth flows, `target="_blank"` links, and payment pages in new tabs are automatically followed. When the popup closes, focus returns to the original tab. No LLM actions needed.
 - Multi-tab sessions, proxy rotation, CAPTCHA solving, verification code extraction
 - **Session persistence** — cookies + localStorage saved to encrypted files per domain + account. Login once, skip forms forever. `pip install fantoma[sessions]` for encryption.
-- **Unified login pipeline** — signup → CAPTCHA → email verification → login-back, all in one `agent.login()` call. Tries saved session first.
-- **Multi-action steps** — LLM returns up to 5 actions per call (3-5x fewer LLM calls). Page-change guards abort stale actions if the page navigates mid-sequence.
-- **Paint-order filtering** — removes elements hidden behind modals and overlays before showing them to the LLM. Fewer confused clicks on invisible buttons.
-- **Free search tools** — `SEARCH_PAGE "text"` and `FIND "css selector"` — the LLM can search page content without extra LLM calls.
-- **Message compaction** — long tasks (50+ steps) don't blow the context window. Old history gets summarized automatically.
+- **Unified login pipeline** — signup → CAPTCHA → email verification → login-back, all in one `login()` call. Tries saved session first.
 - **Sensitive data** — pass credentials as `sensitive_data={"email": "...", "password": "..."}`. They appear as `<secret:email>` in LLM prompts and logs. Real values injected only at execution time.
-- **Action verification** — after every click or submit, code checks what happened: URL change, new elements, error messages. The LLM sees `"After CLICK [5]: error — Invalid email"` instead of just `"failed"`.
 - **Inline error detection** — JS scans for `role="alert"`, `aria-invalid`, error CSS classes, and common error text patterns. No LLM needed.
-- **Smart element pruning** — relevance-based scoring replaces the hard cap. The LLM sees the 15 most relevant elements for the current task, not the first 15 on the page.
-- **MutationObserver tracking** — precise feedback on what each action changed in the DOM. Added nodes, removed nodes, changed attributes, new text — all reported to the LLM.
+- **Smart element pruning** — relevance-based scoring replaces the hard cap. The LLM sees the most relevant elements for the current task, not the first N on the page.
 - **Tree diffing** — new elements (from dropdowns, modals, next form steps) marked with `*` prefix so the LLM sees what just appeared.
-- **Observation masking** — action outcomes kept verbatim, old DOM snapshots dropped. LLM compaction only kicks in at 40% of context window. Most tasks use zero compaction calls.
-- **Script caching** — after a successful task, saves the action sequence to SQLite. Next time, replays without any LLM calls. Falls back to LLM if the page changed.
-- **Structured JSON output** — LLM returns `{"actions": [...]}` instead of free text. Schema-constrained via `response_format`. Falls back to text parsing if JSON fails (backward-compatible with all models).
-- **DOM element deduplication** — removes repeated nav/footer/header elements before the LLM sees them. Sites repeat the same links in three places; Fantoma shows each once.
-- **Iframe ARIA extraction** — payment forms, embedded logins, and consent dialogs inside iframes are now visible. Up to 5 iframes scanned per page.
-- **Adaptive DOM wait** — replaces fixed `network_idle` with a debounced MutationObserver. Waits until the DOM stops changing for 300ms, not until the network quiets. Faster on SPAs, more reliable on slow CDNs.
+- **Iframe ARIA extraction** — payment forms, embedded logins, and consent dialogs inside iframes are visible. Up to 5 iframes scanned per page.
 - **Inline field state** — `aria-invalid`, `required`, current value, and error text shown directly in the element list. LLM sees `[3] textbox "Email" [invalid: "Please enter a valid email"]` instead of guessing why a submit failed.
-- **Adaptive DOM modes** — three extraction modes (form/content/navigate) inferred per step from task keywords and page state. Form mode boosts inputs to top with tighter caps. Content mode strips UI for scraping. Inspired by Agent-E's DOM distillation.
-- **ARIA landmark grouping** — interactive elements grouped under their nearest ARIA landmark (`[form: Login]`, `[navigation: Main nav]`). LLM sees structural context, not a flat list. Novel approach supported by LCoW (ICLR 2025) research.
-- **Per-step success criteria** — after every action, code verifies it worked (TYPE checks field value, CLICK checks URL/form). Task-level progress tracking detects stalls. Inspired by Skyvern 2.0's validator pattern.
-- **Self-healing selectors** — cached scripts survive page changes. When an element moves or gets renamed, fuzzy matching (difflib SequenceMatcher) finds it by role + name similarity. Inspired by Stagehand v3 and Healenium.
+- **Adaptive DOM modes** — three extraction modes (form/content/navigate) inferred per step from task keywords and page state. Form mode boosts inputs to top with tighter caps. Content mode strips UI for scraping.
+- **ARIA landmark grouping** — interactive elements grouped under their nearest ARIA landmark (`[form: Login]`, `[navigation: Main nav]`). LLM sees structural context, not a flat list.
+- **Cookie consent auto-dismiss** — detects and closes consent banners without LLM involvement.
 
 ## Accessibility-First Stealth
 
@@ -96,17 +83,24 @@ Fantoma interacts via the browser's accessibility API (ARIA tree) — the same c
 
 ## Login & Signup (No LLM)
 
-`agent.login()` handles the full flow: saved session check → form fill → CAPTCHA → email verification → login-back. No LLM needed for known forms. Sessions saved to encrypted files — login once, instant access next time.
+`login()` handles the full flow: saved session check → form fill → CAPTCHA → email verification → login-back. No LLM needed for known forms. Sessions saved to encrypted files — login once, instant access next time. Available on both `Fantoma` and `Agent`.
 
 ```python
-# Simple login
-result = agent.login("https://example.com/login", email="me@example.com", password="pass")
+# Tool API — no LLM needed
+browser = Fantoma()
+browser.start()
+result = browser.login("https://github.com/login", email="me@example.com", password="...")
+browser.stop()
+
+# Convenience API
+agent = Agent(llm_url="http://localhost:8080/v1")
+result = agent.login("https://github.com/login", email="me@example.com", password="...")
 
 # Login with username instead of email
-result = agent.login("https://news.ycombinator.com/login", username="myuser", password="pass")
+result = browser.login("https://news.ycombinator.com/login", username="myuser", password="pass")
 
 # Signup with name fields
-result = agent.login(
+result = browser.login(
     "https://demo.nopcommerce.com/register",
     first_name="Fantoma", last_name="Agent",
     email="me@example.com", password="SecurePass123!"
@@ -153,8 +147,7 @@ books = agent.extract(
     schema={"title": str, "price": str}
 )
 
-# Python: multi-tab session (signup + email verification)
-# Automatic email verification (IMAP polling)
+# Python: automatic email verification (IMAP polling)
 agent = Agent(
     llm_url="http://localhost:8080/v1",
     email_imap={
@@ -167,25 +160,14 @@ result = agent.login("https://example.com/register",
                      email="me@example.com", password="SecurePass123!")
 # If the site sends a verification email, Fantoma polls IMAP,
 # extracts the code/link, and completes verification automatically.
-
-# Manual multi-tab verification (no IMAP needed)
-with agent.session("https://example.com/register") as s:
-    s.act("Type 'user@email.com' in the email field")
-    s.act("Click Sign Up")
-
-    s.new_tab("https://mail.example.com", name="email")
-    s.act("Open the verification email")
-    code = s.extract("Get the verification code")
-
-    s.switch_tab("main")
-    s.act(f"Type '{code}' in the verification field")
-    s.close_tab("email")
 ```
 
 ```python
 # Python: session persistence — login once, saved for next time
-agent = Agent(llm_url="http://localhost:8080/v1")
-result = agent.login("https://github.com/login", email="me@example.com", password="...")
+browser = Fantoma()
+browser.start()
+result = browser.login("https://github.com/login", email="me@example.com", password="...")
+browser.stop()
 # First call: fills form, logs in, saves session to ~/.local/share/fantoma/sessions/
 # Next call: loads saved cookies, skips the form entirely
 
@@ -233,9 +215,9 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | Form not filled | Check `fantoma logs --trace` for debug data |
 | Login fields invisible | Fantoma falls back to raw DOM — check trace for details |
 | LLM says DONE without acting | Fixed in v0.5.0 — prompt fix included |
-| Same action repeating | Fixed in v0.6 — action verification tells LLM what happened after each step |
-| "Event loop is closed" on second run | Fixed in v0.6 — `stop()` cleans up the asyncio event loop |
-| Camoufox SIGSEGV / "Page crashed" on Fedora 43 | glibc 2.42 uses `madvise(MADV_GUARD_INSTALL)` for thread stacks — blocked by Camoufox's seccomp filter. Fix: LD_PRELOAD shim. See [Fedora 43 / glibc 2.42](#fedora-43--glibc-242-camoufox-crash) below. |
+| Same action repeating | Agent has built-in loop detection and escalation |
+| "Event loop is closed" on second run | Fixed — `stop()` cleans up the asyncio event loop |
+| Camoufox SIGSEGV / "Page crashed" on Fedora 43 | Use Docker (recommended) or LD_PRELOAD shim. See [Fedora 43 / glibc 2.42](#fedora-43--glibc-242-camoufox-crash) below. |
 
 ## Fedora 43 / glibc 2.42 — Camoufox Crash
 
@@ -301,9 +283,33 @@ cp /usr/lib64/firefox/glxtest ~/.cache/camoufox/
 
 **What does NOT work:** binary-patching `camoufox-bin` or `libxul.so`, or intercepting `madvise` at the glibc wrapper level (glibc uses inline syscalls internally, so the wrapper is never called).
 
+## Docker API
+
+Fantoma runs in a Docker container (Ubuntu 22.04 + Camoufox + Xvfb). Single session at a time. This is the recommended approach on Fedora 43+ to avoid the glibc/seccomp issue.
+
+```bash
+docker compose -f docker-compose.fantoma.yml up -d
+```
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| /health | GET | Status check |
+| /start | POST | Start session: `{"url": "..."}` |
+| /stop | POST | End session |
+| /state | GET | Current ARIA tree + page info |
+| /screenshot | GET | PNG screenshot |
+| /click | POST | `{"element_id": 0}` |
+| /type | POST | `{"element_id": 0, "text": "..."}` |
+| /navigate | POST | `{"url": "..."}` |
+| /scroll | POST | `{"direction": "down"}` |
+| /press_key | POST | `{"key": "Enter"}` |
+| /login | POST | LLM-free login (manages own session) |
+| /extract | POST | Structured extraction (requires session) |
+| /run | POST | Full agent task (manages own lifecycle) |
+
 ## Test Results
 
-Tested across 27 real sites with 6 different LLMs. 508 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+Tested across 25 real sites with 6 different LLMs. 355 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 **v0.7.0 live test — 25 sites, Hermes 9B local model (2026-03-31):**
 
@@ -360,7 +366,7 @@ Tested across 27 real sites with 6 different LLMs. 508 unit tests. Passed finger
 | Clerk | Signup | Email, Password | All filled |
 | Wandb | Signup | Email, Password | All filled |
 
-**27 sites tested total, zero bot detections, zero form failures on v0.4.**
+**15 login/signup sites tested on v0.4, zero bot detections, zero form failures.**
 
 **Overnight stress test (7 hours, 3 cloud APIs):**
 
@@ -390,23 +396,28 @@ Tested across 27 real sites with 6 different LLMs. 508 unit tests. Passed finger
 ## Configuration
 
 ```python
+# Tool API — drive the browser step by step
+Fantoma(
+    llm_url=None,           # Optional — only needed for extract() and field labelling
+    headless=True,
+    proxy=None,
+    browser="camoufox",
+    captcha_api=None,
+    captcha_key=None,
+    email_imap=None,
+    verification_callback=None,
+    timeout=300,
+)
+
+# Convenience API — describe a task, the agent does it
 Agent(
-    llm_url="http://localhost:8080/v1",  # Required
-    model="auto",                        # Or specific model name
-    api_key="",                          # For cloud APIs
-    headless=True,                       # False to see the browser
-    proxy=None,                          # "socks5://..." or ["proxy1", "proxy2"]
-    escalation=None,                     # ["local_url", "cloud_url"]
-    escalation_keys=None,                # ["", "sk-cloud-key"] per endpoint
-    captcha_api=None,                    # "capsolver", "2captcha"
-    captcha_key=None,                    # API key for CAPTCHA solver
-    timeout=300,                         # Total timeout in seconds
-    max_steps=50,                        # Max actions before giving up
-    trace=False,                         # Save Playwright debug traces
-    browser="camoufox",                  # Or "chromium" (pip install fantoma[chromium])
-    email_imap=None,                     # {"host": ..., "port": 993, "user": ..., "password": ..., "security": "ssl"}
-    verification_callback=None,          # callable(domain, message) → code/link string
-    sensitive_data=None,                 # {"email": "...", "password": "..."} — never in logs
+    llm_url="http://localhost:8080/v1",  # Required for Agent
+    escalation=None,
+    escalation_keys=None,
+    max_steps=50,
+    timeout=300,
+    sensitive_data=None,
+    **fantoma_kwargs,        # All Fantoma params passed through
 )
 ```
 
@@ -470,11 +481,8 @@ Built on top of these projects:
 
 Inspired by these projects and research:
 
-- [browser-use](https://github.com/browser-use/browser-use) — the leading open-source browser agent. Fantoma adopted several of their patterns: multi-action batching per LLM call, paint-order DOM filtering via `elementFromPoint()`, free JS-based page search tools, history compaction for long tasks, credential placeholder injection, and DOM element deduplication. Their structured JSON output approach (schema-constrained responses) informed Fantoma's structured output design. All patterns were reimplemented from scratch to fit Fantoma's code-first architecture.
+- [browser-use](https://github.com/browser-use/browser-use) — the leading open-source browser agent. Fantoma's credential placeholder injection pattern was informed by their approach. Reimplemented from scratch to fit Fantoma's code-first architecture.
 - [WebVoyager](https://arxiv.org/abs/2401.13919) — web agent benchmark. Tree diffing (marking new elements with `*` prefix) was inspired by their set-of-marks approach, adapted for DOM-only operation without screenshots.
-- [AgentQ](https://arxiv.org/abs/2408.07199) — Monte Carlo Tree Search web agent. Their action verification and outcome reporting pattern (checking URL changes, error detection, DOM mutations after each action) influenced Fantoma's post-action verification pipeline. Fantoma implements this as pure code checks rather than AgentQ's LLM self-reflection.
-- [SWE-bench](https://swe-bench.github.io/) / JetBrains research on observation masking — keeping action history verbatim while dropping old observations. Fantoma's observation masking (action outcomes kept, old DOM snapshots discarded) is based on this principle.
-- [MutationObserver debounce pattern](https://developer.mozilla.org/en-US/docs/Web/API/MutationObserver) — DOM stability detection via debounced MutationObserver (wait until mutations stop for 300ms). Used for both change tracking and adaptive wait strategies.
 - [Playwright](https://playwright.dev/docs/frames) — iframe frame traversal and ARIA snapshot APIs used for iframe element extraction.
 
 ## License
