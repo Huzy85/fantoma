@@ -4,7 +4,6 @@ from fantoma.browser.verification import extract_verification_code
 
 agent = Agent(
     llm_url="http://localhost:8080/v1",  # Any OpenAI-compatible endpoint
-    verbose=True,
 )
 
 with agent.session("https://example.com/register") as s:

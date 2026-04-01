@@ -3,7 +3,6 @@ from fantoma import Agent
 
 agent = Agent(
     llm_url="http://localhost:8080/v1",
-    verbose=True,
 )
 
 # Step-by-step mode for more control

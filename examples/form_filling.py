@@ -1,17 +1,13 @@
-"""Example: fill out a form on a test site."""
-from fantoma import Agent
+"""Example: fill out a login form — no LLM needed."""
+from fantoma import Fantoma
 
-agent = Agent(
-    llm_url="http://localhost:8080/v1",
-    verbose=True,
+browser = Fantoma()
+browser.start()
+result = browser.login(
+    "https://the-internet.herokuapp.com/login",
+    username="tomsmith",
+    password="SuperSecretPassword!",
 )
-
-result = agent.run(
-    "Go to httpbin.org/forms/post and fill out the form with: "
-    "customer name 'John Doe', telephone '555-1234', "
-    "email 'john@example.com', size 'Large', topping 'Bacon', "
-    "then submit the form"
-)
-
-print(f"Success: {result.success}")
-print(f"Steps: {result.steps_taken}")
+print(f"Success: {result['success']}")
+print(f"URL: {result.get('url', 'unknown')}")
+browser.stop()
