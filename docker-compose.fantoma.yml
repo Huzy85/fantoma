@@ -1,0 +1,40 @@
+services:
+  fantoma:
+    build: .
+    container_name: fantoma-browser
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    environment:
+      # Local LLM (Hercules on host)
+      - LOCAL_LLM_URL=http://host.docker.internal:8081/v1
+      # Backup LLM (Hermes on host)
+      - BACKUP_LLM_URL=http://host.docker.internal:8082/v1
+      # Cloud LLM backup (DeepSeek)
+      - CLOUD_LLM_URL=https://api.deepseek.com/v1
+      - CLOUD_LLM_KEY=${DEEPSEEK_KEY}
+      # CAPTCHA solving
+      - CAPTCHA_API=capsolver
+      - CAPTCHA_KEY=${CAPSOLVER_KEY}
+      # Proxy (optional — uncomment to route through gluetun or residential proxy)
+      # - FANTOMA_PROXY=http://host.docker.internal:8888
+      # Display: "virtual" = Xvfb inside container
+      - FANTOMA_HEADLESS=virtual
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Persistent browser profiles (sessions survive restarts)
+      - fantoma-profiles:/root/.local/share/fantoma
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # Shared memory for browser (Firefox needs >64MB default)
+    shm_size: 512m
+
+volumes:
+  fantoma-profiles:
