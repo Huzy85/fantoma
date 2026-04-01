@@ -1,8 +1,8 @@
-"""Unit tests for Agent._get_verification() and Agent._enter_verification_code().
+"""Unit tests for Fantoma._get_verification() and Fantoma._enter_verification_code().
 
 Covers all tiers of the verification flow (IMAP → callback → terminal → None)
 and all strategies for entering a code into a page (ARIA textbox, DOM selectors,
-fallback empty input, link navigation, missing input, exceptions).
+missing input, exceptions).
 """
 import pytest
 from unittest.mock import MagicMock, patch, call
@@ -13,10 +13,9 @@ from unittest.mock import MagicMock, patch, call
 # ---------------------------------------------------------------------------
 
 def _make_agent(**kwargs):
-    """Construct an Agent without touching a browser or LLM."""
-    with patch("fantoma.agent.LLMClient"):
-        from fantoma.agent import Agent
-        return Agent(llm_url="http://localhost:8080/v1", **kwargs)
+    """Construct a Fantoma without touching a browser or LLM."""
+    from fantoma.browser_tool import Fantoma
+    return Fantoma(**kwargs)
 
 
 def _make_dom(interactive_elements=None):
@@ -31,6 +30,12 @@ def _make_browser(page=None):
     browser = MagicMock()
     browser.get_page.return_value = page or MagicMock()
     return browser
+
+
+def _setup_agent_internals(agent, browser, dom):
+    """Wire mock browser and dom into agent internals for _enter_verification_code."""
+    agent._engine = browser
+    agent._dom = dom
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +87,7 @@ class TestGetVerificationIMAP:
         """check_inbox exceptions are not caught by _get_verification — they propagate.
 
         This documents the current (unguarded) behaviour.  If defensive wrapping
-        is added to agent.py the assertion should change to verify fallback instead.
+        is added to browser_tool.py the assertion should change to verify fallback instead.
         """
         agent = _make_agent(
             email_imap={"host": "mail.example.com", "port": 993,
@@ -236,9 +241,10 @@ class TestEnterVerificationCodeARIA:
         mock_handle = MagicMock()
         dom = _make_dom(interactive_elements=[{"role": "textbox", "index": 0}])
         dom.get_element_by_index.return_value = mock_handle
+        _setup_agent_internals(agent, browser, dom)
 
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "123456")
+        with patch("fantoma.browser_tool.type_into") as mock_type:
+            agent._enter_verification_code("123456")
 
         mock_type.assert_called_once_with(browser, mock_handle, "123456")
         page.keyboard.press.assert_called_once_with("Enter")
@@ -252,9 +258,10 @@ class TestEnterVerificationCodeARIA:
         mock_handle = MagicMock()
         dom = _make_dom(interactive_elements=[{"role": "input", "index": 0}])
         dom.get_element_by_index.return_value = mock_handle
+        _setup_agent_internals(agent, browser, dom)
 
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "654321")
+        with patch("fantoma.browser_tool.type_into") as mock_type:
+            agent._enter_verification_code("654321")
 
         mock_type.assert_called_once_with(browser, mock_handle, "654321")
         page.keyboard.press.assert_called_once_with("Enter")
@@ -270,10 +277,10 @@ class TestEnterVerificationCodeARIA:
 
         # Strategy 2 selectors also return None so we test fallback path
         page.query_selector.return_value = None
-        page.query_selector_all.return_value = []
+        _setup_agent_internals(agent, browser, dom)
 
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "000000")
+        with patch("fantoma.browser_tool.type_into") as mock_type:
+            agent._enter_verification_code("000000")
 
         mock_type.assert_not_called()
         # Warning should have been logged (no exception raised)
@@ -294,9 +301,10 @@ class TestEnterVerificationCodeARIA:
             return mock_handle if idx == 1 else None
 
         dom.get_element_by_index.side_effect = _get_by_index
+        _setup_agent_internals(agent, browser, dom)
 
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "999888")
+        with patch("fantoma.browser_tool.type_into") as mock_type:
+            agent._enter_verification_code("999888")
 
         mock_type.assert_called_once_with(browser, mock_handle, "999888")
         page.keyboard.press.assert_called_once_with("Enter")
@@ -315,6 +323,7 @@ class TestEnterVerificationCodeDOMSelectors:
         dom = _make_dom(interactive_elements=[])  # no ARIA textboxes
         mock_input = MagicMock()
         mock_input.is_visible.return_value = visible
+        _setup_agent_internals(agent, browser, dom)
         return agent, browser, page, dom, mock_input
 
     def test_finds_code_input_by_name_selector(self):
@@ -328,8 +337,8 @@ class TestEnterVerificationCodeDOMSelectors:
 
         page.query_selector.side_effect = _query
 
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "246810")
+        with patch("fantoma.browser_tool.type_into") as mock_type:
+            agent._enter_verification_code("246810")
 
         mock_type.assert_called_once_with(browser, mock_input, "246810")
         page.keyboard.press.assert_called_once_with("Enter")
@@ -338,10 +347,9 @@ class TestEnterVerificationCodeDOMSelectors:
         """Invisible matches are skipped; next selector or strategy is tried."""
         agent, browser, page, dom, mock_input = self._make_setup(visible=False)
         page.query_selector.return_value = mock_input  # every selector hits it
-        page.query_selector_all.return_value = []
 
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "135791")
+        with patch("fantoma.browser_tool.type_into") as mock_type:
+            agent._enter_verification_code("135791")
 
         mock_type.assert_not_called()
 
@@ -351,6 +359,7 @@ class TestEnterVerificationCodeDOMSelectors:
         page = MagicMock()
         browser = _make_browser(page)
         dom = _make_dom(interactive_elements=[])
+        _setup_agent_internals(agent, browser, dom)
 
         good_handle = MagicMock()
         good_handle.is_visible.return_value = True
@@ -366,68 +375,10 @@ class TestEnterVerificationCodeDOMSelectors:
 
         page.query_selector.side_effect = _query
 
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "777888")
+        with patch("fantoma.browser_tool.type_into") as mock_type:
+            agent._enter_verification_code("777888")
 
         mock_type.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# _enter_verification_code — Strategy 3: fallback empty input
-# ---------------------------------------------------------------------------
-
-class TestEnterVerificationCodeFallback:
-    def test_uses_first_visible_empty_input(self):
-        """When ARIA and selectors find nothing, any visible empty input is used."""
-        agent = _make_agent()
-        page = MagicMock()
-        browser = _make_browser(page)
-        dom = _make_dom(interactive_elements=[])
-        page.query_selector.return_value = None  # no selector matches
-
-        empty_input = MagicMock()
-        empty_input.is_visible.return_value = True
-        empty_input.get_attribute.return_value = ""  # empty value
-
-        page.query_selector_all.return_value = [empty_input]
-
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "121212")
-
-        mock_type.assert_called_once_with(browser, empty_input, "121212")
-        page.keyboard.press.assert_called_once_with("Enter")
-
-    def test_skips_pre_filled_inputs(self):
-        """Inputs with existing value are not used as code targets."""
-        agent = _make_agent()
-        page = MagicMock()
-        browser = _make_browser(page)
-        dom = _make_dom(interactive_elements=[])
-        page.query_selector.return_value = None
-
-        prefilled = MagicMock()
-        prefilled.is_visible.return_value = True
-        prefilled.get_attribute.return_value = "existing@email.com"
-
-        page.query_selector_all.return_value = [prefilled]
-
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "000111")
-
-        mock_type.assert_not_called()
-
-    def test_fallback_exception_handled_gracefully(self):
-        """Exception in query_selector_all does not propagate."""
-        agent = _make_agent()
-        page = MagicMock()
-        browser = _make_browser(page)
-        dom = _make_dom(interactive_elements=[])
-        page.query_selector.return_value = None
-        page.query_selector_all.side_effect = Exception("DOM exploded")
-
-        # Must not raise
-        with patch("fantoma.browser.actions.type_into"):
-            agent._enter_verification_code(browser, dom, "999")
 
 
 # ---------------------------------------------------------------------------
@@ -442,29 +393,30 @@ class TestEnterVerificationCodeNoInput:
         browser = _make_browser(page)
         dom = _make_dom(interactive_elements=[])
         page.query_selector.return_value = None
-        page.query_selector_all.return_value = []
+        _setup_agent_internals(agent, browser, dom)
 
         # Should not raise
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, "000000")
+        with patch("fantoma.browser_tool.type_into") as mock_type:
+            agent._enter_verification_code("000000")
 
         mock_type.assert_not_called()
 
     def test_page_get_exception_propagates(self):
-        """If browser.get_page() raises, the exception propagates out of
+        """If engine.get_page() raises, the exception propagates out of
         _enter_verification_code (no defensive wrapper around the page fetch).
 
         This documents the current behaviour; if a try/except is added to
-        agent.py around the get_page() call this test should be updated.
+        browser_tool.py around the get_page() call this test should be updated.
         """
         agent = _make_agent()
         browser = MagicMock()
         browser.get_page.side_effect = RuntimeError("browser gone")
         dom = _make_dom(interactive_elements=[])
+        _setup_agent_internals(agent, browser, dom)
 
-        with patch("fantoma.browser.actions.type_into"):
+        with patch("fantoma.browser_tool.type_into"):
             with pytest.raises(RuntimeError, match="browser gone"):
-                agent._enter_verification_code(browser, dom, "123")
+                agent._enter_verification_code("123")
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +424,7 @@ class TestEnterVerificationCodeNoInput:
 # ---------------------------------------------------------------------------
 
 class TestEnterVerificationCodeIsLink:
-    """The agent's login() method handles vtype='link' by calling browser.navigate()
+    """The login() method handles vtype='link' by calling browser.navigate()
     directly, bypassing _enter_verification_code entirely.  These tests verify
     that _enter_verification_code does NOT navigate when given a URL — it only
     types into an input field (treating the URL string as text to type).
@@ -488,11 +440,12 @@ class TestEnterVerificationCodeIsLink:
         mock_handle = MagicMock()
         dom = _make_dom(interactive_elements=[{"role": "textbox", "index": 0}])
         dom.get_element_by_index.return_value = mock_handle
+        _setup_agent_internals(agent, browser, dom)
 
         url_code = "https://example.com/verify?token=abc123"
 
-        with patch("fantoma.browser.actions.type_into") as mock_type:
-            agent._enter_verification_code(browser, dom, url_code)
+        with patch("fantoma.browser_tool.type_into") as mock_type:
+            agent._enter_verification_code(url_code)
 
         mock_type.assert_called_once_with(browser, mock_handle, url_code)
         browser.navigate.assert_not_called()
