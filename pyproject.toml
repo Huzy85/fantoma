@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fantoma"
-version = "0.6.0"
-description = "The AI browser agent that doesn't get caught, doesn't get stuck, and doesn't need GPT-4."
+version = "0.7.0"
+description = "Accessibility-first browser automation. Zero mouse telemetry. Works with any LLM."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -32,7 +32,9 @@ sessions = ["cryptography>=41.0"]
 captcha = ["capsolver"]
 chromium = ["patchright>=1.0"]
 vision = ["pillow"]
+server = ["flask>=3.0"]
 dev = ["pytest", "pytest-asyncio"]
+all = ["cryptography>=41.0", "capsolver", "pillow", "flask>=3.0"]
 
 [project.scripts]
 fantoma = "fantoma.cli:main"
