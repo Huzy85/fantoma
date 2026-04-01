@@ -241,4 +241,4 @@ def run_task():
 if __name__ == "__main__":
     port = int(os.environ.get("FANTOMA_PORT", 7860))
     log.info("Fantoma server starting on port %d", port)
-    app.run(host="0.0.0.0", port=port, threaded=True)
+    app.run(host="0.0.0.0", port=port, threaded=False)

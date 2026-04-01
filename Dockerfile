@@ -31,10 +31,8 @@ RUN pip3 install --no-cache-dir \
     "flask>=3.0" \
     && pip3 install --no-cache-dir -e /app 2>/dev/null || true
 
-# Download Camoufox browser binary
-RUN python3 -c "from camoufox.sync_api import Camoufox; print('Camoufox binary ready')" 2>/dev/null \
-    || python3 -m camoufox fetch 2>/dev/null \
-    || echo "Camoufox binary will be fetched on first run"
+# Download Camoufox browser binary (must succeed — no runtime fetch)
+RUN python3 -m camoufox fetch
 
 # Copy Fantoma source
 COPY . /app
