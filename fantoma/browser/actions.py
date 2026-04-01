@@ -28,7 +28,12 @@ def click_element(engine, element_or_selector):
     if engine.humanizer and engine.humanizer.should_move_mouse():
         engine.humanizer.move_to_element(page, element)
 
-    element.click(timeout=5000)
+    try:
+        element.click(timeout=5000)
+    except Exception:
+        # Camoufox + Xvfb can fail Playwright's stability check even when
+        # the element is visible and has a bounding box. Force-click as fallback.
+        element.click(force=True, timeout=5000)
 
     if engine.humanizer:
         engine.humanizer.action_pause()
