@@ -15,7 +15,13 @@ log = logging.getLogger("fantoma.actions")
 
 
 def click_element(engine, element_or_selector):
-    """Click with mouse movement + human delay."""
+    """Activate an element via focus + keyboard — no mouse events.
+
+    Uses the accessibility interaction model: focus the element, then
+    press Enter (links, buttons) or Space (checkboxes, radios). This
+    produces zero mouse telemetry. Falls back to JS el.click() if
+    keyboard activation doesn't work.
+    """
     page = engine.get_page()
     if isinstance(element_or_selector, str):
         element = page.query_selector(element_or_selector)
@@ -25,15 +31,38 @@ def click_element(engine, element_or_selector):
     if not element:
         return False
 
-    if engine.humanizer and engine.humanizer.should_move_mouse():
-        engine.humanizer.move_to_element(page, element)
+    # Get element role/type to pick the right key
+    tag_and_type = element.evaluate("""el => ({
+        tag: el.tagName.toLowerCase(),
+        type: (el.getAttribute('type') || '').toLowerCase(),
+        role: (el.getAttribute('role') || '').toLowerCase(),
+    })""")
+    tag = tag_and_type["tag"]
+    el_type = tag_and_type["type"]
+    role = tag_and_type["role"]
 
+    # Focus the element
     try:
-        element.click(timeout=5000)
+        element.focus()
     except Exception:
-        # Camoufox + Xvfb can fail Playwright's stability check even when
-        # the element is visible and has a bounding box. Force-click as fallback.
-        element.click(force=True, timeout=5000)
+        # Some elements reject focus — try JS
+        try:
+            element.evaluate("el => el.focus()")
+        except Exception:
+            pass
+
+    is_checkbox = el_type in ("checkbox", "radio") or role in ("checkbox", "radio", "switch")
+
+    # Activate via keyboard
+    key = "Space" if is_checkbox else "Enter"
+    try:
+        page.keyboard.press(key)
+    except Exception:
+        # Keyboard failed — fall back to JS click (no mouse events)
+        try:
+            element.evaluate("el => el.click()")
+        except Exception:
+            return False
 
     if engine.humanizer:
         engine.humanizer.action_pause()
@@ -42,21 +71,22 @@ def click_element(engine, element_or_selector):
 
 
 def _focus_element(page, element):
-    """Click to focus, dismissing overlays if needed."""
+    """Focus an input element — no mouse events."""
     try:
-        element.click(timeout=5000)
+        element.focus()
     except Exception:
-        from fantoma.browser.consent import dismiss_consent
-        dismiss_consent(page)
-        time.sleep(1)
         try:
-            element.click(timeout=5000)
+            element.evaluate("el => el.focus()")
         except Exception:
+            # Focus failed — try dismissing consent overlay first
+            from fantoma.browser.consent import dismiss_consent
+            dismiss_consent(page)
+            time.sleep(0.5)
             try:
-                page.evaluate("el => el.click()", element)
+                element.focus()
             except Exception:
                 return False
-    time.sleep(0.3)
+    time.sleep(0.2)
     return True
 
 
@@ -86,7 +116,7 @@ def type_into(engine, element_or_selector, text: str, clear_first: bool = True):
     if not _focus_element(page, element):
         return False
 
-    # Human-like path: type character by character with realistic delays.
+    # Human-like path: type character by character with realistic key-pair delays.
     # Sites like X detect instant DOM value injection as automation.
     if engine.humanizer:
         # Reset React's _valueTracker first — without this, React controlled
@@ -101,11 +131,12 @@ def type_into(engine, element_or_selector, text: str, clear_first: bool = True):
             page.keyboard.press("Backspace")
             time.sleep(0.1)
 
+        prev_char = ""
         for char in text:
+            delay = engine.humanizer.type_char_delay(prev_char, char)
+            time.sleep(delay)
             page.keyboard.type(char)
-            time.sleep(engine.humanizer.type_char_delay())
-
-        engine.humanizer.action_pause()
+            prev_char = char
 
         # Verify
         try:
@@ -167,17 +198,13 @@ def type_into(engine, element_or_selector, text: str, clear_first: bool = True):
 
 
 def scroll_page(engine, direction: str = "down", amount: int = None):
-    """Scroll with human-like distance variation."""
+    """Scroll via keyboard — no mouse wheel events.
+
+    Uses PageDown/PageUp like a screen reader user would.
+    """
     page = engine.get_page()
-    if amount is None and engine.humanizer:
-        amount = engine.humanizer.scroll_distance()
-    elif amount is None:
-        amount = 300
-
-    if direction == "up":
-        amount = -amount
-
-    page.mouse.wheel(0, amount)
+    key = "PageUp" if direction == "up" else "PageDown"
+    page.keyboard.press(key)
 
     if engine.humanizer:
         time.sleep(random.uniform(*engine.humanizer.scroll_delay))
