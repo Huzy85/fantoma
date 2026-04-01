@@ -11,15 +11,11 @@ def test_trace_config_default_off():
     assert cfg.trace is False
 
 
-def test_agent_accepts_trace_param():
-    from fantoma.agent import Agent
-    with patch("fantoma.agent.BrowserEngine"):
-        with patch("fantoma.agent.LLMClient"):
-            agent = Agent(
-                llm_url="http://localhost:8080/v1",
-                trace=True,
-            )
-            assert agent.config.browser.trace is True
+def test_fantoma_accepts_trace_param():
+    from fantoma.browser_tool import Fantoma
+    with patch("fantoma.browser_tool.BrowserEngine"):
+        f = Fantoma(trace=True)
+        assert f.config.browser.trace is True
 
 
 def test_engine_start_enables_tracing(tmp_path):

@@ -15,15 +15,11 @@ def test_browser_config_chromium():
     assert cfg.browser_engine == "chromium"
 
 
-def test_agent_browser_param():
-    from fantoma.agent import Agent
-    with patch("fantoma.agent.BrowserEngine"):
-        with patch("fantoma.agent.LLMClient"):
-            agent = Agent(
-                llm_url="http://localhost:8080/v1",
-                browser="chromium"
-            )
-            assert agent.config.browser.browser_engine == "chromium"
+def test_fantoma_browser_param():
+    from fantoma.browser_tool import Fantoma
+    with patch("fantoma.browser_tool.BrowserEngine"):
+        f = Fantoma(browser="chromium")
+        assert f.config.browser.browser_engine == "chromium"
 
 
 def test_engine_chromium_import_guard():
