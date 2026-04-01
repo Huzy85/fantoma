@@ -1,63 +1,78 @@
-"""Human-like behaviour generator for browser automation."""
+"""Human-like behaviour for accessibility-first browser automation.
+
+No mouse movement or wheel events. Timing only: typing cadence,
+action pauses, and reading delays. Modelled on keystroke dynamics
+research (Killourhy & Maxion 2009, CMU keystroke dataset).
+"""
 
 import random
 import time
 
 
+# Average inter-key intervals by key pair type (milliseconds).
+# Based on keystroke dynamics research — fast typist profile (~60 WPM).
+_SAME_HAND = (0.04, 0.10)      # e.g. 'er', 'we' — same hand, fast
+_ALT_HAND = (0.06, 0.14)       # e.g. 'th', 'an' — alternating hands, medium
+_SAME_FINGER = (0.10, 0.20)    # e.g. 'ed', 'ce' — same finger, slow
+
+# Rough left/right hand mapping for QWERTY
+_LEFT = set("qwertasdfgzxcvb12345`~!@#$%")
+_RIGHT = set("yuiophjklnm67890-=[]\\;',./^&*()")
+
+# Common same-finger pairs (approximate)
+_SAME_FINGER_PAIRS = {
+    "ed", "de", "ce", "ec", "rf", "fr", "tg", "gt", "ws", "sw",
+    "uj", "ju", "ik", "ki", "ol", "lo", "mn", "nm", "hy", "yh",
+}
+
+
+def _key_pair_delay(prev: str, curr: str) -> float:
+    """Return a delay based on the key pair — not uniform randomness."""
+    pair = (prev + curr).lower()
+    if pair in _SAME_FINGER_PAIRS:
+        base = random.uniform(*_SAME_FINGER)
+    elif prev.lower() in _LEFT and curr.lower() in _RIGHT:
+        base = random.uniform(*_ALT_HAND)
+    elif prev.lower() in _RIGHT and curr.lower() in _LEFT:
+        base = random.uniform(*_ALT_HAND)
+    else:
+        base = random.uniform(*_SAME_HAND)
+
+    # Word boundary — space gets a natural pause
+    if curr == " ":
+        base += random.uniform(0.02, 0.08)
+
+    # 4% chance of micro-hesitation (mistype-correct, thinking)
+    if random.random() < 0.04:
+        base += random.uniform(0.2, 0.6)
+
+    return base
+
+
 class Humanizer:
-    """Generates human-like delays, mouse movements, and typing patterns."""
+    """Generates human-like timing for keyboard-only interaction."""
 
     def __init__(
         self,
-        action_delay=(1.0, 4.0),
-        type_delay=(0.05, 0.15),
-        scroll_delay=(0.5, 1.5),
-        reading_pause_range=(2.0, 6.0),
-        mouse_move_chance=0.3,
+        action_delay=(1.0, 3.0),
+        scroll_delay=(0.3, 0.8),
+        reading_pause_range=(1.5, 4.0),
     ):
         self.action_delay = action_delay
-        self.type_delay = type_delay
         self.scroll_delay = scroll_delay
         self.reading_pause_range = reading_pause_range
-        self.mouse_move_chance = mouse_move_chance
 
     def action_pause(self):
-        """Wait a human-like amount between actions."""
+        """Wait between actions — simulates decision time."""
         time.sleep(random.uniform(*self.action_delay))
 
-    def type_char_delay(self) -> float:
-        """Return delay for one character. Occasionally longer (thinking pause)."""
-        base = random.uniform(*self.type_delay)
-        # 5% chance of a longer pause (thinking)
-        if random.random() < 0.05:
-            base += random.uniform(0.3, 0.8)
-        return base
+    def type_char_delay(self, prev_char: str = "", curr_char: str = "") -> float:
+        """Return delay for one keystroke based on the key pair."""
+        if prev_char and curr_char:
+            return _key_pair_delay(prev_char, curr_char)
+        # Fallback if no context
+        return random.uniform(0.05, 0.14)
 
     def reading_pause(self):
         """Simulate reading a page after navigation."""
         time.sleep(random.uniform(*self.reading_pause_range))
-
-    def scroll_distance(self) -> int:
-        """Return a random scroll distance (not exactly 300px every time)."""
-        return random.randint(200, 500)
-
-    def should_move_mouse(self) -> bool:
-        """Random chance to move mouse before an action (more human-like)."""
-        return random.random() < self.mouse_move_chance
-
-    def random_mouse_move(self, page):
-        """Move mouse to a random position on the page."""
-        width = page.viewport_size.get("width", 1280) if page.viewport_size else 1280
-        height = page.viewport_size.get("height", 720) if page.viewport_size else 720
-        x = random.randint(100, width - 100)
-        y = random.randint(100, height - 100)
-        page.mouse.move(x, y, steps=random.randint(5, 15))
-
-    def move_to_element(self, page, element):
-        """Move mouse to an element with human-like path (not teleporting)."""
-        box = element.bounding_box()
-        if box:
-            # Target center with slight random offset
-            x = box["x"] + box["width"] / 2 + random.randint(-5, 5)
-            y = box["y"] + box["height"] / 2 + random.randint(-3, 3)
-            page.mouse.move(x, y, steps=random.randint(8, 20))
