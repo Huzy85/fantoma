@@ -338,12 +338,10 @@ def cmd_test():
     # Test 2: Browser launch
     print(f"  Testing browser launch... ", end="", flush=True)
     try:
-        from fantoma.browser.engine import BrowserEngine
-        browser = BrowserEngine(headless=True)
-        browser.start()
-        browser.navigate("https://example.com")
-        page = browser.get_page()
-        title = page.title()
+        from fantoma import Fantoma
+        browser = Fantoma(headless=True)
+        state = browser.start("https://example.com")
+        title = state.get("title", "")
         browser.stop()
         if "example" in title.lower():
             print(_green("OK") + f" — Camoufox working")
@@ -379,12 +377,12 @@ def cmd_test():
     if config.get("proxy"):
         print(f"  Testing proxy... ", end="", flush=True)
         try:
-            browser = BrowserEngine(headless=True, proxy=config["proxy"])
-            browser.start()
-            browser.navigate("https://httpbin.org/ip")
-            ip_text = browser.get_page().inner_text("body")
-            browser.stop()
-            print(_green("OK") + f" — {ip_text[:50]}")
+            from fantoma import Fantoma as _Fantoma
+            proxy_browser = _Fantoma(headless=True, proxy=config["proxy"])
+            state = proxy_browser.start("https://httpbin.org/ip")
+            ip_text = state.get("text", "")[:50]
+            proxy_browser.stop()
+            print(_green("OK") + f" — {ip_text}")
         except Exception as e:
             print(_red("FAIL") + f" — {e}")
 
@@ -406,13 +404,12 @@ def cmd_test_fingerprint():
     print(f"  Launching browser... ", end="", flush=True)
 
     try:
-        from fantoma.browser.engine import BrowserEngine
+        from fantoma import Fantoma as _Fantoma
         from fantoma.browser.fingerprint import FingerprintTest
 
-        browser = BrowserEngine(headless=True)
-        browser.start()
-        browser.navigate("about:blank")
-        page = browser.get_page()
+        browser = _Fantoma(headless=True)
+        browser.start("about:blank")
+        page = browser._engine.get_page()
         print(_green("OK"))
 
         print(f"  Running fingerprint checks...\n")
@@ -534,11 +531,9 @@ def cmd_run(task, start_url=None):
         proxy=config.get("proxy"),
         captcha_api=config.get("captcha_api"),
         captcha_key=config.get("captcha_key"),
-        captcha_webhook=config.get("captcha_webhook"),
         escalation=escalation_endpoints,
         escalation_keys=escalation_keys,
         headless=True,
-        verbose=True,
     )
 
     result = agent.run(task, start_url=start_url)
