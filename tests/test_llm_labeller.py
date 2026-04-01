@@ -2,10 +2,13 @@ from unittest.mock import MagicMock
 
 
 def test_field_labeller_prompt_exists():
-    from fantoma.llm.prompts import FIELD_LABELLER_SYSTEM
-    assert "label" in FIELD_LABELLER_SYSTEM.lower()
-    assert "email" in FIELD_LABELLER_SYSTEM
-    assert "skip" in FIELD_LABELLER_SYSTEM
+    """FIELD_LABELLER_SYSTEM is now a local variable inside form_login._ask_llm_to_label."""
+    import inspect
+    from fantoma.browser.form_login import _ask_llm_to_label
+    source = inspect.getsource(_ask_llm_to_label)
+    assert "FIELD_LABELLER_SYSTEM" in source
+    assert "email" in source
+    assert "skip" in source
 
 
 def test_parse_llm_labels():

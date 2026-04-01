@@ -930,15 +930,14 @@ def cmd_interactive():
             if not session:
                 print(_dim("  No active session."))
                 continue
-            page = session._browser.get_page()
-            dom = session._executor.dom.extract(page)
-            print(f"\n{dom}\n")
+            state = session.agent.fantoma.get_state()
+            print(f"\n{state['aria_tree']}\n")
 
         elif user_input == "/url":
             if not session:
                 print(_dim("  No active session."))
                 continue
-            print(f"  {session._browser.get_url()}")
+            print(f"  {session.agent.fantoma.get_state()['url']}")
 
         # ── /run or /extract ─────────────────────────────────────
         elif user_input.startswith("/run"):
