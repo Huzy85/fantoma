@@ -3,7 +3,6 @@ from fantoma import Agent
 
 agent = Agent(
     llm_url="http://localhost:8080/v1",  # Any OpenAI-compatible endpoint
-    verbose=True,
 )
 
 result = agent.run("Go to news.ycombinator.com and find the title of the top post about AI")
