@@ -1,30 +1,32 @@
 # Fantoma
 
-The undetectable AI browser agent. Gets into any website, navigates around, learns from every visit.
+The undetectable browser automation library. Drives browsers via the accessibility API — the same channel used by screen readers. No mouse movements, no screenshots, no pixel coordinates.
 
-Code fills the forms. LLM is the brain — only called when code can't figure out a field. Results cached so the LLM is never asked twice for the same site. Works with any model from 3.8B local to cloud APIs.
-
-![Fantoma Demo](fantoma_demo.gif)
+Two classes. Use whichever fits:
 
 ```python
-from fantoma import Agent
+from fantoma import Fantoma, Agent
 
+# Tool API — drive the browser step by step
+browser = Fantoma()
+state = browser.start("https://news.ycombinator.com")
+# state["aria_tree"] → feed to your LLM, get back an action
+result = browser.click(3)
+# result["state"]["aria_tree"] → updated page
+browser.stop()
+
+# Convenience API — describe a task, the agent does it
 agent = Agent(llm_url="http://localhost:8080/v1")
-
-# LLM-driven: navigate, click, extract (uses your LLM)
 result = agent.run("Go to github.com/trending and tell me the top repo")
 
-# Code-driven: fill login forms (no LLM needed, zero tokens)
-result = agent.login("https://github.com/login", email="me@example.com", password="...")
-
-# Code-driven: fill signup forms with name fields
-result = agent.login(
-    "https://example.com/register",
-    first_name="Fantoma", last_name="Agent",
-    email="me@example.com", username="fantoma_user",
-    password="SecurePass123!"
-)
+# Login — no LLM needed
+browser = Fantoma()
+browser.start()
+result = browser.login("https://github.com/login", email="me@example.com", password="...")
+browser.stop()
 ```
+
+![Fantoma Demo](fantoma_demo.gif)
 
 ## Getting Started
 
@@ -79,6 +81,18 @@ fantoma test         # Verify it works
 - **ARIA landmark grouping** — interactive elements grouped under their nearest ARIA landmark (`[form: Login]`, `[navigation: Main nav]`). LLM sees structural context, not a flat list. Novel approach supported by LCoW (ICLR 2025) research.
 - **Per-step success criteria** — after every action, code verifies it worked (TYPE checks field value, CLICK checks URL/form). Task-level progress tracking detects stalls. Inspired by Skyvern 2.0's validator pattern.
 - **Self-healing selectors** — cached scripts survive page changes. When an element moves or gets renamed, fuzzy matching (difflib SequenceMatcher) finds it by role + name similarity. Inspired by Stagehand v3 and Healenium.
+
+## Accessibility-First Stealth
+
+Fantoma interacts via the browser's accessibility API (ARIA tree) — the same channel used by screen readers like JAWS, NVDA, and VoiceOver.
+
+**Zero mouse telemetry.** No mouse movements, no click coordinates, no scroll velocity. Anti-bot systems that fingerprint pointer behaviour see nothing because there is no pointer.
+
+**Zero visual layer interaction.** No screenshots, no pixel coordinates. The browser processes accessibility API calls — identical to what it sees from a screen reader user.
+
+**Legally protected channel.** WCAG, ADA, and the EU Accessibility Act require websites to support accessibility APIs. Blocking accessibility API access means blocking disabled users — sites cannot do this without legal exposure.
+
+**Competitors produce detectable signals.** browser-use takes screenshots. Stagehand uses CDP. Skyvern combines LLM with computer vision. All three produce signals that anti-bot systems can fingerprint. Fantoma produces none.
 
 ## Login & Signup (No LLM)
 
@@ -218,9 +232,9 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | Small model misses buttons | Add escalation to a cloud API for hard steps |
 | Form not filled | Check `fantoma logs --trace` for debug data |
 | Login fields invisible | Fantoma falls back to raw DOM — check trace for details |
-| LLM says DONE without acting | Upgrade to v0.5.0+ — prompt fix included |
-| Same action repeating | v0.6 action verification tells LLM what happened — upgrade to see outcomes |
-| "Event loop is closed" on second run | Fixed in v0.6 — `stop()` now cleans up the asyncio event loop |
+| LLM says DONE without acting | Fixed in v0.5.0 — prompt fix included |
+| Same action repeating | Fixed in v0.6 — action verification tells LLM what happened after each step |
+| "Event loop is closed" on second run | Fixed in v0.6 — `stop()` cleans up the asyncio event loop |
 | Camoufox SIGSEGV / "Page crashed" on Fedora 43 | glibc 2.42 uses `madvise(MADV_GUARD_INSTALL)` for thread stacks — blocked by Camoufox's seccomp filter. Fix: LD_PRELOAD shim. See [Fedora 43 / glibc 2.42](#fedora-43--glibc-242-camoufox-crash) below. |
 
 ## Fedora 43 / glibc 2.42 — Camoufox Crash
@@ -291,7 +305,7 @@ cp /usr/lib64/firefox/glxtest ~/.cache/camoufox/
 
 Tested across 27 real sites with 6 different LLMs. 508 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
-**v0.6 live test — 25 sites, Hermes 9B local model (2026-03-31):**
+**v0.7.0 live test — 25 sites, Hermes 9B local model (2026-03-31):**
 
 | # | Site | Result | Time |
 |---|------|--------|------|
@@ -417,28 +431,16 @@ All activity is logged to `~/.fantoma/fantoma.log` — check it with `fantoma lo
 
 ```
 fantoma/
-├── agent.py             # Public API (run, login, extract, session)
-├── session.py           # Encrypted session persistence (cookies + localStorage)
-├── cli.py               # CLI + interactive mode
-├── executor.py          # Reactive loop + DOM mode inference + cache replay + stall detection
-├── action_parser.py     # LLM response → browser actions (incl. SEARCH_PAGE, FIND)
-├── config.py            # All settings
+├── browser_tool.py      # Fantoma class — the browser tool (start, stop, click, type, login, extract)
+├── agent.py             # Agent class — convenience wrapper with run() for vibe coders
+├── session.py           # Encrypted session persistence
+├── cli.py               # CLI + interactive mode (uses Agent)
+├── config.py            # Settings
 ├── dom/                 # Page reading (ARIA tree + raw DOM fallback)
-│   ├── accessibility.py # ARIA snapshot, smart pruning, dedup, landmarks, adaptive modes
-│   └── frames.py        # Iframe ARIA extraction — elements from child frames
-├── browser/             # Camoufox/Chromium, anti-detection, proxy, consent, forms
-│   ├── form_login.py    # LLM-free login/signup (label matching + raw DOM)
-│   ├── page_state.py    # Action verification + progress assessment + stall detection
-│   ├── observer.py      # MutationObserver change tracking + adaptive DOM wait
-│   ├── email_verify.py  # IMAP polling — extracts codes and verify links
-│   ├── form_memory.py   # SQLite — learns from every login page
-│   ├── fingerprint.py   # Anti-detection self-test (7 checks)
-│   ├── engine.py        # Browser lifecycle (Camoufox + Patchright) + auto-follow popups
-│   └── ...              # consent, humanize, proxy, verification, actions
+├── browser/             # Browser engine, anti-detection, forms, CAPTCHA, consent
 ├── captcha/             # Detection + solving (PoW, API, human fallback)
-├── resilience/          # Action memory, checkpoints, escalation, script cache + self-healing
-└── llm/                 # OpenAI-compatible client, prompts
-    └── structured.py    # JSON schema for action output, parse + validate
+├── llm/                 # Thin OpenAI-compatible client (for field labelling + extract)
+└── resilience/          # Escalation chain (used by Agent only)
 ```
 
 ## Example Scripts
