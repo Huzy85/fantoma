@@ -73,18 +73,28 @@ def run_single_task(task: dict, config_dict: dict) -> tuple[TaskResult, bytes | 
         timeout=config.timeout,
     )
 
+    # Intercept fantoma.stop() to capture screenshot before browser closes.
+    # Agent.run() calls fantoma.stop() in its finally block, so we can't
+    # capture after run() returns.
     screenshot = None
+    original_stop = agent.fantoma.stop
+
+    def _stop_with_screenshot():
+        nonlocal screenshot
+        if screenshot is None:
+            try:
+                screenshot = agent.fantoma.screenshot()
+            except Exception:
+                log.warning("Failed to capture screenshot for %s", task_id)
+        original_stop()
+
+    agent.fantoma.stop = _stop_with_screenshot
+
     start_time = time.monotonic()
 
     try:
         result = agent.run(task["ques"], start_url=task["web"])
         duration = time.monotonic() - start_time
-
-        # Capture final screenshot
-        try:
-            screenshot = agent.fantoma.screenshot()
-        except Exception:
-            log.warning("Failed to capture screenshot for %s", task_id)
 
         task_result = TaskResult(
             task_id=task_id,
@@ -120,8 +130,10 @@ def run_single_task(task: dict, config_dict: dict) -> tuple[TaskResult, bytes | 
         )
 
     finally:
+        # Agent.run() already calls fantoma.stop() (which we wrapped above).
+        # Only call it explicitly if the agent crashed before reaching its own stop.
         try:
-            agent.fantoma.stop()
+            original_stop()
         except Exception:
             pass
 
