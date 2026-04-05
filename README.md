@@ -316,6 +316,9 @@ docker compose -f docker-compose.fantoma.yml up -d
 | /manual/close | POST | Close manual session (cookies saved to profile) |
 | /manual/status | GET | Check if a manual session is active |
 
+<!-- BENCHMARK:START -->
+<!-- BENCHMARK:END -->
+
 ## Test Results
 
 Tested across 25 real sites with 6 different LLMs. 355 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
