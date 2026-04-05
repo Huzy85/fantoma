@@ -52,7 +52,8 @@ fantoma test         # Verify it works
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
 - **Resilience** — 3-level model escalation (local → cloud → back), retry on slow SPAs.
 - **Multi-API compatible** — JSON mode (`response_format`) only sent to local endpoints. Cloud APIs (DeepSeek, OpenAI, Anthropic) work without 400 errors.
-- **Sequential session safety** — after each browser session closes, the asyncio "running loop" pointer is cleared so the next session starts clean. Prevents "Event loop is closed" errors when running many tests back-to-back.
+- **Sequential session safety** — after each browser session closes, the asyncio "running loop" pointer is cleared so the next session starts clean. Prevents "Event loop is closed" errors when running many tests back-to-back. The Docker server resets the event loop before each `/start` to handle stale greenlet residue.
+- **SSL tolerance** — browser contexts are created with `ignore_https_errors=True`, so self-signed certs, expired certs, and HTTPS misconfigurations on target sites don't block navigation.
 - **Playwright traces** — `Agent(trace=True)` records full debug sessions
 - **Fingerprint self-test** — `fantoma test fingerprint` runs 7 in-browser checks
 - **Chromium fallback** — `Agent(browser="chromium")` via [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) for sites that block Firefox
@@ -217,6 +218,7 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | LLM says DONE without acting | Fixed in v0.5.0 — prompt fix included |
 | Same action repeating | Agent has built-in loop detection and escalation |
 | "Event loop is closed" on second run | Fixed — `stop()` cleans up the asyncio event loop |
+| SSL certificate error blocks navigation | Fixed — contexts use `ignore_https_errors=True` by default |
 | Camoufox SIGSEGV / "Page crashed" on Fedora 43 | Use Docker (recommended) or LD_PRELOAD shim. See [Fedora 43 / glibc 2.42](#fedora-43--glibc-242-camoufox-crash) below. |
 
 ## Fedora 43 / glibc 2.42 — Camoufox Crash
@@ -296,16 +298,23 @@ docker compose -f docker-compose.fantoma.yml up -d
 | /health | GET | Status check |
 | /start | POST | Start session: `{"url": "..."}` |
 | /stop | POST | End session |
-| /state | GET | Current ARIA tree + page info |
+| /state | GET | Current ARIA tree + page info. Optional `?mode=form\|content\|navigate` |
 | /screenshot | GET | PNG screenshot |
 | /click | POST | `{"element_id": 0}` |
 | /type | POST | `{"element_id": 0, "text": "..."}` |
+| /fill | POST | Fill input by CSS selector: `{"selector": "...", "value": "..."}` |
+| /select | POST | Select dropdown option: `{"element_id": 0, "value": "..."}` |
+| /evaluate | POST | Run JS in page: `{"script": "..."}` |
 | /navigate | POST | `{"url": "..."}` |
 | /scroll | POST | `{"direction": "down"}` |
 | /press_key | POST | `{"key": "Enter"}` |
 | /login | POST | LLM-free login (manages own session) |
 | /extract | POST | Structured extraction (requires session) |
 | /run | POST | Full agent task (manages own lifecycle) |
+| /manual/open | POST | Open a visible browser on noVNC: `{"url": "...", "profile": "..."}` |
+| /manual/screenshot | GET | Screenshot of the manual session |
+| /manual/close | POST | Close manual session (cookies saved to profile) |
+| /manual/status | GET | Check if a manual session is active |
 
 ## Test Results
 

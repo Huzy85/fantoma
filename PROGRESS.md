@@ -1,5 +1,24 @@
 # Fantoma Development Progress
 
+## Session 14: 2026-04-05 — Persist Container Patches + New Docker API Endpoints
+
+### Summary
+Ported two critical patches from the running container back to the git repo so they survive image rebuilds. Updated README with new Docker API endpoints and troubleshooting entries.
+
+### Patches Persisted
+1. **SSL fix** (`engine.py`): `ignore_https_errors=True` on both Camoufox and Chromium browser contexts. Prevents SSL certificate errors from blocking navigation on target sites.
+2. **Asyncio fix** (`server.py`): Reset the asyncio event loop at `/start` to prevent "Sync API inside asyncio loop" crash from stale greenlet state after a previous session ends.
+
+### New Docker API Endpoints (already in server.py, now documented)
+- `POST /evaluate` — run JS in page
+- `POST /fill` — fill input by CSS selector (bypasses ARIA tree 15-element limit)
+- `POST /select` — select dropdown option by element ID and value
+- `GET /state?mode=form|content|navigate` — mode parameter for adaptive DOM extraction
+- `POST /manual/open` — open a visible browser session on noVNC (:6080)
+- `GET /manual/screenshot` — screenshot of the manual session
+- `POST /manual/close` — close manual session (cookies saved to profile)
+- `GET /manual/status` — check if a manual session is active
+
 ## Session 13: 2026-03-31 — Camoufox glibc 2.42 Fix + 25-Site Live Test
 
 ### Summary
