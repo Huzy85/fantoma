@@ -31,6 +31,7 @@ HEADLESS_MODE = os.environ.get("FANTOMA_HEADLESS", "virtual")
 
 # ── Session state ────────────────────────────────────────────
 _fantoma: Fantoma | None = None
+_manual_fantoma: Fantoma | None = None  # headless=False, visible via noVNC
 
 
 def _get_fantoma_defaults() -> dict:
@@ -64,6 +65,17 @@ def start():
     if _fantoma is not None:
         return jsonify({"error": "session active", "url": "unknown"}), 409
 
+    # Reset asyncio event loop — prevents 'Sync API inside asyncio loop' error
+    # after a previous session ends with a stale/running loop (greenlet residue).
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if not loop.is_running() and not loop.is_closed():
+            loop.close()
+    except Exception:
+        pass
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
     data = request.get_json(force=True) or {}
     defaults = _get_fantoma_defaults()
     _fantoma = Fantoma(**defaults)
@@ -92,7 +104,38 @@ def state():
     err = _require_session()
     if err:
         return err
-    return jsonify(_fantoma.get_state())
+    mode = request.args.get("mode", "navigate")
+    return jsonify(_fantoma.get_state(mode=mode))
+
+
+@app.route("/evaluate", methods=["POST"])
+def evaluate():
+    err = _require_session()
+    if err:
+        return err
+    data = request.get_json(force=True)
+    script = data.get("script", "")
+    if not script:
+        return jsonify({"error": "Missing 'script'"}), 400
+    try:
+        result = _fantoma.evaluate(script)
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/fill", methods=["POST"])
+def fill():
+    """Fill an input by CSS selector — bypasses ARIA tree 15-element limit."""
+    err = _require_session()
+    if err:
+        return err
+    data = request.get_json(force=True)
+    selector = data.get("selector")
+    value = data.get("value", "")
+    if not selector:
+        return jsonify({"error": "Missing 'selector'"}), 400
+    return jsonify(_fantoma.fill_by_selector(selector, value))
 
 
 @app.route("/screenshot", methods=["GET"])
@@ -131,6 +174,15 @@ def navigate():
         return err
     data = request.get_json(force=True)
     return jsonify(_fantoma.navigate(data["url"]))
+
+
+@app.route("/select", methods=["POST"])
+def select():
+    err = _require_session()
+    if err:
+        return err
+    data = request.get_json(force=True)
+    return jsonify(_fantoma.select(data["element_id"], data["value"]))
 
 
 @app.route("/scroll", methods=["POST"])
@@ -236,6 +288,73 @@ def run_task():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ── Manual intervention endpoints (visible via noVNC on :6080) ─
+
+@app.route("/manual/open", methods=["POST"])
+def manual_open():
+    """Open a visible browser on the shared :99 display — watch via noVNC on :6080.
+    Use this to manually log in to sites, solve CAPTCHAs, or handle anything
+    that requires a real human interaction. Cookies are saved to the profile.
+
+    POST body (JSON): {"url": "https://x.com/login", "profile": "/path/to/profile"} (profile optional)
+    """
+    global _manual_fantoma
+    if _manual_fantoma is not None:
+        return jsonify({"error": "Manual session already open. POST /manual/close first."}), 409
+
+    data = request.get_json(force=True) or {}
+    url = data.get("url", "about:blank")
+    profile_dir = data.get("profile", "/root/.local/share/fantoma/chrome-x-profile")
+
+    try:
+        _manual_fantoma = Fantoma(
+            headless=False,
+            browser="chrome",
+            profile_dir=profile_dir,
+        )
+        _manual_fantoma.start(url)
+        log.info("Manual session opened — URL: %s, profile: %s", url, profile_dir)
+        return jsonify({
+            "success": True,
+            "url": url,
+            "profile": profile_dir,
+            "novnc": "http://<M5-IP>:6080/vnc.html",
+            "note": "Browser is visible on :99 — open noVNC to interact. POST /manual/close when done.",
+        })
+    except Exception as e:
+        _manual_fantoma = None
+        log.error("Manual session failed: %s", e)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/manual/screenshot", methods=["GET"])
+def manual_screenshot():
+    """Screenshot of the manual browser session."""
+    if _manual_fantoma is None:
+        return jsonify({"error": "No manual session active."}), 400
+    img = _manual_fantoma.screenshot()
+    return send_file(BytesIO(img), mimetype="image/png")
+
+
+@app.route("/manual/close", methods=["POST"])
+def manual_close():
+    """Close the manual browser session. Cookies are already saved to the profile."""
+    global _manual_fantoma
+    if _manual_fantoma:
+        _manual_fantoma.stop()
+        _manual_fantoma = None
+        log.info("Manual session closed — cookies saved to profile")
+    return jsonify({"success": True, "status": "closed"})
+
+
+@app.route("/manual/status", methods=["GET"])
+def manual_status():
+    return jsonify({
+        "active": _manual_fantoma is not None,
+        "novnc_url": "http://localhost:6080/vnc.html",
+    })
 
 
 if __name__ == "__main__":
