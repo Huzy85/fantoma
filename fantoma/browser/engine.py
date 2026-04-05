@@ -110,7 +110,7 @@ class BrowserEngine:
                 cm_kwargs["screen"] = screen
             self._camoufox_cm = Camoufox(**cm_kwargs)
             self._browser = self._camoufox_cm.__enter__()
-            self._context = self._browser.new_context()
+            self._context = self._browser.new_context(ignore_https_errors=True)
             self._page = self._context.new_page()
 
         # Sync viewport with screen size for virtual display
@@ -176,6 +176,7 @@ class BrowserEngine:
         else:
             self._browser = self._playwright.chromium.launch(**launch_args)
             ctx_args = {"proxy": proxy} if proxy else {}
+            ctx_args["ignore_https_errors"] = True
             self._context = self._browser.new_context(**ctx_args)
             self._page = self._context.new_page()
 
