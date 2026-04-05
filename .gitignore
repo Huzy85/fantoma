@@ -69,3 +69,4 @@ fantoma_demo.mp4
 # Docker secrets
 .env
 .worktrees/
+benchmark/results/
