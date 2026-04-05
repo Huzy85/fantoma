@@ -139,7 +139,7 @@ def evaluate_single(
     }
 
 
-def evaluate_results(results_dir: str | Path, config: dict) -> list[dict]:
+def evaluate_results(results_dir: str | Path, config) -> list[dict]:
     """Batch evaluate all tasks in a benchmark run directory.
 
     Reads each result.json, calls GPT-4V, and writes result.eval.json.
@@ -147,19 +147,22 @@ def evaluate_results(results_dir: str | Path, config: dict) -> list[dict]:
 
     Args:
         results_dir: Directory containing per-task subdirectories.
-        config: Benchmark config dict with keys:
-                  openai_api_key, eval_model (optional).
+        config: BenchmarkConfig dataclass or dict with openai_api_key, eval_model.
 
     Returns:
         List of evaluation result dicts (one per task).
     """
     results_dir = Path(results_dir)
-    openai_api_key = config["openai_api_key"]
-    eval_model = config.get("eval_model", "gpt-4o")
+    openai_api_key = getattr(config, "openai_api_key", None) or config.get("openai_api_key", "") if isinstance(config, dict) else config.openai_api_key
+    eval_model = getattr(config, "eval_model", "gpt-4o") if not isinstance(config, dict) else config.get("eval_model", "gpt-4o")
 
     eval_results = []
 
-    task_dirs = sorted(d for d in results_dir.iterdir() if d.is_dir())
+    # Results live under results_dir/tasks/<task-id>/
+    tasks_dir = results_dir / "tasks"
+    if not tasks_dir.exists():
+        tasks_dir = results_dir  # Fallback: flat structure
+    task_dirs = sorted(d for d in tasks_dir.iterdir() if d.is_dir())
     log.info("Evaluating %d task directories in %s", len(task_dirs), results_dir)
 
     for task_dir in task_dirs:
