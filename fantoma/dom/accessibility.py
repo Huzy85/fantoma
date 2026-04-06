@@ -91,7 +91,7 @@ def get_scroll_info(page) -> dict | None:
                 pages_above: vh > 0 ? +(sy / vh).toFixed(1) : 0,
                 pages_below: vh > 0 ? +(below / vh).toFixed(1) : 0,
             }
-        }()""")
+        }""")
     except Exception:
         return None
 
