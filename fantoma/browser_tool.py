@@ -5,6 +5,7 @@ No mouse movements, no pixel coordinates, no visual layer signals for anti-bot t
 """
 import logging
 import time
+from typing import Any
 
 from fantoma.browser.actions import click_element, type_into, scroll_page
 from fantoma.browser.engine import BrowserEngine
@@ -46,8 +47,10 @@ class Fantoma:
         verification_callback: callable = None,
         timeout: int = 300,
         trace: bool = False,
+        profile_dir: str = None,
     ):
         self.config = FantomaConfig()
+        self._profile_dir = profile_dir
         self.config.browser.headless = headless
         self.config.browser.browser_engine = browser
         self.config.browser.timeout = timeout
@@ -73,6 +76,7 @@ class Fantoma:
             self._llm = LLMClient(base_url=llm_url, api_key=api_key, model=model)
 
         self._verification_callback = verification_callback
+        self._task = ""
         self._engine = None
         self._dom = AccessibilityExtractor(
             max_elements=self.config.extraction.max_elements,
@@ -88,13 +92,14 @@ class Fantoma:
             proxy=self._proxy,
             trace=self.config.browser.trace,
             browser_engine=self.config.browser.browser_engine,
+            profile_dir=self._profile_dir,
         )
         self._engine.start()
         if url:
             self._engine.navigate(url)
             time.sleep(2)
             dismiss_consent(self._engine.get_page())
-        return self.get_state()
+        return self.get_state(task=self._task)
 
     def stop(self) -> None:
         """Close the browser and clean up."""
@@ -118,20 +123,49 @@ class Fantoma:
 
     # ── State ────────────────────────────────────────────────
 
-    def get_state(self) -> dict:
+    def get_state(self, mode: str = "navigate", task: str = "") -> dict:
         """Get current page state: URL, title, ARIA tree, errors, tab count."""
         page = self._engine.get_page()
-        aria_tree = self._dom.extract(page)
+        aria_tree = self._dom.extract(page, task=task, mode=mode)
         errors = detect_errors(page)
         ctx = getattr(self._engine, '_context', None)
         tab_count = len(ctx.pages) if ctx else 1
+        try:
+            title = page.title()
+        except Exception:
+            time.sleep(1)
+            try:
+                title = page.title()
+            except Exception:
+                title = page.url
         return {
             "url": page.url,
-            "title": page.title(),
+            "title": title,
             "aria_tree": aria_tree,
             "errors": errors,
             "tab_count": tab_count,
         }
+
+    def evaluate(self, script: str) -> Any:
+        """Execute JavaScript on the current page and return the result."""
+        page = self._engine.get_page()
+        return page.evaluate(script)
+
+    def fill_by_selector(self, selector: str, value: str) -> dict:
+        """Fill an input element by CSS selector (bypasses ARIA tree limit)."""
+        page = self._engine.get_page()
+        pre_url = page.url
+        try:
+            from .browser.observer import inject_observer, wait_for_dom_stable
+            inject_observer(page)
+            element = page.query_selector(selector)
+            if not element:
+                return {"success": False, "error": f"Selector not found: {selector}"}
+            element.fill(value)
+            wait_for_dom_stable(page)
+            return self._action_result(True, pre_url)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def screenshot(self) -> bytes:
         """Take a PNG screenshot of the current viewport."""
@@ -141,7 +175,7 @@ class Fantoma:
 
     def _action_result(self, success: bool, pre_url: str = None) -> dict:
         """Build a standard action result with fresh state."""
-        state = self.get_state()
+        state = self.get_state(task=self._task)
         return {
             "success": success,
             "changed": pre_url is not None and state["url"] != pre_url,
