@@ -96,6 +96,29 @@ def get_scroll_info(page) -> dict | None:
         return None
 
 
+def format_scroll_hints(info: dict | None) -> tuple[str, str]:
+    """Format scroll info into header/footer hint lines.
+
+    Returns (above_hint, below_hint). Both empty strings if info is None.
+    """
+    if info is None:
+        return "", ""
+
+    THRESHOLD = 4
+
+    if info["pixels_above"] <= THRESHOLD:
+        above = "[Top of page]"
+    else:
+        above = f"... {info['pixels_above']} pixels above ({info['pages_above']} pages) - scroll up for more ..."
+
+    if info["pixels_below"] <= THRESHOLD:
+        below = "[End of page]"
+    else:
+        below = f"... {info['pixels_below']} pixels below ({info['pages_below']} pages) - scroll down for more ..."
+
+    return above, below
+
+
 def prune_elements(elements: list[dict], task: str = "", max_elements: int = 15) -> list[dict]:
     """Score and rank elements by relevance to the task. Returns top N.
 
@@ -368,6 +391,13 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
     output.append(f"URL: {url}")
     output.append("")
 
+    # Scroll context hints
+    scroll_info = get_scroll_info(page)
+    above_hint, below_hint = format_scroll_hints(scroll_info)
+    if above_hint:
+        output.append(above_hint)
+        output.append("")
+
     if interactive:
         interactive = dedup_elements(interactive)
 
@@ -423,6 +453,10 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
         output.append("Page text:")
         for h in headings[:_max_hd]:
             output.append(h)
+
+    if below_hint:
+        output.append("")
+        output.append(below_hint)
 
     return "\n".join(output)
 

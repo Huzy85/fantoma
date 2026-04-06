@@ -55,3 +55,66 @@ class TestGetScrollInfo:
         page = MagicMock()
         page.evaluate.side_effect = Exception("JS error")
         assert get_scroll_info(page) is None
+
+
+from fantoma.dom.accessibility import extract_aria, format_scroll_hints
+
+
+class TestFormatScrollHints:
+
+    def test_at_top_with_content_below(self):
+        above, below = format_scroll_hints({"pixels_above": 0, "pixels_below": 1600, "pages_above": 0, "pages_below": 2.0})
+        assert above == "[Top of page]"
+        assert "1600 pixels below" in below
+        assert "2.0 pages" in below
+
+    def test_at_bottom_with_content_above(self):
+        above, below = format_scroll_hints({"pixels_above": 1600, "pixels_below": 0, "pages_above": 2.0, "pages_below": 0})
+        assert "1600 pixels above" in above
+        assert below == "[End of page]"
+
+    def test_midway(self):
+        above, below = format_scroll_hints({"pixels_above": 800, "pixels_below": 800, "pages_above": 1.0, "pages_below": 1.0})
+        assert "800 pixels above" in above
+        assert "800 pixels below" in below
+
+    def test_short_page(self):
+        above, below = format_scroll_hints({"pixels_above": 0, "pixels_below": 3, "pages_above": 0, "pages_below": 0})
+        assert above == "[Top of page]"
+        assert below == "[End of page]"
+
+    def test_none_returns_empty(self):
+        above, below = format_scroll_hints(None)
+        assert above == ""
+        assert below == ""
+
+
+class TestExtractAriaScrollHints:
+
+    def test_scroll_hints_appear_in_output(self):
+        """extract_aria output includes scroll context when page has content below."""
+        page = MagicMock()
+        page.title.return_value = "Test"
+        page.url = "https://example.com"
+        page.locator.return_value.aria_snapshot.return_value = '- button "Submit"'
+        # Mock evaluate for scroll info
+        page.evaluate.return_value = {
+            "pixels_above": 0,
+            "pixels_below": 1600,
+            "pages_above": 0,
+            "pages_below": 2.0,
+        }
+        result = extract_aria(page)
+        assert "[Top of page]" in result
+        assert "1600 pixels below" in result
+
+    def test_no_scroll_hints_on_error(self):
+        """extract_aria works without scroll hints when JS fails."""
+        page = MagicMock()
+        page.title.return_value = "Test"
+        page.url = "https://example.com"
+        page.locator.return_value.aria_snapshot.return_value = '- button "Submit"'
+        page.evaluate.side_effect = Exception("JS error")
+        result = extract_aria(page)
+        assert "Submit" in result
+        assert "[Top of page]" not in result
