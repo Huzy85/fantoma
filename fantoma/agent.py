@@ -34,7 +34,12 @@ class AgentResult:
 REACTIVE_PROMPT = """\
 You control a browser. Your job is to COMPLETE the task, not just observe the page.
 
-Pick 1-5 actions from this list (one per line):
+Before picking actions, reflect:
+EVAL: One sentence — did your last action work? (Skip on first step.)
+MEMORY: What you've found so far and what's left to do. Be specific.
+GOAL: What you'll do next and why.
+
+Then pick 1-5 actions (one per line):
 CLICK [number]
 TYPE [number] "text"
 SELECT [number] "option"
@@ -46,16 +51,14 @@ DONE
 
 Rules:
 - Match [number] to the element list shown after the task.
-- Elements marked with * are NEW (just appeared from your last action) — focus on these.
-- You may return multiple actions (one per line) to execute in sequence.
-- To fill a form: TYPE each field, then CLICK submit — all in one response.
+- Elements marked with * are NEW (just appeared from your last action).
+- To fill a form: TYPE each field, then CLICK submit, all in one response.
 - After typing in a search field, add PRESS Enter.
-- NAVIGATE and DONE end the sequence — any actions after them are ignored.
-- Only say DONE when the task is fully COMPLETED.
-- Do NOT say DONE just because you can see a form or page — you must interact with it first.
+- NAVIGATE and DONE end the sequence.
+- Only say DONE when the task is FULLY completed and all criteria are met.
+- If the task has multiple parts, verify EACH part before saying DONE.
 - If secrets are available, use them with <secret:name> syntax.
-- After each action you'll see an outcome. Use this feedback.
-- Reply with ONLY action lines, nothing else.\
+- Reply with ONLY reflection lines + action lines, nothing else.\
 """
 
 EXTRACTION_PROMPT = """\
@@ -161,6 +164,27 @@ def _parse_reflection(raw: str) -> tuple[dict, str]:
     return reflection, remainder
 
 
+def _format_history(history: list[dict], max_steps: int = 20) -> str:
+    """Format structured history for LLM context. One line per step, last N steps."""
+    if not history:
+        return ""
+    recent = history[-max_steps:]
+    lines = []
+    for h in recent:
+        parts = []
+        if h.get("goal"):
+            parts.append(f"GOAL: {h['goal']}")
+        parts.append(h.get("actions", ""))
+        if h.get("eval"):
+            parts.append(f"EVAL: {h['eval']}")
+        domain = h.get("url", "").split("//")[-1].split("/")[0] if h.get("url") else ""
+        prefix = f"Step {h['step']}"
+        if domain:
+            prefix += f" ({domain})"
+        lines.append(f"{prefix}: {' | '.join(parts)}")
+    return "\n".join(lines)
+
+
 class Agent:
     """Convenience wrapper — describe a task, the agent does it.
 
@@ -192,7 +216,8 @@ class Agent:
     def run(self, task: str, start_url: str = None) -> AgentResult:
         """Run a browser task described in English."""
         log.info("Task: %s", task)
-        history = []
+        history = []  # list of dicts: {step, eval, memory, goal, actions, url}
+        last_memory = ""
         steps_detail = []
         self.fantoma._task = task
 
@@ -222,8 +247,9 @@ class Agent:
 
                 # Build LLM messages
                 messages = [{"role": "system", "content": REACTIVE_PROMPT}]
-                if history:
-                    messages.append({"role": "assistant", "content": "\n".join(history[-10:])})
+                formatted = _format_history(history)
+                if formatted:
+                    messages.append({"role": "assistant", "content": formatted})
                 messages.append({"role": "user", "content": f"Task: {task}\n\nPage ({state['url']}):\n{aria}"})
 
                 # Ask LLM
@@ -231,13 +257,15 @@ class Agent:
                 if not raw:
                     continue
 
-                actions = _parse_actions(raw)
+                reflection, action_text = _parse_reflection(raw)
+                actions = _parse_actions(action_text)
                 if not actions:
                     continue
+                last_memory = reflection.get("memory", "")
 
                 for action_type, params in actions:
                     if action_type == "done":
-                        data = self._extract_answer(task, state)
+                        data = self._extract_answer(task, state, memory=last_memory)
                         return AgentResult(success=True, data=data, steps_taken=step_num,
                                            steps_detail=steps_detail,
                                            escalations=self.escalation.total_escalations)
@@ -259,15 +287,27 @@ class Agent:
                         result = {"success": False}
                         outcome = "ERROR"
 
-                    history.append(f"Step {step_num}: {action_desc} → {outcome}")
+                    # Build step record on first action of step
+                    if not any(h.get("step") == step_num for h in history):
+                        history.append({
+                            "step": step_num,
+                            "eval": reflection.get("eval", ""),
+                            "memory": reflection.get("memory", ""),
+                            "goal": reflection.get("goal", ""),
+                            "actions": f"{action_desc} -> {outcome}",
+                            "url": state.get("url", ""),
+                        })
+                    else:
+                        # Append additional actions to existing step record
+                        history[-1]["actions"] += f", {action_desc} -> {outcome}"
                     steps_detail.append({"step": step_num, "action": action_desc,
                                          "success": result["success"], "url": state.get("url", "")})
 
                     if not result["success"]:
                         break  # Let LLM re-evaluate on next iteration
 
-                # Loop detection: last 5 actions identical
-                if len(history) >= 5 and len(set(history[-5:])) == 1:
+                # Loop detection: last 5 action strings identical
+                if len(history) >= 5 and len(set(h["actions"] for h in history[-5:])) == 1:
                     if self.escalation.can_escalate():
                         new_ep = self.escalation.escalate()
                         self._llm = LLMClient(base_url=new_ep,
@@ -318,12 +358,15 @@ class Agent:
         """Create a step-by-step session."""
         return _Session(self, start_url)
 
-    def _extract_answer(self, task: str, state: dict) -> str:
-        """Try to extract a concise answer from the current page."""
+    def _extract_answer(self, task: str, state: dict, memory: str = "") -> str:
+        """Extract a concise answer using content-mode page text and agent memory."""
         try:
+            page = self.fantoma._engine.get_page()
+            content = self.fantoma._dom.extract_content(page)
+            agent_context = f"\n\nAgent found: {memory}" if memory else ""
             messages = [
                 {"role": "system", "content": EXTRACTION_PROMPT},
-                {"role": "user", "content": f"Task: {task}\n\nPage content:\n{state['aria_tree'][:4000]}"},
+                {"role": "user", "content": f"Task: {task}{agent_context}\n\nPage content:\n{content}"},
             ]
             return self._llm.chat(messages, max_tokens=1000) or ""
         except Exception:
