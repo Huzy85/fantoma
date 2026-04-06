@@ -67,3 +67,35 @@ DONE"""
         assert "4.5 stars" in reflection["eval"]
         actions = _parse_actions(remainder)
         assert actions == [("done", {})]
+
+
+from fantoma.agent import _format_history
+
+
+class TestFormatHistory:
+
+    def test_single_step(self):
+        history = [{"step": 1, "eval": "", "memory": "Starting task.", "goal": "Find search box.", "actions": "CLICK [2] -> OK", "url": "https://example.com"}]
+        result = _format_history(history)
+        assert "Step 1" in result
+        assert "Find search box" in result
+        assert "CLICK [2]" in result
+
+    def test_multiple_steps(self):
+        history = [
+            {"step": 1, "eval": "", "memory": "Starting.", "goal": "Search.", "actions": "TYPE [1] -> OK", "url": "https://a.com"},
+            {"step": 2, "eval": "Search worked.", "memory": "On results.", "goal": "Click first.", "actions": "CLICK [3] -> OK", "url": "https://a.com/results"},
+        ]
+        result = _format_history(history)
+        assert "Step 1" in result
+        assert "Step 2" in result
+        assert "Search worked" in result
+
+    def test_truncates_to_20(self):
+        history = [{"step": i, "eval": "OK", "memory": "M", "goal": "G", "actions": "CLICK [1] -> OK", "url": "https://a.com"} for i in range(1, 30)]
+        result = _format_history(history)
+        assert "Step 9" not in result   # Oldest dropped
+        assert "Step 29" in result      # Recent kept
+
+    def test_empty_history(self):
+        assert _format_history([]) == ""
