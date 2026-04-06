@@ -125,6 +125,42 @@ def _parse_actions(raw: str) -> list[tuple[str, dict]]:
     return results
 
 
+def _parse_reflection(raw: str) -> tuple[dict, str]:
+    """Extract EVAL/MEMORY/GOAL lines from LLM response.
+
+    Returns (reflection_dict, remainder_for_action_parsing).
+    Reflection fields default to empty string if not found.
+    """
+    reflection = {"eval": "", "memory": "", "goal": ""}
+    if not raw:
+        return reflection, ""
+
+    lines = raw.strip().split("\n")
+    action_start = 0
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("EVAL:"):
+            reflection["eval"] = stripped[5:].strip()
+            action_start = i + 1
+        elif stripped.startswith("MEMORY:"):
+            reflection["memory"] = stripped[7:].strip()
+            action_start = i + 1
+        elif stripped.startswith("GOAL:"):
+            reflection["goal"] = stripped[5:].strip()
+            action_start = i + 1
+        elif stripped == "":
+            action_start = i + 1
+            continue
+        else:
+            # First non-reflection, non-blank line = start of actions
+            action_start = i
+            break
+
+    remainder = "\n".join(lines[action_start:])
+    return reflection, remainder
+
+
 class Agent:
     """Convenience wrapper — describe a task, the agent does it.
 
