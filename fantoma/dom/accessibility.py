@@ -73,6 +73,29 @@ _STOP_WORDS = {
 }
 
 
+def get_scroll_info(page) -> dict | None:
+    """Get viewport scroll position metrics via JavaScript.
+
+    Returns dict with pixels_above, pixels_below, pages_above, pages_below.
+    Returns None on any error (JS eval failure, headless quirks, etc.).
+    """
+    try:
+        return page.evaluate("""() => {
+            const vh = window.innerHeight;
+            const ph = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight || 0);
+            const sy = window.scrollY || window.pageYOffset || 0;
+            const below = Math.max(0, ph - (vh + sy));
+            return {
+                pixels_above: Math.round(sy),
+                pixels_below: Math.round(below),
+                pages_above: vh > 0 ? +(sy / vh).toFixed(1) : 0,
+                pages_below: vh > 0 ? +(below / vh).toFixed(1) : 0,
+            }
+        }()""")
+    except Exception:
+        return None
+
+
 def prune_elements(elements: list[dict], task: str = "", max_elements: int = 15) -> list[dict]:
     """Score and rank elements by relevance to the task. Returns top N.
 
