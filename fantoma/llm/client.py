@@ -24,6 +24,7 @@ class LLMClient:
         self.model = model
         self.timeout = timeout
         self._resolved_model: str | None = None
+        self._temperature_override: float | None = None
 
     def _resolve_model(self) -> str:
         """Resolve 'auto' to the first available model on the server."""
@@ -90,6 +91,8 @@ class LLMClient:
         Returns empty string on timeout, HTTP error, or unparseable response.
         """
         model = self._resolve_model()
+        if self._temperature_override is not None:
+            temperature = self._temperature_override
         payload = {
             "model": model,
             "messages": messages,
@@ -134,7 +137,28 @@ class LLMClient:
             log.warning("LLM returned %d: %s", resp.status_code, resp.text[:200])
             if resp.status_code == 400:
                 self._resolved_model = None  # Reset model cache
-            return ""
+                # Some models (e.g. Kimi K2.5) only accept temperature=1.
+                # Retry once with temperature=1 if the original was different.
+                if temperature != 1:
+                    log.info("Retrying with temperature=1 (API may require it)")
+                    payload["temperature"] = 1
+                    try:
+                        resp = httpx.post(
+                            f"{self.base_url}/chat/completions",
+                            headers=self._headers(),
+                            json=payload,
+                            timeout=self.timeout,
+                        )
+                        if resp.status_code == 200:
+                            self._temperature_override = 1
+                        else:
+                            return ""
+                    except httpx.HTTPError:
+                        return ""
+                else:
+                    return ""
+            else:
+                return ""
 
         data = resp.json()
 
