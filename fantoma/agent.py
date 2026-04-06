@@ -158,6 +158,7 @@ class Agent:
         log.info("Task: %s", task)
         history = []
         steps_detail = []
+        self.fantoma._task = task
 
         try:
             state = self.fantoma.start(start_url)
@@ -212,14 +213,19 @@ class Agent:
 
                     # Call the Fantoma tool method
                     method = getattr(self.fantoma, action_type)
-                    result = method(**params)
-                    state = result.get("state", state)
-
                     action_desc = f"{action_type}({params})"
-                    outcome = "OK" if result["success"] else "FAILED"
+                    try:
+                        result = method(**params)
+                        state = result.get("state", state)
+                        outcome = "OK" if result["success"] else "FAILED"
+                    except Exception as action_err:
+                        log.warning("Action %s failed: %s", action_desc, action_err)
+                        result = {"success": False}
+                        outcome = "ERROR"
+
                     history.append(f"Step {step_num}: {action_desc} → {outcome}")
                     steps_detail.append({"step": step_num, "action": action_desc,
-                                         "success": result["success"], "url": state["url"]})
+                                         "success": result["success"], "url": state.get("url", "")})
 
                     if not result["success"]:
                         break  # Let LLM re-evaluate on next iteration
@@ -240,7 +246,8 @@ class Agent:
                                steps_taken=self._max_steps, steps_detail=steps_detail,
                                escalations=self.escalation.total_escalations)
         except Exception as e:
-            return AgentResult(success=False, error=str(e))
+            return AgentResult(success=False, error=str(e),
+                               steps_taken=len(steps_detail), steps_detail=steps_detail)
         finally:
             timer.cancel()
             self.fantoma.stop()
