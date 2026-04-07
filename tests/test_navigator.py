@@ -90,3 +90,39 @@ class TestDomainDrift:
     def test_no_drift_without_start_domain(self):
         nav = Navigator()
         assert nav._is_domain_drift("https://www.example.com", "") is False
+
+
+class TestMutationFeedback:
+    def test_change_line_included_in_prompt(self):
+        """Verify the navigator includes Change: line in LLM messages."""
+        from fantoma.navigator import Navigator, NAVIGATOR_SYSTEM
+        from fantoma.planner import Subtask
+        from fantoma.state_tracker import StateTracker
+
+        nav = Navigator()
+        subtask = Subtask("Click the button", "interact", "Page changes")
+
+        # Mock fantoma
+        fantoma = MagicMock()
+        page = MagicMock()
+        page.url = "https://example.com"
+        page.title.return_value = "Example"
+        fantoma._engine.get_page.return_value = page
+        fantoma._dom.extract.return_value = "Page: Example\n[0] button 'Submit'"
+        fantoma._dom.extract_content.return_value = "Some content"
+        fantoma.click.return_value = {"success": True, "state": {"url": "https://example.com"}}
+
+        # Mock LLM: first call returns CLICK, second returns DONE
+        llm = MagicMock()
+        llm.chat.side_effect = ["CLICK [0]", "DONE"]
+
+        tracker = StateTracker()
+
+        with patch("fantoma.navigator.collect_mutations", return_value={"added": ["div.results"], "removed": [], "changed_attrs": [], "text_changes": ["3 items found"]}):
+            with patch("fantoma.navigator.format_mutations", return_value="Added: div.results | New text: 3 items found"):
+                result = nav.execute(subtask, fantoma, llm, tracker, max_steps=5)
+
+        # Check second LLM call includes mutation feedback
+        second_call = llm.chat.call_args_list[1][0][0]
+        user_msg = [m for m in second_call if m["role"] == "user"][0]["content"]
+        assert "Added: div.results" in user_msg
