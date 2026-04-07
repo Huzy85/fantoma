@@ -66,6 +66,11 @@ class Planner:
         self._max_replans = 3
         self._failed_strategies: list[str] = []
 
+    def reset(self) -> None:
+        """Reset replan state for a new task."""
+        self._replan_count = 0
+        self._failed_strategies.clear()
+
     def decompose(self, task: str, page_summary: str) -> list[Subtask]:
         messages = [
             {"role": "system", "content": DECOMPOSE_SYSTEM},
