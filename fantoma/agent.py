@@ -5,14 +5,16 @@ Delegates all browser operations to the Fantoma tool class.
 """
 import logging
 import re
-import threading
-import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from fantoma.browser_tool import Fantoma
 from fantoma.llm.client import LLMClient
 from fantoma.resilience.escalation import EscalationChain
+from fantoma.planner import Planner, Subtask, Checkpoint
+from fantoma.navigator import Navigator, NavigatorResult
+from fantoma.state_tracker import StateTracker
 
 log = logging.getLogger("fantoma")
 
@@ -27,162 +29,6 @@ class AgentResult:
     error: str = ""
     tokens_used: int = 0
     escalations: int = 0
-
-
-# ── LLM prompts (orchestrator concerns) ─────────────────────
-
-REACTIVE_PROMPT = """\
-You control a browser. Your job is to COMPLETE the task, not just observe the page.
-
-Before picking actions, reflect:
-EVAL: One sentence — did your last action work? (Skip on first step.)
-MEMORY: What you've found so far and what's left to do. Be specific.
-GOAL: What you'll do next and why.
-
-Then pick 1-5 actions (one per line):
-CLICK [number]
-TYPE [number] "text"
-SELECT [number] "option"
-SCROLL down
-SCROLL up
-NAVIGATE https://example.com
-PRESS Enter
-DONE
-
-Rules:
-- Match [number] to the element list shown after the task.
-- Elements marked with * are NEW (just appeared from your last action).
-- To fill a form: TYPE each field, then CLICK submit, all in one response.
-- After typing in a search field, add PRESS Enter.
-- NAVIGATE and DONE end the sequence.
-- Only say DONE when the task is FULLY completed and all criteria are met.
-- If the task has multiple parts, verify EACH part before saying DONE.
-- If secrets are available, use them with <secret:name> syntax.
-- Reply with ONLY reflection lines + action lines, nothing else.\
-"""
-
-EXTRACTION_PROMPT = """\
-Extract ONLY the answer from the page content below. No code. No explanation. Just the data.\
-"""
-
-COMPACTION_PROMPT = """\
-Summarize what has been accomplished so far in this browser automation task.
-Include: pages visited, forms filled, buttons clicked, data found, errors encountered.
-Be specific. Keep it under 200 words.\
-"""
-
-# ── Action parsing ───────────────────────────────────────────
-
-
-def _parse_actions(raw: str) -> list[tuple[str, dict]]:
-    """Parse LLM response into (action_type, params) tuples."""
-    results = []
-    for line in (raw or "").strip().split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-
-        # CLICK [N]
-        m = re.match(r'CLICK\s*\[?(\d+)\]?', line, re.IGNORECASE)
-        if m:
-            results.append(("click", {"element_id": int(m.group(1))}))
-            continue
-        # TYPE [N] "text"
-        m = re.match(r'TYPE\s*\[?(\d+)\]?\s*["\'](.+?)["\']', line, re.IGNORECASE)
-        if m:
-            results.append(("type_text", {"element_id": int(m.group(1)), "text": m.group(2)}))
-            continue
-        # SELECT [N] "value"
-        m = re.match(r'SELECT\s*\[?(\d+)\]?\s*["\'](.+?)["\']', line, re.IGNORECASE)
-        if m:
-            results.append(("select", {"element_id": int(m.group(1)), "value": m.group(2)}))
-            continue
-        # SCROLL
-        m = re.match(r'SCROLL\s*(UP|DOWN)', line, re.IGNORECASE)
-        if m:
-            results.append(("scroll", {"direction": m.group(1).lower()}))
-            continue
-        # NAVIGATE
-        m = re.match(r'NAVIGATE\s+["\']?(https?://\S+?)["\']?\s*$', line, re.IGNORECASE)
-        if m:
-            results.append(("navigate", {"url": m.group(1)}))
-            break  # Terminator
-        # PRESS
-        m = re.match(r'PRESS\s+(\w+)', line, re.IGNORECASE)
-        if m:
-            results.append(("press_key", {"key": m.group(1)}))
-            continue
-        # DONE
-        if re.match(r'DONE', line, re.IGNORECASE):
-            results.append(("done", {}))
-            break  # Terminator
-
-        # Fallback: bare [N] → click
-        m = re.search(r'\[(\d+)\]', line)
-        if m:
-            results.append(("click", {"element_id": int(m.group(1))}))
-
-        if len(results) >= 5:
-            break
-
-    return results
-
-
-def _parse_reflection(raw: str) -> tuple[dict, str]:
-    """Extract EVAL/MEMORY/GOAL lines from LLM response.
-
-    Returns (reflection_dict, remainder_for_action_parsing).
-    Reflection fields default to empty string if not found.
-    """
-    reflection = {"eval": "", "memory": "", "goal": ""}
-    if not raw:
-        return reflection, ""
-
-    lines = raw.strip().split("\n")
-    action_start = 0
-
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("EVAL:"):
-            reflection["eval"] = stripped[5:].strip()
-            action_start = i + 1
-        elif stripped.startswith("MEMORY:"):
-            reflection["memory"] = stripped[7:].strip()
-            action_start = i + 1
-        elif stripped.startswith("GOAL:"):
-            reflection["goal"] = stripped[5:].strip()
-            action_start = i + 1
-        elif stripped == "":
-            action_start = i + 1
-            continue
-        else:
-            # First non-reflection, non-blank line = start of actions
-            action_start = i
-            break
-
-    remainder = "\n".join(lines[action_start:])
-    return reflection, remainder
-
-
-def _format_history(history: list[dict], max_steps: int = 20) -> str:
-    """Format structured history for LLM context. One line per step, last N steps."""
-    if not history:
-        return ""
-    recent = history[-max_steps:]
-    lines = []
-    for h in recent:
-        parts = []
-        if h.get("goal"):
-            parts.append(f"GOAL: {h['goal']}")
-        parts.append(h.get("actions", ""))
-        if h.get("eval"):
-            parts.append(f"EVAL: {h['eval']}")
-        domain = h.get("url", "").split("//")[-1].split("/")[0] if h.get("url") else ""
-        prefix = f"Step {h['step']}"
-        if domain:
-            prefix += f" ({domain})"
-        lines.append(f"{prefix}: {' | '.join(parts)}")
-    return "\n".join(lines)
 
 
 class Agent:
@@ -212,121 +58,109 @@ class Agent:
         keys = escalation_keys or [api_key] + [""] * (len(endpoints) - 1)
         self.escalation = EscalationChain(endpoints, keys)
         self._llm = LLMClient(base_url=llm_url, api_key=api_key, model=model)
+        self._planner = Planner(self._llm)
+        self._navigator = Navigator()
 
     def run(self, task: str, start_url: str = None) -> AgentResult:
         """Run a browser task described in English."""
         log.info("Task: %s", task)
-        history = []  # list of dicts: {step, eval, memory, goal, actions, url}
-        last_memory = ""
-        steps_detail = []
         self.fantoma._task = task
+
+        start_domain = ""
+        if start_url:
+            try:
+                start_domain = urlparse(start_url).netloc
+            except Exception:
+                pass
 
         try:
             state = self.fantoma.start(start_url)
         except Exception as e:
             return AgentResult(success=False, error=f"Browser start failed: {e}")
 
-        # Timeout via threading.Event (safe with Playwright greenlets)
-        timeout_event = threading.Event()
-        timer = threading.Timer(self.fantoma.config.browser.timeout, timeout_event.set)
-        timer.daemon = True
-        timer.start()
+        total_steps = 0
+        all_steps = []
 
         try:
-            for step_num in range(1, self._max_steps + 1):
-                if timeout_event.is_set():
-                    return AgentResult(success=bool(steps_detail), data=state.get("aria_tree", ""),
-                                       steps_taken=step_num - 1, steps_detail=steps_detail,
-                                       error=f"Timeout after {step_num - 1} steps",
-                                       escalations=self.escalation.total_escalations)
+            summary = self._get_page_summary()
+            subtasks = self._planner.decompose(task, summary)
+            completed = []      # list of (Subtask, NavigatorResult)
+            checkpoints = []    # list of Checkpoint
+            all_steps = []
+            total_steps = 0
+            remaining_budget = self._max_steps
 
-                # Mask secrets in the ARIA tree
-                aria = state["aria_tree"]
-                for name, value in self._sensitive_data.items():
-                    aria = aria.replace(value, f"<secret:{name}>")
+            i = 0
+            while i < len(subtasks) and remaining_budget > 0:
+                subtask = subtasks[i]
+                n_remaining = len(subtasks) - i
+                step_budget = max(5, remaining_budget // max(1, n_remaining))
+                tracker = StateTracker()
 
-                # Build LLM messages
-                messages = [{"role": "system", "content": REACTIVE_PROMPT}]
-                formatted = _format_history(history)
-                if formatted:
-                    messages.append({"role": "assistant", "content": formatted})
-                messages.append({"role": "user", "content": f"Task: {task}\n\nPage ({state['url']}):\n{aria}"})
+                result = self._navigator.execute(
+                    subtask=subtask,
+                    fantoma=self.fantoma,
+                    llm=self._llm,
+                    tracker=tracker,
+                    max_steps=step_budget,
+                    start_domain=start_domain,
+                    sensitive_data=self._sensitive_data,
+                )
 
-                # Ask LLM
-                raw = self._llm.chat(messages, max_tokens=500)
-                if not raw:
+                all_steps.extend(result.steps_detail)
+                total_steps += result.steps_taken
+                remaining_budget -= result.steps_taken
+
+                if result.status == "done":
+                    completed.append((subtask, result))
+                    checkpoints.append(Checkpoint(
+                        url=result.final_url,
+                        subtask=subtask,
+                        result_summary=result.data[:200],
+                    ))
+                    i += 1
                     continue
 
-                reflection, action_text = _parse_reflection(raw)
-                actions = _parse_actions(action_text)
-                if not actions:
-                    continue
-                last_memory = reflection.get("memory", "")
-
-                for action_type, params in actions:
-                    if action_type == "done":
-                        data = self._extract_answer(task, state, memory=last_memory)
-                        return AgentResult(success=True, data=data, steps_taken=step_num,
-                                           steps_detail=steps_detail,
-                                           escalations=self.escalation.total_escalations)
-
-                    # Unmask secrets before executing
-                    if "text" in params:
-                        for name, value in self._sensitive_data.items():
-                            params["text"] = params["text"].replace(f"<secret:{name}>", value)
-
-                    # Call the Fantoma tool method
-                    method = getattr(self.fantoma, action_type)
-                    action_desc = f"{action_type}({params})"
+                # Stagnation, failure, or budget exhausted -- replan
+                summary = self._get_page_summary()
+                new_subtasks = self._planner.replan(task, completed, subtask, summary)
+                if new_subtasks is None:
+                    break
+                # Replace remaining subtasks with new plan
+                subtasks = subtasks[:i] + new_subtasks
+                # Backtrack if we have a checkpoint
+                if checkpoints:
                     try:
-                        result = method(**params)
-                        state = result.get("state", state)
-                        outcome = "OK" if result["success"] else "FAILED"
-                    except Exception as action_err:
-                        log.warning("Action %s failed: %s", action_desc, action_err)
-                        result = {"success": False}
-                        outcome = "ERROR"
+                        self.fantoma.navigate(checkpoints[-1].url)
+                    except Exception:
+                        pass
+                continue  # Retry from same index with new subtask
 
-                    # Build step record on first action of step
-                    if not any(h.get("step") == step_num for h in history):
-                        history.append({
-                            "step": step_num,
-                            "eval": reflection.get("eval", ""),
-                            "memory": reflection.get("memory", ""),
-                            "goal": reflection.get("goal", ""),
-                            "actions": f"{action_desc} -> {outcome}",
-                            "url": state.get("url", ""),
-                        })
-                    else:
-                        # Append additional actions to existing step record
-                        history[-1]["actions"] += f", {action_desc} -> {outcome}"
-                    steps_detail.append({"step": step_num, "action": action_desc,
-                                         "success": result["success"], "url": state.get("url", "")})
-
-                    if not result["success"]:
-                        break  # Let LLM re-evaluate on next iteration
-
-                # Loop detection: last 5 action strings identical
-                if len(history) >= 5 and len(set(h["actions"] for h in history[-5:])) == 1:
-                    if self.escalation.can_escalate():
-                        new_ep = self.escalation.escalate()
-                        self._llm = LLMClient(base_url=new_ep,
-                                               api_key=self.escalation.current_api_key())
-                        history.clear()
-                    else:
-                        return AgentResult(success=False, error="Action loop detected",
-                                           steps_taken=step_num, steps_detail=steps_detail,
-                                           escalations=self.escalation.total_escalations)
-
-            return AgentResult(success=False, error="Max steps reached",
-                               steps_taken=self._max_steps, steps_detail=steps_detail,
-                               escalations=self.escalation.total_escalations)
+            answer = self._planner.summarise(task, completed)
+            return AgentResult(
+                success=bool(completed),
+                data=answer,
+                steps_taken=total_steps,
+                steps_detail=all_steps,
+                escalations=self.escalation.total_escalations,
+            )
         except Exception as e:
             return AgentResult(success=False, error=str(e),
-                               steps_taken=len(steps_detail), steps_detail=steps_detail)
+                               steps_taken=total_steps,
+                               steps_detail=all_steps)
         finally:
-            timer.cancel()
             self.fantoma.stop()
+
+    def _get_page_summary(self) -> str:
+        """Get a brief page summary for the planner (URL + title + first 500 chars)."""
+        try:
+            page = self.fantoma._engine.get_page()
+            url = page.url
+            title = page.title()
+            content = self.fantoma._dom.extract_content(page)[:500]
+            return f"URL: {url}\nTitle: {title}\nContent: {content}"
+        except Exception:
+            return "Page not loaded"
 
     def login(self, url: str, **creds) -> AgentResult:
         """Log into a site. Delegates to Fantoma."""
@@ -358,20 +192,6 @@ class Agent:
         """Create a step-by-step session."""
         return _Session(self, start_url)
 
-    def _extract_answer(self, task: str, state: dict, memory: str = "") -> str:
-        """Extract a concise answer using content-mode page text and agent memory."""
-        try:
-            page = self.fantoma._engine.get_page()
-            content = self.fantoma._dom.extract_content(page)
-            agent_context = f"\n\nAgent found: {memory}" if memory else ""
-            messages = [
-                {"role": "system", "content": EXTRACTION_PROMPT},
-                {"role": "user", "content": f"Task: {task}{agent_context}\n\nPage content:\n{content}"},
-            ]
-            return self._llm.chat(messages, max_tokens=1000) or ""
-        except Exception:
-            return state.get("aria_tree", "")[:2000]
-
 
 class _Session:
     """Step-by-step session using Fantoma tool directly."""
@@ -389,10 +209,12 @@ class _Session:
 
     def act(self, instruction: str) -> dict:
         """Execute one instruction. Sends to LLM, executes result via Fantoma."""
+        from fantoma.navigator import _parse_actions, NAVIGATOR_SYSTEM
         state = self.agent.fantoma.get_state()
         messages = [
-            {"role": "system", "content": REACTIVE_PROMPT},
-            {"role": "user", "content": f"Task: {instruction}\n\nPage ({state['url']}):\n{state['aria_tree']}"},
+            {"role": "system", "content": NAVIGATOR_SYSTEM.format(
+                instruction=instruction, done_when="Task complete")},
+            {"role": "user", "content": f"Page ({state['url']}):\n{state['aria_tree']}"},
         ]
         raw = self.agent._llm.chat(messages, max_tokens=200)
         actions = _parse_actions(raw or "")
