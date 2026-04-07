@@ -82,6 +82,7 @@ class Agent:
         all_steps = []
 
         try:
+            self._planner.reset()
             summary = self._get_page_summary()
             subtasks = self._planner.decompose(task, summary)
             completed = []      # list of (Subtask, NavigatorResult)
@@ -152,13 +153,23 @@ class Agent:
             self.fantoma.stop()
 
     def _get_page_summary(self) -> str:
-        """Get a brief page summary for the planner (URL + title + first 500 chars)."""
+        """Get a brief page summary for the planner (URL + title + headings + content)."""
         try:
             page = self.fantoma._engine.get_page()
             url = page.url
             title = page.title()
+            # Get headings from navigate-mode ARIA (they appear as "(hN) ..." lines)
+            aria = self.fantoma._dom.extract(page, mode="navigate")
+            headings = [
+                line.strip() for line in aria.split("\n")
+                if line.strip().startswith("(h")
+            ]
             content = self.fantoma._dom.extract_content(page)[:500]
-            return f"URL: {url}\nTitle: {title}\nContent: {content}"
+            parts = [f"URL: {url}", f"Title: {title}"]
+            if headings:
+                parts.append(f"Headings: {'; '.join(headings[:10])}")
+            parts.append(f"Content: {content}")
+            return "\n".join(parts)
         except Exception:
             return "Page not loaded"
 

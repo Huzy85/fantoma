@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from fantoma.browser.observer import collect_mutations, format_mutations
-from fantoma.planner import Subtask
+from fantoma.planner import Planner, Subtask
 from fantoma.state_tracker import StateTracker
 
 log = logging.getLogger("fantoma.navigator")
 
-MODE_MAP = {"find": "navigate", "interact": "form", "read": "content"}
+MODE_MAP = Planner.MODE_MAP
 
 
 @dataclass
