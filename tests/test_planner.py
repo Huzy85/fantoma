@@ -95,3 +95,21 @@ class TestCheckpoint:
         assert c.url == "https://a.com"
         assert c.subtask.instruction == "Do X"
         assert c.result_summary == "Found X"
+
+
+class TestSummarise:
+    def test_passes_all_results_to_llm(self):
+        from fantoma.navigator import NavigatorResult
+        llm = MagicMock()
+        llm.chat.return_value = "The answer is 42"
+        p = Planner(llm)
+        completed = [
+            (Subtask("Step 1", "interact", "Done"), NavigatorResult("done", "Found page A", 3, [], "https://a.com")),
+            (Subtask("Step 2", "read", "Done"), NavigatorResult("done", "Price is $42", 2, [], "https://a.com/price")),
+        ]
+        result = p.summarise("What is the price?", completed)
+        assert result == "The answer is 42"
+        call_args = llm.chat.call_args[0][0]
+        prompt_text = " ".join(m["content"] for m in call_args)
+        assert "Found page A" in prompt_text
+        assert "Price is $42" in prompt_text
