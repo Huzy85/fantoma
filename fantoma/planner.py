@@ -50,9 +50,14 @@ You MUST try a completely different strategy. Options:
 Previously failed strategies: {failed_strategies}"""
 
 SUMMARISE_SYSTEM = """\
-You are extracting the answer to a web task from data gathered across multiple pages.
-Address every criterion in the task explicitly.
-Be specific and complete -- vague answers will fail evaluation."""
+You are producing the final answer to a web task from data gathered across multiple pages.
+
+Rules:
+- Give the ACTUAL answer with concrete data: names, numbers, dates, URLs, titles.
+- NEVER give instructions like "to find X, visit Y" or "you would need to". The user wants the answer, not directions.
+- If you have partial data, present what you have. Partial answers score better than no answer.
+- If data is contradictory, pick the most specific/recent.
+- Keep it concise. One paragraph max."""
 
 _VALID_MODES = {"interact", "read", "find"}
 

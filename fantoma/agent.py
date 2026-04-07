@@ -122,7 +122,11 @@ class Agent:
                     i += 1
                     continue
 
-                # Stagnation, failure, or budget exhausted -- replan
+                # Stagnation, failure, or budget exhausted -- still save partial data
+                if result.data and not result.data.startswith("Stopped:") and not result.data.startswith("Domain drift"):
+                    completed.append((subtask, result))
+
+                # Replan
                 summary = self._get_page_summary()
                 new_subtasks = self._planner.replan(task, completed, subtask, summary)
                 if new_subtasks is None:
