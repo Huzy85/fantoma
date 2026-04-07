@@ -51,8 +51,13 @@ Rules:
 
 EXTRACT_ON_DONE = """\
 You are extracting the answer from a web page.
-Address every criterion in the task explicitly.
-Be specific and complete. Include names, numbers, URLs where relevant.\
+
+Rules:
+- Give the ACTUAL answer with specific data (names, numbers, dates, URLs).
+- NEVER give instructions like "to find X, do Y". The answer must contain the data itself.
+- If the page contains partial information, extract what is available.
+- Address every criterion in the task explicitly.
+- If information is not on the page, say exactly what is missing.\
 """
 
 
@@ -222,8 +227,10 @@ class Navigator:
             should_stop, reason = tracker.should_stop()
             if should_stop:
                 log.info("Navigator stopping: %s (step %d)", reason, step_num)
+                # Extract whatever is on the page before giving up
+                data = self._extract_answer(subtask, fantoma, llm)
                 return NavigatorResult(
-                    status="stagnant", data=f"Stopped: {reason}",
+                    status="stagnant", data=data or f"Stopped: {reason}",
                     steps_taken=step_num, steps_detail=steps_detail,
                     final_url=fantoma._engine.get_page().url,
                 )
@@ -238,8 +245,10 @@ class Navigator:
                     final_url=current_url,
                 )
 
+        # Extract whatever is on the page before giving up
+        data = self._extract_answer(subtask, fantoma, llm)
         return NavigatorResult(
-            status="max_steps", data="Step budget exhausted",
+            status="max_steps", data=data or "Step budget exhausted",
             steps_taken=max_steps, steps_detail=steps_detail,
             final_url=fantoma._engine.get_page().url,
         )
