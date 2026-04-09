@@ -48,11 +48,18 @@ ux_review*.txt
 
 # Test artifacts
 tests/*_results.json
+tests/*_results.log
+tests/live*_results_*.json
+tests/live*_results_*.log
+tests/chromium_antibot_*.json
 tests/real_*.py
 tests/full_*.py
 tests/live_*.py
 tests/scenario_*.py
 v03_fresh_results.json
+
+# Working snapshots (per-session, not source)
+.session_snapshots/
 
 # One-off scripts
 hn_post.py

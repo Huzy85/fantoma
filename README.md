@@ -51,6 +51,8 @@ fantoma test         # Verify it works
 - **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
 - **Hierarchical agent (v0.8)** — Planner decomposes the task into typed subtasks, Navigator executes each one, StateTracker watches for stagnation and loops. Failure-typed replan guidance: each navigator failure carries a reason (`stagnation`, `loop`, `domain_drift`, `rate_limit`, `login_wall`, `captcha`, `llm_empty`) and the planner gets targeted recovery instructions.
+- **Search-first navigation policy (v0.8)** — Planner step 1 must either NAVIGATE to a known URL or NAVIGATE to a Google search. Scrolling a landing page is banned. Navigator must press Enter or click submit on any typed field before saying DONE, and may not say DONE on a search results page when the task targets a specific resource.
+- **Subtask-cycle escape hatch (v0.8)** — Agent loop tracks the last 4 failed subtask instructions. If two share more than 60% token overlap (planner stuck repeating the same broken approach), the loop force-injects a hard-coded "Google the task, click the first organic result, read the page" plan. Same fallback fires if the replanner returns a near-duplicate of what just failed. One-shot per task.
 - **Wired escalation chain** — Three-tier LLM fallback (local → backup → cloud) with per-tier model names. After 3 failed replans on the current model, the Agent automatically swaps to the next tier and re-decomposes the task. Use `escalation`, `escalation_keys`, and `escalation_models` to wire it up.
 - **Empty-response bail-out** — If the LLM returns no parseable actions for 2 consecutive steps, the Navigator bails with `failure_reason="llm_empty"` instead of silently burning the step budget. Triggers escalation through the normal replan path.
 - **Multi-API compatible** — JSON mode (`response_format`) only sent to local endpoints. Cloud APIs (OpenRouter, OpenAI, Anthropic) work without 400 errors.
@@ -334,6 +336,29 @@ docker compose -f docker-compose.fantoma.yml up -d
 | /manual/status | GET | Check if a manual session is active |
 
 <!-- BENCHMARK:START -->
+## WebVoyager Benchmark (v0.8, GPT-4o)
+
+5-task pilot subset, GPT-4o agent + GPT-4o judge, Camoufox + Capsolver, Docker.
+
+| Site | Result | Steps | Duration |
+|------|--------|-------|----------|
+| Apple — buy a MacBook Air with specific options | PASS | 15 | 106s |
+| Coursera — find a beginner 3D-printing course | PASS | 15 | 100s |
+| ESPN — current NBA standings | PASS | 15 | 108s |
+| Booking — Mexico hotel for given dates | FAIL | 13 | 131s |
+| Google Flights — round trip with flexible dates | FAIL | 15 | 93s |
+
+**Score: 3/5 (60%).** Average 14.6 steps, 107.5s per task. Booking and Google Flights still need work — Booking rejects "Mexico" as a search string (needs destination translation), Google Flights stalls on a non-submitting form repeat. Run dir: `benchmark/results/2026-04-09_191104/`.
+
+| Agent | LLM | Score on this subset |
+|-------|-----|----------------------|
+| **Fantoma v0.8** | **GPT-4o** | **60.0%** |
+| Surfer 2 (full benchmark) | — | 97.1% |
+| Magnitude (full benchmark) | Claude Sonnet | 93.9% |
+| browser-use (full benchmark) | GPT-4o | 89.1% |
+| Skyvern 2.0 (full benchmark) | — | 85.9% |
+
+Leaderboard scores are over the full WebVoyager suite, not the same 5-task pilot. See `docs/benchmark.md` for the full progression and per-run analysis.
 <!-- BENCHMARK:END -->
 
 ## Test Results
