@@ -5,14 +5,16 @@ services:
     restart: unless-stopped
     ports:
       - "7860:7860"
+      - "6080:6080"   # noVNC — manual intervention hatch
     environment:
       # Local LLM (Hercules on host)
       - LOCAL_LLM_URL=http://host.docker.internal:8081/v1
       # Backup LLM (Hermes on host)
       - BACKUP_LLM_URL=http://host.docker.internal:8082/v1
-      # Cloud LLM backup (DeepSeek)
-      - CLOUD_LLM_URL=https://api.deepseek.com/v1
-      - CLOUD_LLM_KEY=${DEEPSEEK_KEY}
+      # Cloud LLM backup (OpenRouter — Qwen 3.6 Plus)
+      - CLOUD_LLM_URL=https://openrouter.ai/api/v1
+      - CLOUD_LLM_KEY=${OPENROUTER_KEY}
+      - CLOUD_LLM_MODEL=qwen/qwen3.6-plus
       # CAPTCHA solving
       - CAPTCHA_API=capsolver
       - CAPTCHA_KEY=${CAPSOLVER_KEY}

@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import time
 from pathlib import Path
 
 import httpx
@@ -109,6 +110,10 @@ def evaluate_single(
     screenshot_path = Path(screenshot_path)
     screenshot_b64 = base64.b64encode(screenshot_path.read_bytes()).decode()
 
+    # Truncate long answers so GPT-4o has room to output its full verdict
+    if len(answer) > 3000:
+        answer = answer[:3000] + "\n[... truncated ...]"
+
     messages = build_eval_messages(instruction, answer, screenshot_b64)
 
     response = httpx.post(
@@ -173,6 +178,17 @@ def evaluate_results(results_dir: str | Path, config) -> list[dict]:
             log.warning("No result.json in %s — skipping", task_dir)
             continue
 
+        # Skip tasks that already have a valid verdict
+        if eval_file.exists():
+            try:
+                existing = json.loads(eval_file.read_text())
+                if existing.get("verdict") in ("SUCCESS", "NOT SUCCESS"):
+                    log.debug("Skipping already-evaluated task %s", task_dir.name)
+                    eval_results.append(existing)
+                    continue
+            except (json.JSONDecodeError, OSError):
+                pass  # Re-evaluate if file is corrupt
+
         with result_file.open() as f:
             task_result = json.load(f)
 
@@ -213,22 +229,51 @@ def evaluate_results(results_dir: str | Path, config) -> list[dict]:
         # Use the last screenshot
         screenshot_path = screenshots[-1]
 
-        try:
-            result = evaluate_single(
-                instruction=instruction,
-                answer=answer,
-                screenshot_path=screenshot_path,
-                openai_api_key=openai_api_key,
-                model=eval_model,
-            )
-            eval_entry = {"task_id": task_id, "auto_failed": False, **result}
-        except Exception as exc:
-            log.error("Evaluation failed for task %s: %s", task_id, exc)
+        # Retry with exponential backoff on 429 rate limit errors
+        eval_entry = None
+        for attempt in range(5):
+            try:
+                result = evaluate_single(
+                    instruction=instruction,
+                    answer=answer,
+                    screenshot_path=screenshot_path,
+                    openai_api_key=openai_api_key,
+                    model=eval_model,
+                )
+                eval_entry = {"task_id": task_id, "auto_failed": False, **result}
+                time.sleep(6)  # ~10 req/min to stay under TPM limits
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    wait = 30 * (2 ** attempt)  # 30s, 60s, 120s, 240s, 480s
+                    log.warning("429 on %s (attempt %d) — waiting %ds", task_id, attempt + 1, wait)
+                    time.sleep(wait)
+                else:
+                    log.error("Evaluation failed for task %s: %s", task_id, exc)
+                    eval_entry = {
+                        "task_id": task_id,
+                        "verdict": None,
+                        "eval_model": eval_model,
+                        "eval_response": f"Evaluation error: {exc}",
+                        "auto_failed": False,
+                    }
+                    break
+            except Exception as exc:
+                log.error("Evaluation failed for task %s: %s", task_id, exc)
+                eval_entry = {
+                    "task_id": task_id,
+                    "verdict": None,
+                    "eval_model": eval_model,
+                    "eval_response": f"Evaluation error: {exc}",
+                    "auto_failed": False,
+                }
+                break
+        if eval_entry is None:
             eval_entry = {
                 "task_id": task_id,
                 "verdict": None,
                 "eval_model": eval_model,
-                "eval_response": f"Evaluation error: {exc}",
+                "eval_response": "Evaluation error: max retries exceeded",
                 "auto_failed": False,
             }
 

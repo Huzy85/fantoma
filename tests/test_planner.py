@@ -88,6 +88,53 @@ class TestReplan:
         prompt_text = " ".join(m["content"] for m in call_args)
         assert "Click the broken menu" in prompt_text
 
+    def test_replan_includes_visited_urls_in_prompt(self):
+        """Planner must see the cross-subtask URL trail so it can break loops."""
+        llm = MagicMock()
+        llm.chat.return_value = '1. instruction: Try a new URL | mode: find | done_when: Done'
+        p = Planner(llm)
+        failed = Subtask("Click menu", "interact", "Menu opens")
+        urls = [
+            "https://booking.com/",
+            "https://booking.com/searchresults.html",
+            "https://booking.com/",
+            "https://booking.com/searchresults.html",
+        ]
+        p.replan("Find hotel", [], failed, "Page: Search\nURL: https://booking.com/",
+                 visited_urls=urls)
+        call_args = llm.chat.call_args[0][0]
+        prompt_text = " ".join(m["content"] for m in call_args)
+        assert "booking.com/searchresults.html" in prompt_text
+        assert "Previously visited URLs" in prompt_text
+
+    def test_replan_visited_urls_none_becomes_placeholder(self):
+        """Missing visited_urls should not blow up the prompt template."""
+        llm = MagicMock()
+        llm.chat.return_value = '1. instruction: X | mode: find | done_when: Done'
+        p = Planner(llm)
+        failed = Subtask("X", "find", "Done")
+        # Old-style positional call with no visited_urls kwarg must still work.
+        result = p.replan("Task", [], failed, "Page: Home")
+        assert result is not None
+        prompt_text = " ".join(m["content"] for m in llm.chat.call_args[0][0])
+        assert "Previously visited URLs (avoid revisiting as a dead-end): none" in prompt_text
+
+    def test_replan_caps_visited_urls_to_last_12(self):
+        """Very long trails must not balloon the prompt."""
+        llm = MagicMock()
+        llm.chat.return_value = '1. instruction: X | mode: find | done_when: Done'
+        p = Planner(llm)
+        failed = Subtask("X", "find", "Done")
+        urls = [f"https://a.com/page{i}" for i in range(30)]
+        p.replan("Task", [], failed, "Page: Home", visited_urls=urls)
+        prompt_text = " ".join(m["content"] for m in llm.chat.call_args[0][0])
+        # Last 12 urls are included
+        assert "page29" in prompt_text
+        assert "page18" in prompt_text
+        # Earlier ones are dropped
+        assert "page17" not in prompt_text
+        assert "page0" not in prompt_text
+
 
 class TestCheckpoint:
     def test_checkpoint_fields(self):
@@ -113,3 +160,26 @@ class TestSummarise:
         prompt_text = " ".join(m["content"] for m in call_args)
         assert "Found page A" in prompt_text
         assert "Price is $42" in prompt_text
+
+    def test_system_prompt_has_anti_hallucination_rule(self):
+        """SUMMARISE_SYSTEM must instruct the LLM not to invent facts
+        while still encouraging it to report values that ARE in the data."""
+        from fantoma.planner import SUMMARISE_SYSTEM
+        # Negative: must forbid invention from general knowledge
+        assert "Do not invent" in SUMMARISE_SYSTEM
+        # Positive: must encourage reporting what is present (regression guard
+        # against the 2026-04-09 over-cautious prompt that made the summariser
+        # default to "not found" on pages that did contain the answer).
+        assert "Report every relevant value" in SUMMARISE_SYSTEM
+        assert "never fall back to" in SUMMARISE_SYSTEM
+
+    def test_summarise_system_message_reaches_llm(self):
+        from fantoma.navigator import NavigatorResult
+        llm = MagicMock()
+        llm.chat.return_value = "Answer"
+        p = Planner(llm)
+        completed = [(Subtask("s", "read", "Done"),
+                      NavigatorResult("done", "data", 1, [], "https://a.com"))]
+        p.summarise("t", completed)
+        system_msg = llm.chat.call_args[0][0][0]["content"]
+        assert "Do not invent" in system_msg

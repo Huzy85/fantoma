@@ -17,9 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon0 libgbm1 libpango-1.0-0 libcairo2 libatk1.0-0 \
     # Networking tools (debug)
     curl ca-certificates \
+    # noVNC — manual intervention hatch
+    supervisor x11vnc novnc python3-websockify \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Upgrade pip + packaging first (hatchling needs packaging>=23)
+RUN pip3 install --no-cache-dir --upgrade pip packaging
 
 # Install Python deps first (layer cache)
 COPY pyproject.toml /app/
@@ -46,9 +51,13 @@ ENV DISPLAY=:99
 # Create dirs Fantoma expects
 RUN mkdir -p /root/.local/share/fantoma/traces \
     /root/.local/share/fantoma/sessions \
-    /root/.local/share/fantoma/form_memory
+    /root/.local/share/fantoma/form_memory \
+    /var/log/supervisor
 
-EXPOSE 7860
+# supervisord config
+COPY supervisord.conf /etc/supervisor/conf.d/fantoma.conf
 
-# Start Xvfb + server
-CMD ["sh", "-c", "Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX &>/dev/null & sleep 1 && python3 /app/server.py"]
+EXPOSE 7860 6080
+
+# supervisord manages all processes
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

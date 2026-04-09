@@ -256,6 +256,19 @@ class Fantoma:
             return self._action_result(False, pre_url)
         return self._action_result(True, pre_url)
 
+    def go_back(self) -> dict:
+        """Go back to the previous page in browser history."""
+        page = self._engine.get_page()
+        pre_url = page.url
+        try:
+            page.go_back(timeout=10000)
+            time.sleep(1)
+            wait_for_dom_stable(self._engine.get_page())
+        except Exception as e:
+            log.warning("Go back failed: %s", e)
+            return self._action_result(False, pre_url)
+        return self._action_result(True, pre_url)
+
     def navigate(self, url: str) -> dict:
         """Navigate to a URL."""
         pre_url = self._engine.get_page().url

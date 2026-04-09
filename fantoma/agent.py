@@ -19,6 +19,23 @@ from fantoma.state_tracker import StateTracker
 log = logging.getLogger("fantoma")
 
 
+def _dedup_urls(urls: list[str]) -> list[str]:
+    """Return the URL trail with consecutive duplicates collapsed.
+
+    Preserves order so the planner can see the real navigation path. Empty
+    strings are dropped.
+    """
+    result = []
+    prev = None
+    for url in urls:
+        if not url:
+            continue
+        if url != prev:
+            result.append(url)
+            prev = url
+    return result
+
+
 @dataclass
 class AgentResult:
     """Result of an agent.run() call."""
@@ -46,6 +63,7 @@ class Agent:
         model: str = "auto",
         escalation: list[str] = None,
         escalation_keys: list[str] = None,
+        escalation_models: list[str] = None,
         max_steps: int = 50,
         sensitive_data: dict = None,
         **kwargs,
@@ -56,10 +74,32 @@ class Agent:
 
         endpoints = escalation or [llm_url]
         keys = escalation_keys or [api_key] + [""] * (len(endpoints) - 1)
-        self.escalation = EscalationChain(endpoints, keys)
+        models = escalation_models or [model] + ["auto"] * (len(endpoints) - 1)
+        self.escalation = EscalationChain(endpoints, keys, models)
         self._llm = LLMClient(base_url=llm_url, api_key=api_key, model=model)
         self._planner = Planner(self._llm)
         self._navigator = Navigator()
+
+    def _escalate_llm(self) -> bool:
+        """Try escalating to the next tier in the chain.
+
+        Swaps the Agent's LLMClient (and the Planner's reference) to the next
+        endpoint/key/model. Returns True if escalation succeeded, False if the
+        chain is exhausted.
+        """
+        if not self.escalation.can_escalate():
+            return False
+        new_endpoint = self.escalation.escalate()
+        if not new_endpoint:
+            return False
+        new_key = self.escalation.current_api_key()
+        new_model = self.escalation.current_model()
+        log.info("Escalating LLM to %s (model=%s)", new_endpoint, new_model)
+        self._llm = LLMClient(base_url=new_endpoint, api_key=new_key, model=new_model)
+        self._planner._llm = self._llm
+        # Fresh replan budget on the stronger model
+        self._planner.reset()
+        return True
 
     def run(self, task: str, start_url: str = None) -> AgentResult:
         """Run a browser task described in English."""
@@ -112,6 +152,14 @@ class Agent:
                 total_steps += result.steps_taken
                 remaining_budget -= result.steps_taken
 
+                # Real data means not a placeholder status line from the navigator.
+                has_real_data = bool(
+                    result.data
+                    and not result.data.startswith("Stopped:")
+                    and not result.data.startswith("Domain drift")
+                    and not result.data.startswith("Blocked:")
+                )
+
                 if result.status == "done":
                     completed.append((subtask, result))
                     checkpoints.append(Checkpoint(
@@ -122,14 +170,46 @@ class Agent:
                     i += 1
                     continue
 
-                # Stagnation, failure, or budget exhausted -- still save partial data
-                if result.data and not result.data.startswith("Stopped:") and not result.data.startswith("Domain drift"):
+                # Stagnation, failure, or budget exhausted -- still save partial
+                # data AND checkpoint the final URL so backtracking after a
+                # replan does not throw away the last known good position.
+                # Without this, a subtask that reached the answer page but
+                # ended stagnant would lose the page on backtrack.
+                if has_real_data:
                     completed.append((subtask, result))
+                    if result.final_url:
+                        checkpoints.append(Checkpoint(
+                            url=result.final_url,
+                            subtask=subtask,
+                            result_summary=result.data[:200],
+                        ))
 
-                # Replan
+                # Replan with failure context. Pass the de-duplicated URL
+                # trail so the planner can spot cross-subtask loops — the
+                # StateTracker only sees one subtask at a time, so a loop
+                # that crosses subtask boundaries is invisible to it.
+                visited_urls = _dedup_urls([s.get("url", "") for s in all_steps])
                 summary = self._get_page_summary()
-                new_subtasks = self._planner.replan(task, completed, subtask, summary)
+                new_subtasks = self._planner.replan(
+                    task, completed, subtask, summary,
+                    failure_reason=result.failure_reason,
+                    last_actions=result.last_actions,
+                    visited_urls=visited_urls,
+                )
                 if new_subtasks is None:
+                    # Replans exhausted. Escalate to a stronger model and
+                    # regenerate a fresh plan for the remaining work.
+                    if self._escalate_llm():
+                        log.info("Replans exhausted, re-decomposing with escalated model")
+                        summary = self._get_page_summary()
+                        new_subtasks = self._planner.decompose(task, summary)
+                        subtasks = subtasks[:i] + new_subtasks
+                        if checkpoints:
+                            try:
+                                self.fantoma.navigate(checkpoints[-1].url)
+                            except Exception:
+                                pass
+                        continue
                     break
                 # Replace remaining subtasks with new plan
                 subtasks = subtasks[:i] + new_subtasks
