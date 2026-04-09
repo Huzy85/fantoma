@@ -33,14 +33,21 @@ Rules:
 - Be specific. "Click the search box and type 'quantum computing'" not "search for it".
 - If the task asks to extract information, the last step should be mode "read".
 - If you need to search, specify the search term explicitly.
-- PREFER direct URLs over clicking through menus. Use search URL patterns:
-  - ArXiv: https://arxiv.org/search/?query=TERM&searchtype=all
-  - Google: https://www.google.com/search?q=TERM
-  - GitHub: https://github.com/search?q=TERM&type=repositories
-  - Wikipedia: https://en.wikipedia.org/wiki/TERM
-  - Amazon: https://www.amazon.com/s?k=TERM
-  - For other sites: check if the current URL reveals a search pattern, then use it.
-- The first step should navigate directly to the relevant page when possible.
+
+Navigation policy (choose one of these for step 1, never scroll a landing page):
+- If you are confident in the exact URL for the target resource, NAVIGATE
+  directly to it. Use a URL you actually know exists. Examples of patterns
+  you may know: arxiv.org/search/?query=TERM, google.com/search?q=TERM,
+  github.com/search?q=TERM&type=repositories, en.wikipedia.org/wiki/TITLE,
+  amazon.com/s?k=TERM, apple.com/shop/buy-mac/macbook-air,
+  coursera.org/search?query=TERM, booking.com/searchresults.html?ss=CITY.
+- If you are NOT confident in the exact URL, make step 1 a Google search:
+  NAVIGATE https://www.google.com/search?q=SITE+QUERY (include the site name
+  in the query). Then step 2 clicks the first matching organic result.
+- Scrolling is a last resort, never a strategy. If the target is not visible
+  on the first viewport, the URL is wrong -- replan with a more specific URL
+  or a search.
+
 - Return a numbered list, one step per line, in this format:
   1. instruction: ... | mode: ... | done_when: ..."""
 
