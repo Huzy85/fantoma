@@ -5,9 +5,10 @@ Delegates all browser operations to the Fantoma tool class.
 """
 import logging
 import re
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 from fantoma.browser_tool import Fantoma
 from fantoma.llm.client import LLMClient
@@ -34,6 +35,48 @@ def _dedup_urls(urls: list[str]) -> list[str]:
             result.append(url)
             prev = url
     return result
+
+
+def _instruction_similar(a: str, b: str) -> bool:
+    """Two subtask instructions are similar if their token sets share >60%.
+
+    Used to detect when the planner keeps emitting the same broken subtask
+    after replan. The planner cannot see its own history, so the agent loop
+    has to enforce "do not repeat the broken approach" itself.
+    """
+    if not a or not b:
+        return False
+    norm = lambda s: set(re.findall(r"[a-z0-9]+", s.lower()))
+    aw, bw = norm(a), norm(b)
+    if not aw or not bw:
+        return False
+    return len(aw & bw) / max(len(aw), len(bw)) > 0.6
+
+
+def _google_fallback_subtasks(task: str) -> list[Subtask]:
+    """Force a search-and-click-first-result plan when the planner is stuck.
+
+    Used when subtask-cycle detection trips. Side-steps the LLM's apparent
+    inability to escape a broken approach by hard-coding the most reliable
+    web-task plan: search Google for the task, click the first result, read.
+    """
+    query = quote_plus(task[:200])
+    return [
+        Subtask(
+            instruction=(
+                f"Navigate directly to https://www.google.com/search?q={query} "
+                f"and CLICK the first organic search result whose title matches "
+                f"the task keywords."
+            ),
+            mode="find",
+            done_when="Landed on a page that is relevant to the task (not a search results page).",
+        ),
+        Subtask(
+            instruction="Read the page content and extract every value the user asked for.",
+            mode="read",
+            done_when="The asked-for values are visible in the gathered data.",
+        ),
+    ]
 
 
 @dataclass
@@ -130,6 +173,8 @@ class Agent:
             all_steps = []
             total_steps = 0
             remaining_budget = self._max_steps
+            recent_failed_instructions: deque[str] = deque(maxlen=4)
+            google_fallback_used = False
 
             i = 0
             while i < len(subtasks) and remaining_budget > 0:
@@ -190,12 +235,46 @@ class Agent:
                 # that crosses subtask boundaries is invisible to it.
                 visited_urls = _dedup_urls([s.get("url", "") for s in all_steps])
                 summary = self._get_page_summary()
+
+                # Track failed subtask instructions across replans. If the
+                # planner keeps emitting subtasks with >60% token overlap with
+                # what just failed, the replan loop is stuck. Force the Google
+                # search-and-click fallback once and only once per task.
+                recent_failed_instructions.append(subtask.instruction)
+                repeat_count = sum(
+                    1 for prev in recent_failed_instructions
+                    if _instruction_similar(prev, subtask.instruction)
+                )
+                if repeat_count >= 2 and not google_fallback_used:
+                    log.info(
+                        "Subtask-cycle detected (%d similar failures). Forcing google search fallback.",
+                        repeat_count,
+                    )
+                    new_subtasks = _google_fallback_subtasks(task)
+                    google_fallback_used = True
+                    subtasks = subtasks[:i] + new_subtasks
+                    continue
+
                 new_subtasks = self._planner.replan(
                     task, completed, subtask, summary,
                     failure_reason=result.failure_reason,
                     last_actions=result.last_actions,
                     visited_urls=visited_urls,
                 )
+
+                # Catch the case where replan returned a new plan but the
+                # first step is a near-duplicate of what just failed. Same
+                # fallback applies.
+                if (new_subtasks
+                        and not google_fallback_used
+                        and _instruction_similar(new_subtasks[0].instruction, subtask.instruction)):
+                    log.info(
+                        "Replan first step similar to failed subtask (%r ~ %r). Forcing google fallback.",
+                        new_subtasks[0].instruction[:80], subtask.instruction[:80],
+                    )
+                    new_subtasks = _google_fallback_subtasks(task)
+                    google_fallback_used = True
+
                 if new_subtasks is None:
                     # Replans exhausted. Escalate to a stronger model and
                     # regenerate a fresh plan for the remaining work.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fantoma"
-version = "0.7.0"
+version = "0.8.0"
 description = "Accessibility-first browser automation. Zero mouse telemetry. Works with any LLM."
 readme = "README.md"
 license = "MIT"

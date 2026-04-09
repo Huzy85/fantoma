@@ -49,9 +49,20 @@ Rules:
 - After typing in a search field, add PRESS Enter.
 - BACK returns to the previous page (use when current page is a dead end).
 - NAVIGATE, BACK, and DONE end the sequence.
-- Say DONE only when the done_when condition is met.
 - Read the Content section first -- if it contains the answer, say DONE immediately.
-- Reply with ONLY action lines, nothing else.\
+- Reply with ONLY action lines, nothing else.
+
+Before saying DONE, verify:
+- The user's asked-for values have evidence in the current page or in prior data.
+- If you typed text into any field during this subtask, you MUST also press
+  Enter on it OR click a submit/search button before saying DONE. Typed text
+  that is never submitted is incomplete -- the page state has not changed.
+- If you are on a Google or Bing search results page and the user wants a
+  specific resource (a product page, a course page, an article, a hotel),
+  CLICK the first organic result whose title contains your task keywords.
+  Never say DONE on a search results page unless the task is to LIST the
+  search results themselves.
+- If no evidence supports the goal, do NOT say DONE. Take more actions instead.\
 """
 
 EXTRACT_ON_DONE = """\
