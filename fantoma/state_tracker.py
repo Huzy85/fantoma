@@ -18,6 +18,8 @@ class StateTracker:
         self.action_norms: deque[str] = deque(maxlen=window)
         self._scroll_count: int = 0
         self._scroll_url: str = ""
+        self._scroll_stale: int = 0  # scrolls where DOM didn't change
+        self._last_fp: str = ""
 
     def add(self, url: str, content: str, action_str: str) -> None:
         """Record a step. Call after every action."""
@@ -31,11 +33,19 @@ class StateTracker:
         if "scroll(" in action_str:
             if url == self._scroll_url:
                 self._scroll_count += 1
+                # Track stale scrolls (DOM unchanged after scroll)
+                if fp == self._last_fp:
+                    self._scroll_stale += 1
+                else:
+                    self._scroll_stale = 0
             else:
                 self._scroll_count = 1
+                self._scroll_stale = 0
                 self._scroll_url = url
         else:
             self._scroll_count = 0
+            self._scroll_stale = 0
+        self._last_fp = fp
 
     def is_stagnant(self) -> bool:
         """DOM fingerprint unchanged for 3 consecutive steps."""
@@ -49,8 +59,8 @@ class StateTracker:
         return len(set(last4)) <= 2
 
     def scroll_limit_hit(self) -> bool:
-        """3+ consecutive scrolls on same URL."""
-        return self._scroll_count >= 3
+        """Scroll limit: 2+ stale scrolls (DOM unchanged after scroll) OR 5+ total scrolls on same URL."""
+        return self._scroll_stale >= 2 or self._scroll_count >= 5
 
     def should_stop(self) -> tuple[bool, str]:
         """Check all conditions. Returns (should_stop, reason)."""
@@ -68,3 +78,5 @@ class StateTracker:
         self.action_norms.clear()
         self._scroll_count = 0
         self._scroll_url = ""
+        self._scroll_stale = 0
+        self._last_fp = ""

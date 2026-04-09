@@ -78,11 +78,27 @@ class TestScrollLimit:
         t.add("https://a.com", "c2", "scroll({'direction': 'down'})")
         assert t.scroll_limit_hit() is False
 
-    def test_limit_at_3(self):
+    def test_stale_limit_at_3(self):
+        """3 stale scrolls (same DOM) triggers limit."""
+        t = StateTracker()
+        t.add("https://a.com", "same", "scroll({'direction': 'down'})")
+        t.add("https://a.com", "same", "scroll({'direction': 'down'})")
+        t.add("https://a.com", "same", "scroll({'direction': 'down'})")
+        assert t.scroll_limit_hit() is True
+
+    def test_productive_scrolls_no_limit_at_3(self):
+        """3 productive scrolls (different DOM each time) should NOT trigger limit."""
         t = StateTracker()
         t.add("https://a.com", "c1", "scroll({'direction': 'down'})")
         t.add("https://a.com", "c2", "scroll({'direction': 'down'})")
         t.add("https://a.com", "c3", "scroll({'direction': 'down'})")
+        assert t.scroll_limit_hit() is False
+
+    def test_hard_limit_at_5(self):
+        """5 total scrolls on same URL always triggers, even if productive."""
+        t = StateTracker()
+        for i in range(5):
+            t.add("https://a.com", f"content_{i}", "scroll({'direction': 'down'})")
         assert t.scroll_limit_hit() is True
 
     def test_non_scroll_resets_counter(self):
@@ -102,10 +118,11 @@ class TestScrollLimit:
 
 
 class TestShouldStop:
-    def test_returns_reason(self):
+    def test_returns_scroll_limit_reason(self):
+        """3 stale scrolls (same DOM) triggers scroll_limit."""
         t = StateTracker()
         for i in range(3):
-            t.add("https://a.com", "same", f"scroll({{'direction': 'down'}})")
+            t.add("https://a.com", "same", "scroll({'direction': 'down'})")
         stop, reason = t.should_stop()
         assert stop is True
         assert reason == "scroll_limit"

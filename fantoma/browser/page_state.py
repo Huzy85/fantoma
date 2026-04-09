@@ -60,7 +60,7 @@ _ERROR_DETECTION_JS = """() => {
     }
 
     // 4. Visible text pattern matching (last resort)
-    const patterns = /invalid|incorrect|failed|try again|required field|already exists|too short|doesn't match|not found|wrong password|wrong email/i;
+    const patterns = /invalid|incorrect|failed|try again|required field|already exists|too short|doesn't match|not found|wrong password|wrong email|too many requests|rate limit|blocked|access denied|forbidden|captcha|verify you are human|sign in to continue|log in to continue|please log in|please sign in/i;
     const candidates = document.querySelectorAll('p, span, div, li, label');
     for (const el of candidates) {
         if (el.children.length > 2) continue;
@@ -87,6 +87,37 @@ def detect_errors(page) -> list[str]:
     except Exception as e:
         log.debug("Error detection failed: %s", e)
         return []
+
+
+def classify_blocker(page) -> str | None:
+    """Detect if the page is a blocker (rate limit, login wall, CAPTCHA).
+
+    Returns "rate_limit", "login_wall", "captcha", or None.
+    """
+    try:
+        return page.evaluate("""() => {
+            const text = document.body?.innerText?.toLowerCase() || '';
+            const url = location.href.toLowerCase();
+
+            // Rate limit / access denied
+            if (/too many requests|rate limit|429|throttl/.test(text) ||
+                /access denied|forbidden|403/.test(text))
+                return 'rate_limit';
+
+            // CAPTCHA challenge
+            if (/captcha|verify you are human|are you a robot|challenge/.test(text) ||
+                document.querySelector('iframe[src*="captcha"], iframe[src*="challenge"]'))
+                return 'captcha';
+
+            // Login wall
+            if (/(sign|log)\\s*in\\s*(to continue|required|to access)/i.test(text) ||
+                /\\/login|\\/signin|\\/sign-in|\\/auth/.test(url))
+                return 'login_wall';
+
+            return null;
+        }""")
+    except Exception:
+        return None
 
 
 def verify_action(page, pre_url: str, pre_dom_hash: str, dom_extractor) -> dict:

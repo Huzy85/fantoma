@@ -36,9 +36,9 @@ LANDMARK_ROLES = {
 }
 
 # Defaults — overridden by ExtractionConfig when available
-MAX_ELEMENTS = 15
+MAX_ELEMENTS = 20
 MAX_HEADINGS = 25
-MAX_CONTENT_ELEMENTS = 30
+MAX_CONTENT_ELEMENTS = 60
 
 # Navigation/UI noise — names that indicate chrome, not content
 NAV_NOISE = {
@@ -119,11 +119,12 @@ def format_scroll_hints(info: dict | None) -> tuple[str, str]:
     return above, below
 
 
-def prune_elements(elements: list[dict], task: str = "", max_elements: int = 15) -> list[dict]:
+def prune_elements(elements: list[dict], task: str = "", max_elements: int = 20) -> list[dict]:
     """Score and rank elements by relevance to the task. Returns top N.
 
     Scoring:
-      +3  element name contains a task keyword
+      +3  element name contains a task keyword (substring match, cumulative)
+      +2  element landmark contains a task keyword
       +2  textbox/combobox/searchbox (form inputs)
       +2  name matches a submit pattern
       +1  checkbox or radio
@@ -140,10 +141,18 @@ def prune_elements(elements: list[dict], task: str = "", max_elements: int = 15)
         name_lower = el.get("name", "").lower()
         role = el.get("role", "")
 
+        # Substring keyword matching, cumulative across all keywords
         for kw in keywords:
-            if kw in name_lower.split():
+            if kw in name_lower:
                 score += 3
-                break
+
+        # Landmark keyword matching
+        landmark = (el.get("_landmark") or "").lower()
+        if landmark and keywords:
+            for kw in keywords:
+                if kw in landmark:
+                    score += 2
+                    break
 
         if role in ("textbox", "combobox", "searchbox"):
             score += 2
@@ -659,19 +668,179 @@ class AccessibilityExtractor:
     def extract_content(self, page) -> str:
         """Extract page content only — for data extraction, not navigation.
 
-        Strips navigation UI, buttons, menus. Keeps headings, text, content links.
-        Higher caps (30 items vs 10). Groups by ARIA regions when available.
-        Falls back to full page inner_text if ARIA content extraction is empty.
+        Priority:
+        1. JSON-LD schema.org structured data (recipe pages, article pages)
+        2. Recipe card list (search/listing pages)
+        3. ARIA content extraction
+        4. Raw page inner_text fallback
         """
+        # 1. Try JSON-LD structured data
+        structured = self._extract_jsonld(page)
+        if structured:
+            return structured
+
+        # 2. Try recipe card list (search/listing pages)
+        cards = self._extract_recipe_cards(page)
+        if cards:
+            return cards
+
+        # 3. ARIA content extraction
         result = extract_aria_content(page)
-        if not result or "(no content found)" in result:
-            # Fallback: raw page text
-            try:
-                text = page.inner_text("body")[:4000]
-                return f"Page: {page.title()}\nURL: {page.url}\n\nPage content:\n{text}"
-            except Exception:
+        if result and "(no content found)" not in result:
+            return result
+
+        # 4. Fallback: raw page text
+        try:
+            text = page.inner_text("body")[:4000]
+            return f"Page: {page.title()}\nURL: {page.url}\n\nPage content:\n{text}"
+        except Exception:
+            return ""
+
+    def _extract_jsonld(self, page) -> str:
+        """Extract and summarise schema.org JSON-LD from the page."""
+        try:
+            items = page.evaluate("""() => {
+                const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+                return Array.from(scripts).map(s => {
+                    try { return JSON.parse(s.textContent); } catch(e) { return null; }
+                }).filter(Boolean);
+            }""")
+        except Exception:
+            return ""
+
+        if not items:
+            return ""
+
+        # Flatten — some sites wrap JSON-LD in an array at the top level
+        flat = []
+        for item in items:
+            if isinstance(item, list):
+                flat.extend(item)
+            elif isinstance(item, dict):
+                flat.append(item)
+        items = flat
+
+        parts = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            types = item.get("@type", [])
+            if isinstance(types, str):
+                types = [types]
+
+            if "Recipe" in types:
+                lines = [f"Recipe: {item.get('name', '')}"]
+                if item.get("description"):
+                    lines.append(f"Description: {item['description'][:200]}")
+                agg = item.get("aggregateRating", {})
+                if agg:
+                    count = agg.get('reviewCount') or agg.get('ratingCount') or '?'
+                    lines.append(f"Rating: {agg.get('ratingValue', '?')}/5 ({count} reviews)")
+                if item.get("prepTime"):
+                    lines.append(f"Prep time: {item['prepTime']}")
+                if item.get("cookTime"):
+                    lines.append(f"Cook time: {item['cookTime']}")
+                if item.get("totalTime"):
+                    lines.append(f"Total time: {item['totalTime']}")
+                if item.get("recipeYield"):
+                    lines.append(f"Servings: {item['recipeYield']}")
+                nutrition = item.get("nutrition", {})
+                if nutrition.get("calories"):
+                    lines.append(f"Calories: {nutrition['calories']}")
+                ingredients = item.get("recipeIngredient", [])
+                if ingredients:
+                    lines.append(f"Ingredients ({len(ingredients)}):")
+                    for ing in ingredients[:20]:
+                        lines.append(f"  - {ing}")
+                instructions = item.get("recipeInstructions", [])
+                if instructions:
+                    lines.append(f"Instructions ({len(instructions)} steps):")
+                    for i, step in enumerate(instructions[:10], 1):
+                        text = step.get("text", step) if isinstance(step, dict) else step
+                        lines.append(f"  {i}. {str(text)[:150]}")
+                parts.append("\n".join(lines))
+
+            elif any(t in types for t in ("Article", "NewsArticle", "BlogPosting", "ScholarlyArticle")):
+                lines = [f"Article: {item.get('headline') or item.get('name', '')}"]
+                if item.get("description"):
+                    lines.append(f"Description: {item['description'][:300]}")
+                if item.get("datePublished"):
+                    lines.append(f"Published: {item['datePublished']}")
+                if item.get("dateModified"):
+                    lines.append(f"Modified: {item['dateModified']}")
+                author = item.get("author", {})
+                if isinstance(author, dict) and author.get("name"):
+                    lines.append(f"Author: {author['name']}")
+                elif isinstance(author, list):
+                    names = [a.get("name", "") for a in author if isinstance(a, dict)]
+                    if names:
+                        lines.append(f"Authors: {', '.join(names)}")
+                parts.append("\n".join(lines))
+
+            elif "LocalBusiness" in types or "Restaurant" in types:
+                lines = [f"Business: {item.get('name', '')}"]
+                if item.get("address"):
+                    addr = item["address"]
+                    if isinstance(addr, dict):
+                        lines.append(f"Address: {addr.get('streetAddress', '')} {addr.get('addressLocality', '')}")
+                agg = item.get("aggregateRating", {})
+                if agg:
+                    count = agg.get('reviewCount') or agg.get('ratingCount') or '?'
+                    lines.append(f"Rating: {agg.get('ratingValue', '?')}/5 ({count} reviews)")
+                if item.get("telephone"):
+                    lines.append(f"Phone: {item['telephone']}")
+                parts.append("\n".join(lines))
+
+            elif "Product" in types:
+                lines = [f"Product: {item.get('name', '')}"]
+                if item.get("description"):
+                    lines.append(f"Description: {item['description'][:200]}")
+                agg = item.get("aggregateRating", {})
+                if agg:
+                    count = agg.get('reviewCount') or agg.get('ratingCount') or '?'
+                    lines.append(f"Rating: {agg.get('ratingValue', '?')}/5 ({count} reviews)")
+                offers = item.get("offers", {})
+                if isinstance(offers, dict) and offers.get("price"):
+                    lines.append(f"Price: {offers.get('priceCurrency', '')} {offers['price']}")
+                parts.append("\n".join(lines))
+
+            elif "ItemList" in types or "BreadcrumbList" in types:
+                pass  # Skip non-content lists
+
+        return "\n\n".join(parts) if parts else ""
+
+    def _extract_recipe_cards(self, page) -> str:
+        """Extract recipe cards from search/listing pages."""
+        try:
+            url = page.url
+            # Only run on pages that look like search/listing/collection pages
+            if not any(x in url for x in ["/search", "/recipes/", "?q=", "category", "collection"]):
                 return ""
-        return result
+
+            cards = page.evaluate("""() => {
+                const results = [];
+                const seen = new Set();
+                document.querySelectorAll('a[href*="/recipe/"]').forEach(a => {
+                    const href = a.href;
+                    if (seen.has(href)) return;
+                    seen.add(href);
+                    const text = a.innerText?.trim().replace(/\\s+/g, ' ');
+                    if (text && text.length > 5 && text.length < 250) {
+                        results.push(href + ' | ' + text);
+                    }
+                });
+                return results.slice(0, 20);
+            }""")
+        except Exception:
+            return ""
+
+        if not cards:
+            return ""
+
+        lines = [f"Search results on {page.url}:", ""]
+        for card in cards:
+            lines.append(f"  {card}")
+        return "\n".join(lines)
 
     def get_element_by_index(self, page, index: int) -> Optional[Any]:
         """Find element by ARIA role and name using Playwright locators.

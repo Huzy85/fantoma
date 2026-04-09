@@ -27,8 +27,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # ── Config ───────────────────────────────────────────────────────────
 
 HERCULES = os.environ.get("FANTOMA_LLM_URL", "http://localhost:8080/v1")
-DEEPSEEK = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com/v1")
-DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+CLOUD_LLM = os.environ.get("CLOUD_LLM_URL", "https://openrouter.ai/api/v1")
+CLOUD_LLM_KEY = os.environ.get("CLOUD_LLM_KEY", "")
 try:
     CAPSOLVER_KEY = json.load(open(Path.home() / ".config/capsolver/config.json"))["api_key"]
 except Exception:
@@ -80,14 +80,14 @@ def validate():
     except Exception as e:
         errors.append(f"LLM: {e}")
 
-    log.info("Checking DeepSeek ...")
+    log.info("Checking cloud LLM ...")
     try:
         import httpx
-        r = httpx.get(f"{DEEPSEEK}/models", headers={"Authorization": f"Bearer {DEEPSEEK_KEY}"}, timeout=10)
+        r = httpx.get(f"{CLOUD_LLM}/models", headers={"Authorization": f"Bearer {CLOUD_LLM_KEY}"}, timeout=10)
         r.raise_for_status()
-        log.info("  DeepSeek OK")
+        log.info("  Cloud LLM OK")
     except Exception as e:
-        errors.append(f"DeepSeek: {e}")
+        errors.append(f"Cloud LLM: {e}")
 
     log.info("Checking IMAP ...")
     try:
@@ -122,8 +122,8 @@ def make_agent(timeout=120):
     from fantoma import Agent
     return Agent(
         llm_url=HERCULES,
-        escalation=[HERCULES, DEEPSEEK],
-        escalation_keys=["", DEEPSEEK_KEY],
+        escalation=[HERCULES, CLOUD_LLM],
+        escalation_keys=["", CLOUD_LLM_KEY],
         headless=True,
         timeout=timeout,
         max_steps=30,

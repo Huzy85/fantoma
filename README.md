@@ -50,8 +50,10 @@ fantoma test         # Verify it works
 - **ARIA + raw DOM** — always reads both. No form is invisible, even old-school HTML without ARIA labels.
 - **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
-- **Resilience** — 3-level model escalation (local → cloud → back), retry on slow SPAs.
-- **Multi-API compatible** — JSON mode (`response_format`) only sent to local endpoints. Cloud APIs (DeepSeek, OpenAI, Anthropic) work without 400 errors.
+- **Hierarchical agent (v0.8)** — Planner decomposes the task into typed subtasks, Navigator executes each one, StateTracker watches for stagnation and loops. Failure-typed replan guidance: each navigator failure carries a reason (`stagnation`, `loop`, `domain_drift`, `rate_limit`, `login_wall`, `captcha`, `llm_empty`) and the planner gets targeted recovery instructions.
+- **Wired escalation chain** — Three-tier LLM fallback (local → backup → cloud) with per-tier model names. After 3 failed replans on the current model, the Agent automatically swaps to the next tier and re-decomposes the task. Use `escalation`, `escalation_keys`, and `escalation_models` to wire it up.
+- **Empty-response bail-out** — If the LLM returns no parseable actions for 2 consecutive steps, the Navigator bails with `failure_reason="llm_empty"` instead of silently burning the step budget. Triggers escalation through the normal replan path.
+- **Multi-API compatible** — JSON mode (`response_format`) only sent to local endpoints. Cloud APIs (OpenRouter, OpenAI, Anthropic) work without 400 errors.
 - **Sequential session safety** — after each browser session closes, the asyncio "running loop" pointer is cleared so the next session starts clean. Prevents "Event loop is closed" errors when running many tests back-to-back. The Docker server resets the event loop before each `/start` to handle stale greenlet residue.
 - **SSL tolerance** — browser contexts are created with `ignore_https_errors=True`, so self-signed certs, expired certs, and HTTPS misconfigurations on target sites don't block navigation.
 - **Playwright traces** — `Agent(trace=True)` records full debug sessions
@@ -119,7 +121,7 @@ print(result.data)          # {"fields_filled": [...], "url": "...", "steps": 1}
 
 - **CAPTCHAs:** Proof-of-work types (ALTCHA) are solved automatically for free. reCAPTCHA and hCaptcha need a paid solver like CapSolver. Most sites never show CAPTCHAs because Camoufox prevents detection.
 - **Context window:** Local LLMs need at least 8K tokens. Set `--ctx-size 8192` in llama.cpp or `num_ctx: 8192` in Ollama.
-- **Small models:** A 3.8B model handles browsing, extraction, and simple forms. Complex multi-step signups work better with a larger model. The escalation chain handles this — your local model tries first, and if it gets stuck, Fantoma automatically switches to your cloud API.
+- **Small models:** A 3.8B model handles browsing, extraction, and simple forms. Complex multi-step signups work better with a larger model. The escalation chain handles this — your local model tries first, and after 3 failed planner replans on the current tier, Fantoma automatically switches to the next model in the chain and re-decomposes the task fresh.
 - **IP rate limiting:** Reddit detects repeated visits from the same IP after 2+ hours. Use proxy rotation for heavy scraping.
 
 ## Examples
@@ -184,7 +186,22 @@ result = agent.run("Sign up at https://example.com/register")
 agent = Agent(
     llm_url="http://localhost:8080/v1",
     escalation=["http://localhost:8080/v1", "https://api.openai.com/v1"],
+    escalation_keys=["", "sk-..."],
+    escalation_models=["auto", "gpt-4o"],
 )
+
+# Python: three-tier chain (local → backup → OpenRouter Qwen 3.6 Plus)
+agent = Agent(
+    llm_url="http://localhost:8081/v1",
+    escalation=[
+        "http://localhost:8081/v1",          # Hercules (local coder)
+        "http://localhost:8082/v1",          # Hermes (local backup)
+        "https://openrouter.ai/api/v1",      # Cloud escalation
+    ],
+    escalation_keys=["", "", "sk-or-..."],
+    escalation_models=["auto", "auto", "qwen/qwen3.6-plus"],
+)
+# Auto-escalates after 3 failed replans on the current tier.
 
 # Python: with proxy
 agent = Agent(
@@ -209,7 +226,7 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | LLM connection fails | Check it's running: `curl http://localhost:8080/v1/models` |
 | Browser won't start | Run `fantoma test` again — Camoufox downloads on first run |
 | Task times out | `Agent(timeout=120)` or use a faster model |
-| Empty LLM responses | Context window too small — need at least 8192 tokens |
+| Empty LLM responses | Navigator now bails out after 2 consecutive empty responses (`failure_reason="llm_empty"`) and triggers escalation. Context window should be at least 8192 tokens. |
 | CAPTCHA blocks you | `Agent(captcha_api="capsolver", captcha_key="...")` |
 | Site detects the bot | `Agent(proxy="socks5://user:pass@host:port")` |
 | Small model misses buttons | Add escalation to a cloud API for hard steps |
@@ -424,8 +441,11 @@ Fantoma(
 # Convenience API — describe a task, the agent does it
 Agent(
     llm_url="http://localhost:8080/v1",  # Required for Agent
-    escalation=None,
-    escalation_keys=None,
+    api_key="",
+    model="auto",            # "auto" resolves via /v1/models, or pass exact model id
+    escalation=None,         # list[str] of OpenAI-compatible base URLs (cheapest first)
+    escalation_keys=None,    # list[str] of API keys, "" for local endpoints
+    escalation_models=None,  # list[str] of model ids, "auto" for local endpoints
     max_steps=50,
     timeout=300,
     sensitive_data=None,

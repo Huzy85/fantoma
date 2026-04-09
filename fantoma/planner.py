@@ -33,21 +33,92 @@ Rules:
 - Be specific. "Click the search box and type 'quantum computing'" not "search for it".
 - If the task asks to extract information, the last step should be mode "read".
 - If you need to search, specify the search term explicitly.
+- PREFER direct URLs over clicking through menus. Use search URL patterns:
+  - ArXiv: https://arxiv.org/search/?query=TERM&searchtype=all
+  - Google: https://www.google.com/search?q=TERM
+  - GitHub: https://github.com/search?q=TERM&type=repositories
+  - Wikipedia: https://en.wikipedia.org/wiki/TERM
+  - Amazon: https://www.amazon.com/s?k=TERM
+  - For other sites: check if the current URL reveals a search pattern, then use it.
+- The first step should navigate directly to the relevant page when possible.
 - Return a numbered list, one step per line, in this format:
   1. instruction: ... | mode: ... | done_when: ..."""
 
 REPLAN_ADDITION = """\
 The previous approach failed on this step: {failed_instruction}
+Failure reason: {failure_reason}
+Last actions: {last_actions}
 Completed so far: {completed_summary}
+Previously visited URLs (avoid revisiting as a dead-end): {visited_urls}
 Current page: {page_summary}
 
-You MUST try a completely different strategy. Options:
-- Navigate directly to a URL instead of clicking through menus
-- Use search functionality instead of browsing categories
-- Simplify the goal -- extract partial information and move on
-- Try a different section of the site
+{failure_guidance}
 
 Previously failed strategies: {failed_strategies}"""
+
+# Guidance per failure type -- tells the LLM what specifically to do differently
+_FAILURE_GUIDANCE = {
+    "scroll_limit": (
+        "The agent scrolled 3+ times without finding new content. "
+        "You MUST try a completely different approach:\n"
+        "- Use the site's search functionality with specific terms\n"
+        "- Navigate directly to a known URL pattern\n"
+        "- Try a different page or section entirely"
+    ),
+    "action_cycle": (
+        "The agent kept repeating the same 1-2 actions in a loop. "
+        "The current approach is fundamentally broken. You MUST:\n"
+        "- Try clicking different elements or using keyboard navigation\n"
+        "- Navigate to a different URL entirely\n"
+        "- Simplify the goal and extract partial information"
+    ),
+    "dom_stagnant": (
+        "The page stopped responding to actions (DOM unchanged for 3 steps). "
+        "The page may be broken or require different interaction:\n"
+        "- Go BACK and try a different navigation path\n"
+        "- Navigate directly to a URL\n"
+        "- Try the task on a different section of the site"
+    ),
+    "rate_limit": (
+        "The site is rate-limiting or blocking requests. Do NOT retry the same approach. "
+        "Options:\n"
+        "- Extract whatever partial data is already available\n"
+        "- Try a different search query or URL to avoid the rate limit\n"
+        "- Simplify the goal and accept partial results"
+    ),
+    "login_wall": (
+        "The site requires login to continue. Since we cannot log in, you MUST:\n"
+        "- Extract whatever data is visible without login\n"
+        "- Try accessing the content via a different URL or search\n"
+        "- Accept partial results from what was already gathered"
+    ),
+    "captcha": (
+        "A CAPTCHA challenge appeared. Try to work around it:\n"
+        "- Navigate to a different page that might not trigger CAPTCHA\n"
+        "- Use a direct URL instead of search\n"
+        "- Extract whatever data is already available"
+    ),
+    "domain_drift": (
+        "Navigation drifted to a different domain. Go back to the original site:\n"
+        "- Navigate directly to the original site URL\n"
+        "- Use a different approach that stays on the target domain"
+    ),
+    "llm_empty": (
+        "The previous LLM was unable to produce valid actions for this step. "
+        "The prompt or DOM may have confused it. You MUST:\n"
+        "- Break the step into smaller, more explicit instructions\n"
+        "- Prefer NAVIGATE with a direct URL over CLICK chains\n"
+        "- Use shorter, simpler done_when criteria"
+    ),
+}
+
+_DEFAULT_GUIDANCE = (
+    "You MUST try a completely different strategy. Options:\n"
+    "- Navigate directly to a URL instead of clicking through menus\n"
+    "- Use search functionality instead of browsing categories\n"
+    "- Simplify the goal -- extract partial information and move on\n"
+    "- Try a different section of the site"
+)
 
 SUMMARISE_SYSTEM = """\
 You are producing the final answer to a web task from data gathered across multiple pages.
@@ -55,7 +126,10 @@ You are producing the final answer to a web task from data gathered across multi
 Rules:
 - Give the ACTUAL answer with concrete data: names, numbers, dates, URLs, titles.
 - NEVER give instructions like "to find X, visit Y" or "you would need to". The user wants the answer, not directions.
-- If you have partial data, present what you have. Partial answers score better than no answer.
+- If you have partial data, present exactly what is in the data. Partial answers score better than no answer.
+- Report every relevant value that appears in the gathered data. Paraphrase naturally when that reads better than a raw quote.
+- Do not invent values from general knowledge that are not in the gathered data. If an asked-for value is genuinely absent from the data, state which value is missing — never fall back to "not found" when the data contains the answer.
+- Do not merge observed data with assumed information. Concrete details in your answer must be traceable to the gathered data below.
 - If data is contradictory, pick the most specific/recent.
 - Keep it concise. One paragraph max."""
 
@@ -87,18 +161,28 @@ class Planner:
             subtasks = [Subtask(instruction=task, mode="find", done_when="Task is complete")]
         return subtasks[:5]
 
-    def replan(self, task: str, completed: list, failed: "Subtask", page_summary: str) -> list["Subtask"] | None:
+    def replan(self, task: str, completed: list, failed: "Subtask", page_summary: str,
+               failure_reason: str = "", last_actions: list = None,
+               visited_urls: list = None) -> list["Subtask"] | None:
         self._replan_count += 1
         if self._replan_count > self._max_replans:
             return None
 
         self._failed_strategies.append(failed.instruction)
         completed_summary = "; ".join(s.instruction for s, _ in completed) if completed else "Nothing completed yet"
+        guidance = _FAILURE_GUIDANCE.get(failure_reason, _DEFAULT_GUIDANCE)
+        actions_str = "; ".join(last_actions) if last_actions else "none"
+        # Cap the visited-urls list so the prompt doesn't balloon on long runs.
+        urls_str = "; ".join(visited_urls[-12:]) if visited_urls else "none"
 
         addition = REPLAN_ADDITION.format(
             failed_instruction=failed.instruction,
+            failure_reason=failure_reason or "unknown",
+            last_actions=actions_str,
             completed_summary=completed_summary,
+            visited_urls=urls_str,
             page_summary=page_summary,
+            failure_guidance=guidance,
             failed_strategies="; ".join(self._failed_strategies),
         )
 

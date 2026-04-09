@@ -44,6 +44,10 @@ ACCEPT_TEXTS = [
     "OK",
     "Agree",
     "Dismiss",
+    "Continue",
+    "Accept",
+    "Confirm",
+    "Save preferences",
 ]
 
 # Overlay selectors to check if a consent modal is blocking
@@ -61,11 +65,39 @@ OVERLAY_SELECTORS = [
 ]
 
 
+def _handle_google_consent(page) -> bool:
+    """Handle Google's full-page consent redirect (consent.google.com).
+
+    Google redirects to a separate consent page instead of showing an overlay.
+    Click "Reject all" to proceed without tracking cookies.
+    """
+    url = page.url
+    if "consent.google.com" not in url and "consent.youtube.com" not in url:
+        return False
+
+    log.info("Google consent page detected — clicking Reject all")
+    for text in ["Reject all", "Accept all"]:
+        try:
+            btn = page.query_selector(f'button[aria-label="{text}"]')
+            if btn:
+                page.evaluate("el => el.click()", btn)
+                time.sleep(3)
+                log.info("Google consent dismissed via: %s", text)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def dismiss_consent(page, timeout: float = 3.0) -> bool:
     """Try to dismiss any cookie consent banner on the page.
 
     Returns True if a consent banner was found and dismissed.
     """
+    # Handle Google's full-page consent redirect first
+    if _handle_google_consent(page):
+        return True
+
     # Check if there's a consent overlay — use JS to check display/visibility
     # (Playwright's is_visible() can miss some overlay implementations)
     selectors_json = json.dumps(OVERLAY_SELECTORS)
@@ -103,8 +135,22 @@ def dismiss_consent(page, timeout: float = 3.0) -> bool:
     except Exception:
         pass
 
+    # Even without a known overlay selector, check for cookie-notice headings
     if not has_overlay:
-        return False
+        try:
+            has_cookie_heading = page.evaluate('''() => {
+                const h1s = document.querySelectorAll("h1, h2, h3");
+                for (const h of h1s) {
+                    const t = (h.textContent || "").toLowerCase();
+                    if (t.includes("cookie") || t.includes("consent") || t.includes("privacy")) return true;
+                }
+                return false;
+            }''')
+            if not has_cookie_heading:
+                return False
+            log.info("Cookie heading detected — trying text-based dismissal")
+        except Exception:
+            return False
 
     log.info("Cookie consent overlay detected — dismissing")
 

@@ -7,6 +7,7 @@ Single session at a time.
 import json
 import logging
 import os
+from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file
 from io import BytesIO
@@ -21,9 +22,12 @@ app = Flask(__name__)
 
 # ── Config from environment ──────────────────────────────────
 LOCAL_LLM_URL = os.environ.get("LOCAL_LLM_URL", "http://host.docker.internal:8081/v1")
+LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL", "auto")
 BACKUP_LLM_URL = os.environ.get("BACKUP_LLM_URL", "http://host.docker.internal:8082/v1")
+BACKUP_LLM_MODEL = os.environ.get("BACKUP_LLM_MODEL", "auto")
 CLOUD_LLM_URL = os.environ.get("CLOUD_LLM_URL", "")
 CLOUD_LLM_KEY = os.environ.get("CLOUD_LLM_KEY", "")
+CLOUD_LLM_MODEL = os.environ.get("CLOUD_LLM_MODEL", "auto")
 CAPTCHA_API = os.environ.get("CAPTCHA_API", "capsolver")
 CAPTCHA_KEY = os.environ.get("CAPTCHA_KEY", "")
 PROXY_URL = os.environ.get("FANTOMA_PROXY", None)
@@ -264,17 +268,21 @@ def run_task():
     defaults = _get_fantoma_defaults()
     escalation = [defaults["llm_url"]]
     escalation_keys = [""]
+    escalation_models = [LOCAL_LLM_MODEL]
     if BACKUP_LLM_URL:
         escalation.append(BACKUP_LLM_URL)
         escalation_keys.append("")
+        escalation_models.append(BACKUP_LLM_MODEL)
     if CLOUD_LLM_URL:
         escalation.append(CLOUD_LLM_URL)
         escalation_keys.append(CLOUD_LLM_KEY)
+        escalation_models.append(CLOUD_LLM_MODEL)
 
     try:
         agent = Agent(
             llm_url=defaults["llm_url"], escalation=escalation,
             escalation_keys=escalation_keys,
+            escalation_models=escalation_models,
             captcha_api=CAPTCHA_API, captcha_key=CAPTCHA_KEY,
             proxy=PROXY_URL, headless=HEADLESS_MODE, browser="camoufox",
             max_steps=data.get("max_steps", 50), timeout=data.get("timeout", 300),
@@ -355,6 +363,15 @@ def manual_status():
         "active": _manual_fantoma is not None,
         "novnc_url": "http://localhost:6080/vnc.html",
     })
+
+
+@app.route("/stop-benchmark", methods=["POST"])
+def stop_benchmark():
+    """Signal a running benchmark to halt. Creates a stop file the runner watches."""
+    stop_file = Path("/tmp/fantoma_benchmark_stop")
+    stop_file.touch()
+    log.info("Benchmark stop signal received — stop file created")
+    return jsonify({"status": "stop signal sent", "file": str(stop_file)})
 
 
 if __name__ == "__main__":

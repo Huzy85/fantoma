@@ -1,7 +1,7 @@
 """Benchmark configuration."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -20,6 +20,13 @@ class BenchmarkConfig:
     headless: bool = True
     capture_step_screenshots: bool = False
     results_dir: str = "benchmark/results"
+    captcha_api: str = ""
+    captcha_key: str = ""
+    # Escalation chain — pipe-separated lists of endpoints/keys/models.
+    # Example: "http://h1:8081/v1|http://h2:8082/v1|https://openrouter.ai/api/v1"
+    escalation_urls: str = ""
+    escalation_keys: str = ""
+    escalation_models: str = ""
 
     @classmethod
     def from_env(cls, **overrides) -> "BenchmarkConfig":
@@ -34,6 +41,11 @@ class BenchmarkConfig:
             "max_steps": "BENCHMARK_MAX_STEPS",
             "timeout": "BENCHMARK_TIMEOUT",
             "browser": "BENCHMARK_BROWSER",
+            "captcha_api": "BENCHMARK_CAPTCHA_API",
+            "captcha_key": "CAPSOLVER_KEY",
+            "escalation_urls": "BENCHMARK_ESCALATION_URLS",
+            "escalation_keys": "BENCHMARK_ESCALATION_KEYS",
+            "escalation_models": "BENCHMARK_ESCALATION_MODELS",
         }
         kwargs = {}
         for attr, env_var in env_map.items():
