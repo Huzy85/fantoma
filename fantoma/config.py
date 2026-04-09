@@ -57,7 +57,7 @@ class TimeoutConfig:
 @dataclass
 class ExtractionConfig:
     """DOM extraction limits."""
-    max_elements: int = 15          # Max interactive elements shown to LLM
+    max_elements: int = 20          # Max interactive elements shown to LLM
     max_headings: int = 25          # Max headings/text shown to LLM
     max_page_text: int = 4000       # Max chars of page text for extraction
 

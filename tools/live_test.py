@@ -28,8 +28,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # ── Config (copied from working test files) ─────────────────────────
 
 HERCULES = os.environ.get("FANTOMA_LLM_URL", "http://localhost:8080/v1")
-DEEPSEEK = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com/v1")
-DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+CLOUD_LLM = os.environ.get("CLOUD_LLM_URL", "https://openrouter.ai/api/v1")
+CLOUD_LLM_KEY = os.environ.get("CLOUD_LLM_KEY", "")
 try:
     CAPSOLVER_KEY = json.load(open(Path.home() / ".config/capsolver/config.json"))["api_key"]
 except Exception:
@@ -87,14 +87,14 @@ def validate_integrations():
     except Exception as e:
         errors.append(f"LLM unreachable at {HERCULES}: {e}")
 
-    # 2. DeepSeek escalation reachable
-    log.info("Checking DeepSeek escalation at %s ...", DEEPSEEK)
+    # 2. Cloud LLM escalation reachable
+    log.info("Checking cloud LLM escalation at %s ...", CLOUD_LLM)
     try:
-        r = httpx.get(f"{DEEPSEEK}/models", headers={"Authorization": f"Bearer {DEEPSEEK_KEY}"}, timeout=10)
+        r = httpx.get(f"{CLOUD_LLM}/models", headers={"Authorization": f"Bearer {CLOUD_LLM_KEY}"}, timeout=10)
         r.raise_for_status()
-        log.info("  DeepSeek OK")
+        log.info("  Cloud LLM OK")
     except Exception as e:
-        errors.append(f"DeepSeek unreachable: {e}")
+        errors.append(f"Cloud LLM unreachable: {e}")
 
     # 3. IMAP login
     log.info("Checking IMAP at %s:%d ...", IMAP_HOST, IMAP_PORT)
@@ -128,7 +128,7 @@ def validate_integrations():
         sys.exit(1)
 
     log.info("All integrations OK")
-    log.info("Config: LLM=%s, Escalation=%s, Email=%s, CapSolver=YES", HERCULES, DEEPSEEK, EMAIL)
+    log.info("Config: LLM=%s, Escalation=%s, Email=%s, CapSolver=YES", HERCULES, CLOUD_LLM, EMAIL)
 
 
 # ── Agent Factory ────────────────────────────────────────────────────
@@ -137,8 +137,8 @@ def make_agent(timeout=90):
     from fantoma import Agent
     return Agent(
         llm_url=HERCULES,
-        escalation=[HERCULES, DEEPSEEK],
-        escalation_keys=["", DEEPSEEK_KEY],
+        escalation=[HERCULES, CLOUD_LLM],
+        escalation_keys=["", CLOUD_LLM_KEY],
         headless=True,
         timeout=timeout,
         max_steps=30,

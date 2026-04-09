@@ -23,8 +23,8 @@ log = logging.getLogger("signup_test")
 
 # Config — use environment variables for secrets
 HERCULES = os.environ.get("FANTOMA_LLM_URL", "http://localhost:8080/v1")
-DEEPSEEK = os.environ.get("DEEPSEEK_URL", "https://api.deepseek.com/v1")
-DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+CLOUD_LLM = os.environ.get("CLOUD_LLM_URL", "https://openrouter.ai/api/v1")
+CLOUD_LLM_KEY = os.environ.get("CLOUD_LLM_KEY", "")
 try:
     CAPSOLVER_KEY = json.load(open(Path.home() / ".config/capsolver/config.json"))["api_key"]
 except Exception:
@@ -46,8 +46,8 @@ from fantoma import Agent
 
 agent = Agent(
     llm_url=HERCULES,
-    escalation=[HERCULES, DEEPSEEK],
-    escalation_keys=["", DEEPSEEK_KEY],
+    escalation=[HERCULES, CLOUD_LLM],
+    escalation_keys=["", CLOUD_LLM_KEY],
     headless=True,
     timeout=120,
     max_steps=30,

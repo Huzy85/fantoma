@@ -19,8 +19,11 @@ def main():
     parser.add_argument("--browser", default=None, help="Browser engine")
     parser.add_argument("--task", default=None, help="Run single task by ID")
     parser.add_argument("--site", default=None, help="Run tasks for one website only")
+    parser.add_argument("--limit", type=int, default=None, help="Max number of tasks to run")
     parser.add_argument("--eval-only", default=None, metavar="DIR", help="Re-evaluate existing results")
     parser.add_argument("--update-readme", default=None, metavar="DIR", help="Update README from results")
+    parser.add_argument("--captcha-api", default=None, help="CAPTCHA solver API (e.g. capsolver)")
+    parser.add_argument("--captcha-key", default=None, help="CAPTCHA solver API key")
     parser.add_argument("--step-screenshots", action="store_true", help="Capture per-step screenshots")
     args = parser.parse_args()
 
@@ -43,6 +46,10 @@ def main():
         overrides["timeout"] = args.timeout
     if args.browser:
         overrides["browser"] = args.browser
+    if args.captcha_api:
+        overrides["captcha_api"] = args.captcha_api
+    if args.captcha_key:
+        overrides["captcha_key"] = args.captcha_key
     if args.step_screenshots:
         overrides["capture_step_screenshots"] = True
 
@@ -59,7 +66,7 @@ def main():
         sys.exit(0)
 
     from benchmark.runner import run_benchmark
-    run_benchmark(config, task_filter=args.task, site_filter=args.site)
+    run_benchmark(config, task_filter=args.task, site_filter=args.site, limit=args.limit)
 
 
 if __name__ == "__main__":

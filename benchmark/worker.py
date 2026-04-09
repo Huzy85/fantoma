@@ -2,10 +2,17 @@
 
 import json
 import logging
+import os
+import signal
+import threading
 import time
 import traceback
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+
+class TaskTimeout(Exception):
+    pass
 
 log = logging.getLogger("benchmark.worker")
 
@@ -63,7 +70,7 @@ def run_single_task(task: dict, config_dict: dict) -> tuple[TaskResult, bytes | 
     from fantoma import Agent
 
     # Agent.__init__ takes **kwargs which are forwarded to Fantoma
-    agent = Agent(
+    agent_kwargs = dict(
         llm_url=config.llm_url,
         api_key=config.llm_api_key,
         model=config.llm_model,
@@ -72,6 +79,26 @@ def run_single_task(task: dict, config_dict: dict) -> tuple[TaskResult, bytes | 
         browser=config.browser,
         timeout=config.timeout,
     )
+    if config.captcha_api and config.captcha_key:
+        agent_kwargs["captcha_api"] = config.captcha_api
+        agent_kwargs["captcha_key"] = config.captcha_key
+
+    # Wire escalation chain if configured (pipe-separated lists)
+    if config.escalation_urls:
+        urls = [u.strip() for u in config.escalation_urls.split("|") if u.strip()]
+        keys = [k.strip() for k in config.escalation_keys.split("|")] if config.escalation_keys else []
+        models = [m.strip() for m in config.escalation_models.split("|")] if config.escalation_models else []
+        # Pad keys and models to match urls length
+        while len(keys) < len(urls):
+            keys.append("")
+        while len(models) < len(urls):
+            models.append("auto")
+        agent_kwargs["escalation"] = urls
+        agent_kwargs["escalation_keys"] = keys
+        agent_kwargs["escalation_models"] = models
+        log.info("Escalation chain wired: %d tiers, top=%s", len(urls), models[-1])
+
+    agent = Agent(**agent_kwargs)
 
     # Intercept fantoma.stop() to capture screenshot before browser closes.
     # Agent.run() calls fantoma.stop() in its finally block, so we can't
@@ -92,6 +119,24 @@ def run_single_task(task: dict, config_dict: dict) -> tuple[TaskResult, bytes | 
 
     start_time = time.monotonic()
 
+    # Timeout via os._exit in a watchdog thread.
+    # SIGALRM doesn't work in ProcessPoolExecutor child processes, and
+    # threading can't interrupt blocked C calls (Playwright). Hard kill is
+    # the only reliable option for hung browser calls.
+    #
+    # Use an Event so the watchdog can be cancelled when the task finishes.
+    # Without cancellation, a completed task's watchdog stays alive in the
+    # worker process and fires later during the next task, killing the pool.
+    stop_event = threading.Event()
+
+    def _watchdog():
+        if not stop_event.wait(config.timeout):
+            log.error("Task %s hard-killed after %ds timeout", task_id, config.timeout)
+            os._exit(1)
+
+    timer = threading.Thread(target=_watchdog, daemon=True)
+    timer.start()
+
     try:
         result = agent.run(task["ques"], start_url=task["web"])
         duration = time.monotonic() - start_time
@@ -109,6 +154,24 @@ def run_single_task(task: dict, config_dict: dict) -> tuple[TaskResult, bytes | 
             duration_s=round(duration, 1),
             tokens_used=result.tokens_used,
             error=result.error if result.error else None,
+        )
+
+    except TaskTimeout:
+        duration = time.monotonic() - start_time
+        log.error("Task %s timed out after %.0fs", task_id, duration)
+        task_result = TaskResult(
+            task_id=task_id,
+            web_name=task["web_name"],
+            instruction=task["ques"],
+            start_url=task["web"],
+            status="timeout",
+            answer=None,
+            final_url=None,
+            steps_taken=0,
+            steps_detail=[],
+            duration_s=round(duration, 1),
+            tokens_used=0,
+            error=f"Task timed out after {config.timeout}s",
         )
 
     except Exception as e:
@@ -130,6 +193,9 @@ def run_single_task(task: dict, config_dict: dict) -> tuple[TaskResult, bytes | 
         )
 
     finally:
+        # Cancel the watchdog first so it can't fire during cleanup or on a
+        # subsequent task running in the same pool worker.
+        stop_event.set()
         # Agent.run() already calls fantoma.stop() (which we wrapped above).
         # Only call it explicitly if the agent crashed before reaching its own stop.
         try:

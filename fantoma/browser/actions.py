@@ -121,10 +121,14 @@ def type_into(engine, element_or_selector, text: str, clear_first: bool = True):
     if engine.humanizer:
         # Reset React's _valueTracker first — without this, React controlled
         # inputs silently discard keystrokes during re-renders
-        element.evaluate('''(el) => {
-            const tracker = el._valueTracker;
-            if (tracker) tracker.setValue('');
-        }''')
+        try:
+            element.evaluate('''(el) => {
+                const tracker = el._valueTracker;
+                if (tracker) tracker.setValue('');
+            }''')
+        except Exception:
+            log.warning("Element context destroyed before typing (stale handle)")
+            return False
 
         if clear_first:
             page.keyboard.press("Control+a")
@@ -151,40 +155,44 @@ def type_into(engine, element_or_selector, text: str, clear_first: bool = True):
 
     # Fast path: instant DOM injection via nativeSetter.
     # Used when humanizer is disabled (speed over stealth) or as fallback.
-    element.evaluate('''(el, args) => {
-        const [text, clear] = args;
+    try:
+        element.evaluate('''(el, args) => {
+            const [text, clear] = args;
 
-        // Focus properly
-        el.blur();
-        el.focus();
+            // Focus properly
+            el.blur();
+            el.focus();
 
-        // Reset React's _valueTracker (harmless on non-React)
-        const tracker = el._valueTracker;
-        if (tracker) {
-            tracker.setValue('');
-        }
+            // Reset React's _valueTracker (harmless on non-React)
+            const tracker = el._valueTracker;
+            if (tracker) {
+                tracker.setValue('');
+            }
 
-        // Clear if needed
-        if (clear) {
+            // Clear if needed
+            if (clear) {
+                const proto = Object.getPrototypeOf(el);
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) setter.call(el, '');
+                else el.value = '';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+
+            // Set value via native prototype setter (bypasses React override)
             const proto = Object.getPrototypeOf(el);
             const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-            if (setter) setter.call(el, '');
-            else el.value = '';
+            if (setter) setter.call(el, text);
+            else el.value = text;
+
+            // Fire all events
+            el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
             el.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-
-        // Set value via native prototype setter (bypasses React override)
-        const proto = Object.getPrototypeOf(el);
-        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-        if (setter) setter.call(el, text);
-        else el.value = text;
-
-        // Fire all events
-        el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
-        el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-    }''', [text, clear_first])
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }''', [text, clear_first])
+    except Exception as e:
+        log.warning("DOM injection failed (stale context): %s", e)
+        return False
 
     # Verify the value stuck
     try:

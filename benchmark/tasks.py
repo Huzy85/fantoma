@@ -37,8 +37,10 @@ def load_tasks(
                 continue
             if site_filter and task["web_name"] != site_filter:
                 continue
-            if task_filter and task["id"] != task_filter:
-                continue
+            if task_filter:
+                filter_ids = [t.strip() for t in task_filter.split(",")]
+                if task["id"] not in filter_ids:
+                    continue
             tasks.append(task)
 
     return tasks
