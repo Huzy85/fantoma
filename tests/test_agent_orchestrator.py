@@ -372,3 +372,31 @@ class TestAgentInitWithModels:
         assert agent.escalation.current_model() == "auto"
         agent.escalation.escalate()
         assert agent.escalation.current_model() == "auto"
+
+
+class TestHasRealData:
+    """Unit tests for the _has_real_data helper."""
+
+    def test_real_data_returns_true(self):
+        from fantoma.agent import _has_real_data
+        assert _has_real_data("Price is $999") is True
+
+    def test_stopped_prefix_returns_false(self):
+        from fantoma.agent import _has_real_data
+        assert _has_real_data("Stopped: action_cycle") is False
+
+    def test_domain_drift_returns_false(self):
+        from fantoma.agent import _has_real_data
+        assert _has_real_data("Domain drift to other.com") is False
+
+    def test_blocked_prefix_returns_false(self):
+        from fantoma.agent import _has_real_data
+        assert _has_real_data("Blocked: login wall") is False
+
+    def test_empty_string_returns_false(self):
+        from fantoma.agent import _has_real_data
+        assert _has_real_data("") is False
+
+    def test_none_returns_false(self):
+        from fantoma.agent import _has_real_data
+        assert _has_real_data(None) is False
