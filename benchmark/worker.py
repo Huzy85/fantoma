@@ -75,6 +75,7 @@ def run_single_task(task: dict, config_dict: dict) -> tuple[TaskResult, bytes | 
         api_key=config.llm_api_key,
         model=config.llm_model,
         max_steps=config.max_steps,
+        flat_budget=config.flat_budget,
         headless=config.headless,
         browser=config.browser,
         timeout=config.timeout,

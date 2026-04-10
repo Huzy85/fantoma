@@ -24,6 +24,7 @@ class BenchmarkConfig:
     captcha_key: str = ""
     # Escalation chain — pipe-separated lists of endpoints/keys/models.
     # Example: "http://h1:8081/v1|http://h2:8082/v1|https://openrouter.ai/api/v1"
+    flat_budget: int = 20
     escalation_urls: str = ""
     escalation_keys: str = ""
     escalation_models: str = ""
