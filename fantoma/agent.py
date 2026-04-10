@@ -118,11 +118,13 @@ class Agent:
         escalation_keys: list[str] = None,
         escalation_models: list[str] = None,
         max_steps: int = 50,
+        flat_budget: int = 20,
         sensitive_data: dict = None,
         **kwargs,
     ):
         self.fantoma = Fantoma(llm_url=llm_url, api_key=api_key, model=model, **kwargs)
         self._max_steps = max_steps
+        self._flat_budget = min(flat_budget, max_steps)
         self._sensitive_data = sensitive_data or {}
 
         endpoints = escalation or [llm_url]
