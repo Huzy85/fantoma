@@ -373,6 +373,21 @@ class TestAgentInitWithModels:
         agent.escalation.escalate()
         assert agent.escalation.current_model() == "auto"
 
+    def test_flat_budget_default(self):
+        agent = Agent(
+            llm_url="http://localhost:8081/v1",
+            headless="virtual",
+        )
+        assert agent._flat_budget == 20
+
+    def test_flat_budget_custom(self):
+        agent = Agent(
+            llm_url="http://localhost:8081/v1",
+            flat_budget=10,
+            headless="virtual",
+        )
+        assert agent._flat_budget == 10
+
 
 class TestHasRealData:
     """Unit tests for the _has_real_data helper."""
