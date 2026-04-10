@@ -79,6 +79,16 @@ def _google_fallback_subtasks(task: str) -> list[Subtask]:
     ]
 
 
+def _has_real_data(data: str | None) -> bool:
+    """True if data contains a real answer, not a placeholder status line."""
+    return bool(
+        data
+        and not data.startswith("Stopped:")
+        and not data.startswith("Domain drift")
+        and not data.startswith("Blocked:")
+    )
+
+
 @dataclass
 class AgentResult:
     """Result of an agent.run() call."""
@@ -197,13 +207,7 @@ class Agent:
                 total_steps += result.steps_taken
                 remaining_budget -= result.steps_taken
 
-                # Real data means not a placeholder status line from the navigator.
-                has_real_data = bool(
-                    result.data
-                    and not result.data.startswith("Stopped:")
-                    and not result.data.startswith("Domain drift")
-                    and not result.data.startswith("Blocked:")
-                )
+                has_real_data = _has_real_data(result.data)
 
                 if result.status == "done":
                     completed.append((subtask, result))
