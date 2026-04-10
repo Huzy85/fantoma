@@ -50,7 +50,8 @@ fantoma test         # Verify it works
 - **ARIA + raw DOM** — always reads both. No form is invisible, even old-school HTML without ARIA labels.
 - **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
-- **Hierarchical agent (v0.8)** — Planner decomposes the task into typed subtasks, Navigator executes each one, StateTracker watches for stagnation and loops. Failure-typed replan guidance: each navigator failure carries a reason (`stagnation`, `loop`, `domain_drift`, `rate_limit`, `login_wall`, `captcha`, `llm_empty`) and the planner gets targeted recovery instructions.
+- **Flat-first agent (v0.9)** — Two-phase execution. Phase 1 runs a flat reactive loop (20 steps by default) that handles 70-80% of tasks without any planning overhead. Phase 2 activates the hierarchical planner only if Phase 1 stalls, receiving full context (visited URLs, partial data, failure reason) so it doesn't repeat what was already tried. Simple tasks complete in Phase 1 alone. Complex tasks get the full planner treatment with the remaining step budget.
+- **Hierarchical fallback (v0.8 core)** — Planner decomposes the task into typed subtasks, Navigator executes each one, StateTracker watches for stagnation and loops. Failure-typed replan guidance: each navigator failure carries a reason (`stagnation`, `loop`, `domain_drift`, `rate_limit`, `login_wall`, `captcha`, `llm_empty`) and the planner gets targeted recovery instructions.
 - **Search-first navigation policy (v0.8)** — Planner step 1 must either NAVIGATE to a known URL or NAVIGATE to a Google search. Scrolling a landing page is banned. Navigator must press Enter or click submit on any typed field before saying DONE, and may not say DONE on a search results page when the task targets a specific resource.
 - **Subtask-cycle escape hatch (v0.8)** — Agent loop tracks the last 4 failed subtask instructions. If two share more than 60% token overlap (planner stuck repeating the same broken approach), the loop force-injects a hard-coded "Google the task, click the first organic result, read the page" plan. Same fallback fires if the replanner returns a near-duplicate of what just failed. One-shot per task.
 - **Wired escalation chain** — Three-tier LLM fallback (local → backup → cloud) with per-tier model names. After 3 failed replans on the current model, the Agent automatically swaps to the next tier and re-decomposes the task. Use `escalation`, `escalation_keys`, and `escalation_models` to wire it up.
@@ -472,6 +473,7 @@ Agent(
     escalation_keys=None,    # list[str] of API keys, "" for local endpoints
     escalation_models=None,  # list[str] of model ids, "auto" for local endpoints
     max_steps=50,
+    flat_budget=20,          # Steps for Phase 1 flat loop before hierarchical fallback
     timeout=300,
     sensitive_data=None,
     **fantoma_kwargs,        # All Fantoma params passed through
@@ -500,7 +502,7 @@ All activity is logged to `~/.fantoma/fantoma.log` — check it with `fantoma lo
 ```
 fantoma/
 ├── browser_tool.py      # Fantoma class — the browser tool (start, stop, click, type, login, extract)
-├── agent.py             # Agent class — convenience wrapper with run() for vibe coders
+├── agent.py             # Agent class — flat-first with hierarchical fallback
 ├── session.py           # Encrypted session persistence
 ├── cli.py               # CLI + interactive mode (uses Agent)
 ├── config.py            # Settings
