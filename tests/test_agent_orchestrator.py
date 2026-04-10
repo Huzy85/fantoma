@@ -415,3 +415,55 @@ class TestHasRealData:
     def test_none_returns_false(self):
         from fantoma.agent import _has_real_data
         assert _has_real_data(None) is False
+
+
+class TestBuildPhase1Context:
+    """Unit tests for _build_phase1_context helper."""
+
+    def test_extracts_visited_urls(self):
+        from fantoma.agent import _build_phase1_context
+        result = NavigatorResult(
+            status="stagnant", data="Some data", steps_taken=5,
+            steps_detail=[
+                {"url": "https://a.com"},
+                {"url": "https://b.com"},
+                {"url": "https://a.com"},
+            ],
+            final_url="https://a.com",
+            failure_reason="action_cycle",
+            last_actions=["click(1)", "click(2)"],
+        )
+        ctx = _build_phase1_context(result)
+        assert ctx["visited_urls"] == ["https://a.com", "https://b.com", "https://a.com"]
+        assert ctx["steps_taken"] == 5
+        assert ctx["final_url"] == "https://a.com"
+        assert ctx["failure_reason"] == "action_cycle"
+        assert ctx["last_actions"] == ["click(1)", "click(2)"]
+
+    def test_real_data_preserved(self):
+        from fantoma.agent import _build_phase1_context
+        result = NavigatorResult(
+            status="stagnant", data="Price is $42", steps_taken=3,
+            steps_detail=[], final_url="https://x.com",
+        )
+        ctx = _build_phase1_context(result)
+        assert ctx["partial_data"] == "Price is $42"
+
+    def test_placeholder_data_excluded(self):
+        from fantoma.agent import _build_phase1_context
+        result = NavigatorResult(
+            status="stagnant", data="Stopped: action_cycle", steps_taken=3,
+            steps_detail=[], final_url="https://x.com",
+        )
+        ctx = _build_phase1_context(result)
+        assert ctx["partial_data"] is None
+
+    def test_empty_steps_detail(self):
+        from fantoma.agent import _build_phase1_context
+        result = NavigatorResult(
+            status="failed", data="", steps_taken=0,
+            steps_detail=[], final_url="",
+        )
+        ctx = _build_phase1_context(result)
+        assert ctx["visited_urls"] == []
+        assert ctx["steps_taken"] == 0

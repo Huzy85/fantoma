@@ -89,6 +89,18 @@ def _has_real_data(data: str | None) -> bool:
     )
 
 
+def _build_phase1_context(result: NavigatorResult) -> dict:
+    """Extract context from Phase 1's NavigatorResult for Phase 2 handover."""
+    return {
+        "visited_urls": [s.get("url", "") for s in result.steps_detail if s.get("url")],
+        "steps_taken": result.steps_taken,
+        "partial_data": result.data if _has_real_data(result.data) else None,
+        "final_url": result.final_url,
+        "failure_reason": result.failure_reason,
+        "last_actions": result.last_actions,
+    }
+
+
 @dataclass
 class AgentResult:
     """Result of an agent.run() call."""
