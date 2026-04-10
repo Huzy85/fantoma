@@ -21,9 +21,14 @@ class TestDedupUrls:
 
 class TestAgentRunOrchestration:
     def _mock_agent(self, planner_subtasks, navigator_results, summary="Final answer"):
-        """Build an Agent with mocked planner, navigator, and browser."""
+        """Build an Agent with mocked planner, navigator, and browser.
+
+        Phase 1 is disabled (flat_budget=0) so existing tests exercise Phase 2 only.
+        A Phase 1 stall result is prepended to navigator_results automatically.
+        """
         agent = Agent.__new__(Agent)
         agent._max_steps = 25
+        agent._flat_budget = 0
 
         # Mock planner
         agent._planner = MagicMock()
@@ -31,9 +36,10 @@ class TestAgentRunOrchestration:
         agent._planner.summarise.return_value = summary
         agent._planner.replan.return_value = None
 
-        # Mock navigator
+        # Mock navigator — prepend Phase 1 stall result
+        phase1_stall = NavigatorResult("max_steps", "", 0, [], "https://example.com")
         agent._navigator = MagicMock()
-        agent._navigator.execute.side_effect = navigator_results
+        agent._navigator.execute.side_effect = [phase1_stall] + list(navigator_results)
 
         # Mock fantoma (browser tool)
         agent.fantoma = MagicMock()
@@ -97,14 +103,15 @@ class TestAgentRunOrchestration:
         agent._max_steps = 25
         result = agent.run("Do things", start_url="https://a.com")
 
-        # Second navigator.execute should get more steps because first only used 2
+        # [0] is Phase 1 stall, [1] and [2] are Phase 2 subtasks
         calls = agent._navigator.execute.call_args_list
-        first_budget = calls[0].kwargs.get("max_steps") or calls[0][1].get("max_steps", 0)
-        second_budget = calls[1].kwargs.get("max_steps") or calls[1][1].get("max_steps", 0)
-        assert second_budget >= first_budget  # Rolled-over budget
+        first_budget = calls[1].kwargs.get("max_steps") or calls[1][1].get("max_steps", 0)
+        second_budget = calls[2].kwargs.get("max_steps") or calls[2][1].get("max_steps", 0)
+        assert second_budget >= first_budget
 
     def test_browser_start_failure(self):
         agent = Agent.__new__(Agent)
+        agent._flat_budget = 0
         agent.fantoma = MagicMock()
         agent.fantoma.start.side_effect = Exception("Connection refused")
         agent._sensitive_data = {}
@@ -150,7 +157,7 @@ class TestAgentRunOrchestration:
         result = agent.run("Do steps", start_url="https://example.com")
 
         assert agent._planner.replan.call_count == 1
-        assert agent._navigator.execute.call_count == 3
+        assert agent._navigator.execute.call_count == 4  # 1 Phase 1 + 3 Phase 2
 
     def test_stagnant_with_real_data_checkpoints_final_url(self):
         """Stagnant subtask that extracted real data must checkpoint final_url.
@@ -260,6 +267,7 @@ class TestAgentEscalation:
 
         agent = Agent.__new__(Agent)
         agent._max_steps = 25
+        agent._flat_budget = 0
         agent._sensitive_data = {}
 
         agent._planner = MagicMock()
@@ -269,11 +277,12 @@ class TestAgentEscalation:
             agent._planner.replan.return_value = None
         else:
             agent._planner.replan.side_effect = replan_results
-        # Stub _llm reassignment target so _escalate_llm doesn't crash on real LLMClient
         agent._planner._llm = MagicMock()
 
+        # Prepend Phase 1 stall result
+        phase1_stall = NavigatorResult("max_steps", "", 0, [], "https://example.com")
         agent._navigator = MagicMock()
-        agent._navigator.execute.side_effect = nav_results
+        agent._navigator.execute.side_effect = [phase1_stall] + list(nav_results)
 
         agent.fantoma = MagicMock()
         agent.fantoma.start.return_value = {"url": "https://example.com", "aria_tree": ""}
@@ -287,7 +296,6 @@ class TestAgentEscalation:
         agent.fantoma._dom.extract.return_value = "Page: Example\nURL: https://example.com"
 
         agent._llm = MagicMock()
-        # Real EscalationChain so the flag flips correctly
         agent.escalation = EscalationChain(
             endpoints=["http://localhost:8081/v1", "https://openrouter.ai/api/v1"],
             api_keys=["", "sk-or-test"],
@@ -318,8 +326,8 @@ class TestAgentEscalation:
         assert agent.escalation.current_endpoint() == "https://openrouter.ai/api/v1"
         # Decompose was called twice: once initially, once after escalation
         assert agent._planner.decompose.call_count == 2
-        # Navigator ran the original subtask, then the escalated subtask
-        assert agent._navigator.execute.call_count == 2
+        # Navigator ran Phase 1 stall + the original subtask + the escalated subtask
+        assert agent._navigator.execute.call_count == 3  # 1 Phase 1 + 2 Phase 2
         assert result.success is True
 
     def test_no_escalation_when_chain_exhausted(self):
@@ -467,3 +475,184 @@ class TestBuildPhase1Context:
         ctx = _build_phase1_context(result)
         assert ctx["visited_urls"] == []
         assert ctx["steps_taken"] == 0
+
+
+class TestFlatFirstAgent:
+    """Tests for the two-phase flat-first agent architecture."""
+
+    def _mock_agent(self, navigator_results, planner_subtasks=None, summary="Final answer"):
+        """Build an Agent with mocked components for flat-first testing."""
+        agent = Agent.__new__(Agent)
+        agent._max_steps = 30
+        agent._flat_budget = 20
+
+        agent._planner = MagicMock()
+        if planner_subtasks:
+            agent._planner.decompose.return_value = planner_subtasks
+        agent._planner.summarise.return_value = summary
+        agent._planner.replan.return_value = None
+
+        agent._navigator = MagicMock()
+        agent._navigator.execute.side_effect = navigator_results
+
+        agent.fantoma = MagicMock()
+        agent.fantoma.start.return_value = {"url": "https://example.com", "aria_tree": ""}
+        agent.fantoma._engine = MagicMock()
+        page_mock = MagicMock()
+        page_mock.url = "https://example.com"
+        page_mock.title.return_value = "Example"
+        agent.fantoma._engine.get_page.return_value = page_mock
+        agent.fantoma._dom = MagicMock()
+        agent.fantoma._dom.extract_content.return_value = "Page content"
+        agent.fantoma._dom.extract.return_value = "Page: Example"
+
+        agent._llm = MagicMock()
+        agent._sensitive_data = {}
+        agent.escalation = MagicMock()
+        agent.escalation.total_escalations = 0
+        agent.escalation.can_escalate.return_value = False
+
+        return agent
+
+    def test_phase1_success_skips_planner(self):
+        """Phase 1 completes with data. Planner.decompose() never called."""
+        nav_results = [
+            NavigatorResult("done", "Recipe: Chocolate Cake", 5, [
+                {"url": "https://allrecipes.com/search?q=cake"},
+                {"url": "https://allrecipes.com/recipe/123"},
+            ], "https://allrecipes.com/recipe/123"),
+        ]
+        agent = self._mock_agent(nav_results, summary="Chocolate Cake recipe found")
+        result = agent.run("Find a chocolate cake recipe", start_url="https://allrecipes.com")
+
+        assert result.success is True
+        assert result.data == "Chocolate Cake recipe found"
+        assert result.steps_taken == 5
+        agent._planner.decompose.assert_not_called()
+        agent._planner.summarise.assert_called_once()
+
+    def test_phase1_stall_triggers_phase2(self):
+        """Phase 1 stalls. Phase 2 decomposes with Phase 1 context."""
+        nav_results = [
+            NavigatorResult("stagnant", "Stopped: action_cycle", 8, [
+                {"url": "https://example.com"},
+                {"url": "https://example.com/page2"},
+            ], "https://example.com/page2",
+               failure_reason="action_cycle", last_actions=["click(1)", "click(1)"]),
+            NavigatorResult("done", "Found the answer: 42", 3, [],
+                            "https://example.com/answer"),
+        ]
+        phase2_subtasks = [Subtask("Find answer via search", "find", "Answer visible")]
+        agent = self._mock_agent(nav_results, planner_subtasks=phase2_subtasks,
+                                  summary="The answer is 42")
+
+        result = agent.run("Find the answer", start_url="https://example.com")
+
+        assert result.success is True
+        assert result.steps_taken == 11
+        agent._planner.decompose.assert_called_once()
+        decompose_args = agent._planner.decompose.call_args
+        page_summary_arg = decompose_args[0][1]
+        assert "action_cycle" in page_summary_arg or "Previous attempt" in page_summary_arg
+
+    def test_phase1_partial_data_preserved_in_phase2(self):
+        """Phase 1 stalls with real data. That data appears in Phase 2 completed list."""
+        nav_results = [
+            NavigatorResult("stagnant", "Price: $99", 6, [],
+                            "https://example.com/product",
+                            failure_reason="scroll_limit", last_actions=[]),
+            NavigatorResult("done", "Color: Red", 2, [],
+                            "https://example.com/product/details"),
+        ]
+        phase2_subtasks = [Subtask("Get color", "read", "Color found")]
+        agent = self._mock_agent(nav_results, planner_subtasks=phase2_subtasks,
+                                  summary="Price $99, Color Red")
+
+        result = agent.run("Get price and color", start_url="https://example.com")
+
+        assert result.success is True
+        summarise_args = agent._planner.summarise.call_args[0]
+        completed_list = summarise_args[1]
+        phase1_data = [r.data for _, r in completed_list if r.data == "Price: $99"]
+        assert len(phase1_data) == 1
+
+    def test_step_budget_accounting(self):
+        """Phase 1 uses 12 steps. Phase 2 gets max_steps - 12 = 18."""
+        nav_results = [
+            NavigatorResult("stagnant", "Stopped: dom_stagnant", 12, [],
+                            "https://example.com",
+                            failure_reason="dom_stagnant", last_actions=[]),
+            NavigatorResult("done", "Result found", 5, [],
+                            "https://example.com/result"),
+        ]
+        phase2_subtasks = [Subtask("Try search", "find", "Found")]
+        agent = self._mock_agent(nav_results, planner_subtasks=phase2_subtasks)
+        agent._max_steps = 30
+        agent._flat_budget = 20
+
+        agent.run("Find thing", start_url="https://example.com")
+
+        phase1_call = agent._navigator.execute.call_args_list[0]
+        assert phase1_call.kwargs.get("max_steps") == 20
+
+    def test_phase1_zero_steps_phase2_gets_full_budget(self):
+        """Navigator crashes immediately. Phase 2 gets full budget."""
+        nav_results = [
+            NavigatorResult("failed", "", 0, [],
+                            "", failure_reason="browser_error", last_actions=[]),
+            NavigatorResult("done", "Found it", 8, [],
+                            "https://example.com/result"),
+        ]
+        phase2_subtasks = [Subtask("Navigate directly", "find", "Found")]
+        agent = self._mock_agent(nav_results, planner_subtasks=phase2_subtasks)
+
+        result = agent.run("Find thing", start_url="https://example.com")
+
+        assert result.success is True
+        assert result.steps_taken == 8
+
+    def test_phase2_escalation_works(self):
+        """Phase 2 replans exhausted, escalation fires as before."""
+        from fantoma.resilience.escalation import EscalationChain
+
+        nav_results = [
+            NavigatorResult("stagnant", "Stopped: action_cycle", 10, [],
+                            "https://example.com",
+                            failure_reason="action_cycle", last_actions=[]),
+            NavigatorResult("stagnant", "Stopped: dom_stagnant", 5, [],
+                            "https://example.com",
+                            failure_reason="dom_stagnant", last_actions=[]),
+            NavigatorResult("done", "Found via escalated model", 3, [],
+                            "https://example.com/answer"),
+        ]
+        phase2_subtasks = [Subtask("Search for info", "find", "Info found")]
+        escalated_subtasks = [Subtask("Direct URL approach", "find", "Done")]
+
+        agent = self._mock_agent(nav_results, planner_subtasks=phase2_subtasks)
+        agent.escalation = EscalationChain(
+            endpoints=["http://localhost:8081/v1", "https://openrouter.ai/api/v1"],
+            api_keys=["", "sk-or-test"],
+            models=["auto", "qwen/qwen3.6-plus"],
+        )
+        agent._planner._llm = MagicMock()
+        agent._planner.decompose.side_effect = [phase2_subtasks, escalated_subtasks]
+
+        result = agent.run("Find info", start_url="https://example.com")
+
+        assert result.success is True
+        assert agent.escalation.total_escalations == 1
+
+    def test_phase1_uses_flat_budget_not_max_steps(self):
+        """Phase 1 Navigator gets flat_budget, not max_steps."""
+        nav_results = [
+            NavigatorResult("done", "Found it", 3, [],
+                            "https://example.com/result"),
+        ]
+        agent = self._mock_agent(nav_results)
+        agent._max_steps = 50
+        agent._flat_budget = 15
+
+        agent.run("Find thing", start_url="https://example.com")
+
+        call_kwargs = agent._navigator.execute.call_args.kwargs
+        assert call_kwargs["max_steps"] == 15

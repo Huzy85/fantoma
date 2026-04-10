@@ -169,7 +169,12 @@ class Agent:
         return True
 
     def run(self, task: str, start_url: str = None) -> AgentResult:
-        """Run a browser task described in English."""
+        """Run a browser task described in English.
+
+        Two-phase execution:
+        - Phase 1: flat reactive loop with a single catch-all subtask
+        - Phase 2: hierarchical planner (only if Phase 1 stalls)
+        """
         log.info("Task: %s", task)
         self.fantoma._task = task
 
@@ -189,14 +194,75 @@ class Agent:
         all_steps = []
 
         try:
+            # ── Phase 1: Flat reactive loop ──────────────────────────
+            flat_subtask = Subtask(
+                instruction=task,
+                mode="find",
+                done_when="Task is complete",
+            )
+            tracker = StateTracker()
+            phase1_result = self._navigator.execute(
+                subtask=flat_subtask,
+                fantoma=self.fantoma,
+                llm=self._llm,
+                tracker=tracker,
+                max_steps=self._flat_budget,
+                start_domain=start_domain,
+                sensitive_data=self._sensitive_data,
+            )
+
+            all_steps.extend(phase1_result.steps_detail)
+            total_steps += phase1_result.steps_taken
+
+            # Phase 1 success: skip Phase 2
+            if phase1_result.status == "done" and _has_real_data(phase1_result.data):
+                answer = self._planner.summarise(
+                    task, [(flat_subtask, phase1_result)]
+                )
+                return AgentResult(
+                    success=True,
+                    data=answer,
+                    steps_taken=total_steps,
+                    steps_detail=all_steps,
+                    escalations=self.escalation.total_escalations,
+                )
+
+            # ── Phase 2: Hierarchical fallback ───────────────────────
+            log.info(
+                "Phase 1 ended (%s, %d steps). Entering Phase 2.",
+                phase1_result.status, phase1_result.steps_taken,
+            )
+            phase1_ctx = _build_phase1_context(phase1_result)
+
             self._planner.reset()
+            remaining_budget = self._max_steps - total_steps
+
+            # Build Phase 1 context for the decompose prompt
+            ctx_lines = [
+                f"Previous attempt (flat loop) tried {phase1_ctx['steps_taken']} steps.",
+                f"Visited: {'; '.join(phase1_ctx['visited_urls'][-12:]) or 'none'}",
+                f"Stopped because: {phase1_ctx['failure_reason'] or 'unknown'}",
+                f"Last actions: {'; '.join(phase1_ctx['last_actions'] or []) or 'none'}",
+            ]
             summary = self._get_page_summary()
-            subtasks = self._planner.decompose(task, summary)
-            completed = []      # list of (Subtask, NavigatorResult)
-            checkpoints = []    # list of Checkpoint
-            all_steps = []
-            total_steps = 0
-            remaining_budget = self._max_steps
+            enriched_summary = "\n".join(ctx_lines) + "\n\n" + summary
+
+            subtasks = self._planner.decompose(task, enriched_summary)
+
+            # Seed completed list with Phase 1 partial data if any
+            completed = []
+            if phase1_ctx["partial_data"]:
+                completed.append((flat_subtask, phase1_result))
+
+            # Checkpoint from Phase 1
+            checkpoints = []
+            if phase1_ctx["final_url"]:
+                checkpoints.append(Checkpoint(
+                    url=phase1_ctx["final_url"],
+                    subtask=flat_subtask,
+                    result_summary=(phase1_ctx["partial_data"] or "")[:200],
+                ))
+
             recent_failed_instructions: deque[str] = deque(maxlen=4)
             google_fallback_used = False
 
@@ -233,11 +299,6 @@ class Agent:
                     i += 1
                     continue
 
-                # Stagnation, failure, or budget exhausted -- still save partial
-                # data AND checkpoint the final URL so backtracking after a
-                # replan does not throw away the last known good position.
-                # Without this, a subtask that reached the answer page but
-                # ended stagnant would lose the page on backtrack.
                 if has_real_data:
                     completed.append((subtask, result))
                     if result.final_url:
@@ -247,17 +308,9 @@ class Agent:
                             result_summary=result.data[:200],
                         ))
 
-                # Replan with failure context. Pass the de-duplicated URL
-                # trail so the planner can spot cross-subtask loops — the
-                # StateTracker only sees one subtask at a time, so a loop
-                # that crosses subtask boundaries is invisible to it.
                 visited_urls = _dedup_urls([s.get("url", "") for s in all_steps])
                 summary = self._get_page_summary()
 
-                # Track failed subtask instructions across replans. If the
-                # planner keeps emitting subtasks with >60% token overlap with
-                # what just failed, the replan loop is stuck. Force the Google
-                # search-and-click fallback once and only once per task.
                 recent_failed_instructions.append(subtask.instruction)
                 repeat_count = sum(
                     1 for prev in recent_failed_instructions
@@ -280,9 +333,6 @@ class Agent:
                     visited_urls=visited_urls,
                 )
 
-                # Catch the case where replan returned a new plan but the
-                # first step is a near-duplicate of what just failed. Same
-                # fallback applies.
                 if (new_subtasks
                         and not google_fallback_used
                         and _instruction_similar(new_subtasks[0].instruction, subtask.instruction)):
@@ -294,8 +344,6 @@ class Agent:
                     google_fallback_used = True
 
                 if new_subtasks is None:
-                    # Replans exhausted. Escalate to a stronger model and
-                    # regenerate a fresh plan for the remaining work.
                     if self._escalate_llm():
                         log.info("Replans exhausted, re-decomposing with escalated model")
                         summary = self._get_page_summary()
@@ -308,15 +356,13 @@ class Agent:
                                 pass
                         continue
                     break
-                # Replace remaining subtasks with new plan
                 subtasks = subtasks[:i] + new_subtasks
-                # Backtrack if we have a checkpoint
                 if checkpoints:
                     try:
                         self.fantoma.navigate(checkpoints[-1].url)
                     except Exception:
                         pass
-                continue  # Retry from same index with new subtask
+                continue
 
             answer = self._planner.summarise(task, completed)
             return AgentResult(
