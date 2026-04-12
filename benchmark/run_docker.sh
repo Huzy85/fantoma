@@ -52,7 +52,7 @@ echo "Starting benchmark inside container..."
 docker exec \
     -e OPENAI_API_KEY="$OPENAI_KEY" \
     -e BENCHMARK_LLM_URL="$LLM_URL" \
-    -e BENCHMARK_LLM_API_KEY="$OPENAI_KEY" \
+    -e BENCHMARK_LLM_API_KEY="${BENCHMARK_LLM_API_KEY:-$OPENAI_KEY}" \
     -e BENCHMARK_LLM_MODEL="$LLM_MODEL" \
     -e BENCHMARK_ESCALATION_URLS="$ESC_URLS" \
     -e BENCHMARK_ESCALATION_KEYS="$ESC_KEYS" \
