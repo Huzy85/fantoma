@@ -32,8 +32,8 @@ CAPSOLVER_KEY_VAL="${CAPSOLVER_KEY:-}"
 if [ -z "$CAPSOLVER_KEY_VAL" ] && [ -f "$HOME/.config/capsolver/config.json" ]; then
     CAPSOLVER_KEY_VAL=$(python3 -c "import json; print(json.load(open('$HOME/.config/capsolver/config.json'))['api_key'])" 2>/dev/null || echo "")
 fi
-TG_TOKEN=$(python3 -c "import json; d=json.load(open('~/.nanobot/config.json')); print(d['channels']['telegram']['token'])" 2>/dev/null || echo "")
-TG_CHAT=$(python3 -c "import json; d=json.load(open('~/.nanobot/config.json')); print(d['channels']['telegram']['allowFrom'][0])" 2>/dev/null || echo "")
+TG_TOKEN=$(python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.nanobot/config.json'))); print(d['channels']['telegram']['token'])" 2>/dev/null || echo "")
+TG_CHAT=$(python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.nanobot/config.json'))); print(d['channels']['telegram']['allowFrom'][0])" 2>/dev/null || echo "")
 
 # Default agent LLM to OpenAI GPT-4o when key is available and no explicit override
 LLM_URL="${BENCHMARK_LLM_URL:-}"

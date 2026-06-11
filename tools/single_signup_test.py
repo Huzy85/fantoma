@@ -31,13 +31,13 @@ except Exception:
     CAPSOLVER_KEY = os.environ.get("CAPSOLVER_KEY", "")
 
 EMAIL_TAG = f"test{random.randint(1000, 9999)}"
-BASE_EMAIL = os.environ.get("TEST_EMAIL", "test@example.com")
+BASE_EMAIL = os.environ.get("TEST_EMAIL", "")
 EMAIL = f"{BASE_EMAIL.split('@')[0]}+{EMAIL_TAG}@{BASE_EMAIL.split('@')[1]}"
 IMAP_HOST = os.environ.get("IMAP_HOST", "127.0.0.1")
 IMAP_PORT = int(os.environ.get("IMAP_PORT", "1143"))
 IMAP_PASS = os.environ.get("IMAP_PASS", "")
 USERNAME = f"fantoma_test_{random.randint(10000, 99999)}"
-PASSWORD = os.environ.get("TEST_PASSWORD", "REDACTED")
+PASSWORD = os.environ.get("TEST_PASSWORD", "")
 
 log.info("Email: %s", EMAIL)
 log.info("Username: %s", USERNAME)
@@ -57,7 +57,7 @@ agent = Agent(
     email_imap={
         "host": IMAP_HOST,
         "port": IMAP_PORT,
-        "user": "test@example.com",
+        "user": os.environ.get("TEST_EMAIL", ""),
         "password": IMAP_PASS,
         "security": "starttls",
     },
