@@ -63,8 +63,8 @@ class TestEscalationChain:
     def test_three_tier_chain(self):
         c = EscalationChain(
             endpoints=[
-                "http://localhost:8081/v1",  # Hercules
-                "http://localhost:8082/v1",  # Hermes
+                "http://localhost:8081/v1",  # Hermes via swap-proxy (primary)
+                "http://localhost:8082/v1",  # Apollo (since 2026-04-28 migration; was Hermes bulk)
                 "https://openrouter.ai/api/v1",  # Qwen 3.6 Plus
             ],
             api_keys=["", "", "sk-or-test"],

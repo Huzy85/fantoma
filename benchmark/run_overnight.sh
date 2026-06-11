@@ -15,7 +15,7 @@ echo "=== Overnight benchmark started at $(date) ==="
 
 # Load OPENAI_API_KEY from .bashrc (needed for GPT-4o evaluator)
 set +e
-source ~/.bashrc 2>/dev/null
+source "$HOME/.bashrc" 2>/dev/null
 set -e
 
 if [ -z "${OPENAI_API_KEY:-}" ]; then
@@ -62,8 +62,8 @@ OPENAI_API_KEY="${OPENAI_API_KEY}" \
 echo "=== Overnight benchmark finished at $(date) ==="
 
 # Send Telegram notification
-TG_TOKEN=$(python3 -c "import json; d=json.load(open('~/.nanobot/config.json')); print(d['channels']['telegram']['token'])" 2>/dev/null || echo "")
-TG_CHAT=$(python3 -c "import json; d=json.load(open('~/.nanobot/config.json')); print(d['channels']['telegram']['allowFrom'][0])" 2>/dev/null || echo "")
+TG_TOKEN=$(python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.nanobot/config.json'))); print(d['channels']['telegram']['token'])" 2>/dev/null || echo "")
+TG_CHAT=$(python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.nanobot/config.json'))); print(d['channels']['telegram']['allowFrom'][0])" 2>/dev/null || echo "")
 
 if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
     LATEST=$(ls -t benchmark/results/ 2>/dev/null | head -1)

@@ -23,7 +23,7 @@ app = Flask(__name__)
 # ── Config from environment ──────────────────────────────────
 LOCAL_LLM_URL = os.environ.get("LOCAL_LLM_URL", "http://host.docker.internal:8081/v1")
 LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL", "auto")
-BACKUP_LLM_URL = os.environ.get("BACKUP_LLM_URL", "http://host.docker.internal:8082/v1")
+BACKUP_LLM_URL = os.environ.get("BACKUP_LLM_URL", "http://host.docker.internal:8081/v1")
 BACKUP_LLM_MODEL = os.environ.get("BACKUP_LLM_MODEL", "auto")
 CLOUD_LLM_URL = os.environ.get("CLOUD_LLM_URL", "")
 CLOUD_LLM_KEY = os.environ.get("CLOUD_LLM_KEY", "")
@@ -69,9 +69,15 @@ def start():
     if _fantoma is not None:
         return jsonify({"error": "session active", "url": "unknown"}), 409
 
-    # Reset asyncio event loop — prevents 'Sync API inside asyncio loop' error
-    # after a previous session ends with a stale/running loop (greenlet residue).
-    import asyncio
+    # Kill any lingering Playwright driver and Camoufox binary from a prior session.
+    # Camoufox.__exit__ closes the browser context but does NOT terminate these processes.
+    # They stay alive, so the next sync_playwright().start() finds a running asyncio loop
+    # and throws "Sync API inside asyncio loop". Killing them before each /start ensures
+    # a clean slate. The 1s sleep gives the OS time to reap them before we re-launch.
+    import subprocess, time, asyncio
+    subprocess.run(["pkill", "-f", "playwright/driver/node"], capture_output=True, timeout=5)
+    subprocess.run(["pkill", "-f", "camoufox-bin"], capture_output=True, timeout=5)
+    time.sleep(1)
     try:
         loop = asyncio.get_event_loop()
         if not loop.is_running() and not loop.is_closed():
@@ -82,6 +88,8 @@ def start():
 
     data = request.get_json(force=True) or {}
     defaults = _get_fantoma_defaults()
+    if data.get("profile_dir"):
+        defaults["profile_dir"] = data["profile_dir"]
     _fantoma = Fantoma(**defaults)
 
     try:
@@ -284,7 +292,7 @@ def run_task():
             escalation_keys=escalation_keys,
             escalation_models=escalation_models,
             captcha_api=CAPTCHA_API, captcha_key=CAPTCHA_KEY,
-            proxy=PROXY_URL, headless=HEADLESS_MODE, browser="camoufox",
+            proxy=data.get("proxy", PROXY_URL), headless=HEADLESS_MODE, browser="camoufox",
             max_steps=data.get("max_steps", 50), timeout=data.get("timeout", 300),
             sensitive_data=data.get("sensitive_data"),
         )

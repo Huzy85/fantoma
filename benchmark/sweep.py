@@ -1,6 +1,6 @@
 """Mid-run benchmark sweep — lightweight assessment without GPT-4o cost.
 
-Uses heuristics + optional Hermes LLM (local, port 8082) to estimate pass
+Uses heuristics + optional Hermes LLM (local, swap-proxy port 8081) to estimate pass
 rate while the benchmark is still running. Hermes is best-effort: if it's
 busy or slow, the sweep falls back to heuristics only.
 
@@ -112,7 +112,7 @@ def heuristic_check(result: dict, max_steps: int) -> tuple[bool, str]:
 # Hermes LLM scoring (local, best-effort)
 # ---------------------------------------------------------------------------
 
-HERMES_URL = "http://localhost:8082/v1/chat/completions"
+HERMES_URL = "http://localhost:8081/v1/chat/completions"
 LLM_TIMEOUT = 20  # seconds per call — short so we don't block on busy Hermes
 
 

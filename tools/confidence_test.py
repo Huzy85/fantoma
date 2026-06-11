@@ -34,13 +34,13 @@ try:
 except Exception:
     CAPSOLVER_KEY = os.environ.get("CAPSOLVER_KEY", "")
 
-EMAIL = os.environ.get("TEST_EMAIL", "test@example.com")
+EMAIL = os.environ.get("TEST_EMAIL", "")
 IMAP_HOST = os.environ.get("IMAP_HOST", "127.0.0.1")
 IMAP_PORT = int(os.environ.get("IMAP_PORT", "1143"))
 IMAP_PASS = os.environ.get("IMAP_PASS", "")
 IMAP_SECURITY = os.environ.get("IMAP_SECURITY", "starttls")
 
-PASSWORD = os.environ.get("TEST_PASSWORD", "REDACTED")
+PASSWORD = os.environ.get("TEST_PASSWORD", "")
 LOG_DIR = os.path.expanduser("~/logs")
 TIMEOUT_PER_TEST = 150  # seconds — generous for email polling
 

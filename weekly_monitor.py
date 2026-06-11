@@ -42,8 +42,8 @@ log = logging.getLogger("fantoma.monitor")
 
 
 def detect_llm() -> tuple[str, str]:
-    """Find which LLM is loaded. Checks ports 8080, 8081, and 8082."""
-    for port in [8080, 8081, 8082]:
+    """Find which LLM is loaded. Checks ports 8081, 8082, and 8080."""
+    for port in [8081, 8082, 8080]:
         try:
             req = urllib.request.Request(f"http://localhost:{port}/v1/models")
             with urllib.request.urlopen(req, timeout=5) as resp:

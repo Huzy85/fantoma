@@ -9,8 +9,8 @@ services:
     environment:
       # Local LLM (Hercules on host)
       - LOCAL_LLM_URL=http://host.docker.internal:8081/v1
-      # Backup LLM (Hermes on host)
-      - BACKUP_LLM_URL=http://host.docker.internal:8082/v1
+      # Backup LLM (Hermes via swap-proxy — same pool, redundant entry point)
+      - BACKUP_LLM_URL=http://host.docker.internal:8081/v1
       # Cloud LLM backup (OpenRouter — Qwen 3.6 Plus)
       - CLOUD_LLM_URL=https://openrouter.ai/api/v1
       - CLOUD_LLM_KEY=${OPENROUTER_KEY}

@@ -13,7 +13,7 @@ import sys
 import httpx
 
 API = "http://localhost:7860"
-LLM_URL = "http://host.docker.internal:8082/v1"  # Hermes
+LLM_URL = "http://host.docker.internal:8081/v1"  # Hermes via swap-proxy (single pool since 2026-04-28)
 
 # ── Round 1: 10 sites — basic navigation + content ──────────────
 

@@ -1518,7 +1518,7 @@ Note the final test count for docs.
 
 ### Step 5.5: Update TODO.md
 
-- [ ] Mark Phase 3 as DONE in `~/.claude/projects/-home-user/memory/TODO.md`.
+- [ ] Mark Phase 3 as DONE in `~/.claude/projects/PROJECT/memory/TODO.md`.
 
 ### Step 5.6: Commit docs
 
