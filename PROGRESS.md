@@ -1,5 +1,16 @@
 # Fantoma Development Progress
 
+## Session 22: 2026-06-12 — Deploy Phase 0-3 to TC1
+
+Committed all Phase 0-3 work (32 files, 1,347 insertions, commit 55f8d92). Rebuilt all 3 TC1 containers from clean images. Rollback images tagged `rollback-20260612`.
+
+Live validation:
+- All 3 health endpoints (:7860/:7861/:7862) returned `{"status":"ok"}` immediately
+- HN top story extracted correctly in 7 steps (cold)
+- Same task re-run: 4 steps — action cache fired, nav LLM skipped
+
+Next: validator stage, MCP server, ARIA snapshot diffing. Camoufox→cloverlabs upgrade is a separate task (separate rebuild, needs deliberate timing).
+
 ## Session 21: 2026-06-12 — Phase 3 continued: loop guard + stealth switches
 
 ### Navigation-loop guard (navigator.py)
