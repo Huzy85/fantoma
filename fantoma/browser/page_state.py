@@ -97,21 +97,27 @@ def classify_blocker(page) -> str | None:
     try:
         return page.evaluate("""() => {
             const text = document.body?.innerText?.toLowerCase() || '';
-            const url = location.href.toLowerCase();
+            // Real blocker pages are minimal. Requiring a short page stops the
+            // heuristics from matching the same words inside a long article
+            // ("the challenge of...", a product code "403", a page about login).
+            const short = text.length < 1500;
 
-            // Rate limit / access denied
-            if (/too many requests|rate limit|429|throttl/.test(text) ||
-                /access denied|forbidden|403/.test(text))
-                return 'rate_limit';
-
-            // CAPTCHA challenge
-            if (/captcha|verify you are human|are you a robot|challenge/.test(text) ||
-                document.querySelector('iframe[src*="captcha"], iframe[src*="challenge"]'))
+            // CAPTCHA — a structural challenge iframe, explicit human-check
+            // wording, or the word captcha on an otherwise-empty page.
+            if (document.querySelector('iframe[src*="captcha"], iframe[src*="challenge"], iframe[src*="turnstile"], iframe[src*="hcaptcha"]') ||
+                /verify you are human|are you a robot|i'?m not a robot|complete the captcha/.test(text) ||
+                (short && /captcha/.test(text)))
                 return 'captcha';
 
-            // Login wall
-            if (/(sign|log)\\s*in\\s*(to continue|required|to access)/i.test(text) ||
-                /\\/login|\\/signin|\\/sign-in|\\/auth/.test(url))
+            // Rate limit / access denied — only on a short page.
+            if (short && /too many requests|rate limit|429|throttl|access denied|error 403|http 403|forbidden/.test(text))
+                return 'rate_limit';
+
+            // Login wall — explicit "you must sign in to continue/access",
+            // NOT merely being on a login form (the task may be to log in).
+            if (/(sign|log)\\s*in\\s+(to continue|to view|is required|required)/.test(text) ||
+                /you (must|need to) (sign|log)\\s*in/.test(text) ||
+                /(login|log\\s*in) required/.test(text))
                 return 'login_wall';
 
             return null;

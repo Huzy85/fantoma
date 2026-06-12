@@ -1,5 +1,94 @@
 # Fantoma Development Progress
 
+## Session 21: 2026-06-12 — Phase 3 continued: loop guard + stealth switches
+
+### Navigation-loop guard (navigator.py)
+The flat loop could re-do a login several times — the cycle detector misses 4-action cycles (type, type, click, navigate). Added a per-subtask URL-revisit guard: if the model navigates back to an already-visited page (compared against the LIVE page URL, so a mid-batch click→/secure then navigate→/login is seen as a bounce) twice for the same target, the navigator stops WITHOUT navigating away and extracts from the current (good) page. Live-traced firing on the the-internet login: after 2 cycles, "Navigation loop ... stopping on current page", then DONE on the success page. Hermes is non-deterministic so it won't catch every variant, but the navigate-bounce pattern is now handled. New `TestNavigationLoopGuard`.
+
+### WebRTC/WebGL kill-switches (browser/stealth.py, browser/engine.py)
+Opt-in `FANTOMA_BLOCK_WEBRTC` and `FANTOMA_DISABLE_WEBGL`. For Camoufox: `block_webrtc=True` and the `webgl.disabled` Firefox pref. For the Chromium fallback: `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` and `--disable-webgl`. Off by default (outright blocking can itself be a tell; Camoufox's spoofing is the default). Useful behind a VPN where a WebRTC leak would expose the real IP. New `tests/test_stealth.py`.
+
+Full suite 493 pass (same 22 pre-existing DOM/landmark failures).
+
+### Phase 3 remaining
+Validator stage, MCP server, ARIA snapshot diffing, and the Camoufox→cloverlabs-camoufox upgrade (a package migration + container rebuild + anti-detection re-validation — its own careful pass).
+
+## Session 20: 2026-06-12 — Phase 2: Robustness & Reliability
+
+### Summary
+All eight Phase 2 robustness items from the audit fix plan.
+
+### Fixes
+- **Blocker false-positives** (`browser/page_state.py`) — `classify_blocker` now requires corroboration. A short-page guard (body text < 1500 chars) stops "challenge", "403", or "login" inside a long article from being read as a blocker. CAPTCHA needs a structural iframe or explicit human-check wording; the login-wall trigger requires "you must sign in to continue/access" text, not merely being on a login form or a `/login` URL. Live-validated: the the-internet login task previously bailed Phase 1 in 1 step ("blocked") and got a confused Phase 2 answer; it now stays in Phase 1 and returns the correct "You logged into a secure area!".
+- **Wall-clock deadline** (`agent.py`, `navigator.py`) — `Agent.run(deadline_s=...)`; the navigator checks `time.monotonic()` at the top of each step and returns a `timeout` status. A slow LLM can no longer run for hours within the step budget.
+- **Escalation reset per run** (`agent.py`, `resilience/escalation.py`) — `run()` resets the chain to tier 0 and rebuilds a fresh LLM client each call, so no escalated (cloud) tier or 400-pinned temperature leaks across runs.
+- **Escalation propagates to the browser tool** (`agent.py`) — new `_set_llm()` points the agent, planner, AND `Fantoma._llm` at the escalated client, so `extract()` and the login labeller stop using the model that was just deemed insufficient.
+- **Observer null-body guard** (`browser/observer.py`) — `document.body || document.documentElement`, so the stability gate is not a silent no-op on body-less pages.
+- **Step-budget hard cap** (`agent.py`) — `step_budget = min(remaining_budget, ...)` so subtasks can't overshoot `max_steps`.
+- **IMAP code-extraction** (`browser/email_verify.py`) — labelled/prefixed code patterns tried first; the bare-digit fallback skips currency-adjacent values (prices) and digits inside larger numbers. Brand-match requires a 3+ char brand or falls back to the full domain.
+- **Consent over-removal** (`browser/consent.py`) — dropped the generic `[class*="modal-backdrop"]` (Bootstrap's class for every modal) from the nuclear overlay removal, so legitimate non-consent dialogs survive.
+
+### Tests
+New `TestWallClockDeadline` in `tests/test_navigator.py`. Full suite 488 pass; the 22 pre-existing DOM/landmark failures are unrelated. Blocker fix validated live on a real login page.
+
+### Observed (not in Phase 2 scope)
+With the blocker fix, login tasks now run in Phase 1 but the flat loop can re-do the login several times — the cycle detector misses 4-action cycles (type, type, click, navigate). The task still succeeds with the right answer, but the recorded cache plan is bloated. Candidate for a future navigation-quality pass.
+
+## Session 19: 2026-06-12 — Phase 3: Action-Trace Caching
+
+### Summary
+First Phase 3 feature from the audit fix plan: replay successful task plans with zero navigation LLM calls. This is the biggest single win for weak local models, since a repeated task on a stable site costs no tokens.
+
+### How it works
+- New `fantoma/action_cache.py` — SQLite-backed (`~/.local/share/fantoma/action_cache.db`) store of plans keyed by `(domain, normalized_task)`. Each step is an ARIA-node signature `{action, role, name, value}`, never a brittle index or CSS selector.
+- `navigator.py` captures the successful actions of a run into `NavigatorResult.replay_steps`. The signature and value are taken from the masked params before secret substitution, so a cached `type_text` stores the `<secret:name>` placeholder, never the real credential.
+- `dom/accessibility.py` gained `signature(index)` (capture) and `find_by_signature(role, name)` (replay re-resolution).
+- `agent.py` checks the cache at the start of `run()`. On a hit it replays the actions with no navigation LLM (one extract call at the end for the answer), then re-extracts so dynamic answers stay fresh. If a step's element cannot be resolved (the page changed), replay aborts, the stale plan is invalidated, and the agent falls back to a normal run that re-records. A stale cache therefore costs one normal run, never a wrong action.
+- On by default. Disable with `Agent(action_cache=False)` or `FANTOMA_ACTION_CACHE=0`.
+
+### Scope note
+v1 records Phase 1 (flat-loop) successes only. Phase 2 (hierarchical) plans are not cached yet — they involve replanning and are less stable.
+
+### Tests + validation
+- `tests/test_action_cache.py` (13) and `tests/test_agent_cache.py` (4, including a test that credentials are never cached in plaintext and resolve only at replay). Full suite 487 pass; the 22 pre-existing DOM/landmark failures are unrelated.
+- Live cold-vs-warm through a local Hermes model, both action types:
+  - Non-element (Wikipedia scroll): cold recorded a 2-step plan (56s); warm "Action cache hit — replaying without the navigation LLM", same answer, 25s.
+  - Element actions (the-internet add/remove, a button click): cold recorded `click button "Add Element"` by ARIA signature; warm re-resolved the button by `(role, name)` and replayed the click with no navigation LLM, same answer "Delete". Confirms the index-free signature replay works on a live page.
+
+### Known interaction (Phase 2 target)
+Login-style tasks get pushed into Phase 2 because `classify_blocker` false-positives on page text like "secure"/"login" (audit item 2.4). Since v1 caches Phase 1 only, those tasks don't cache yet and also get a weaker Phase 2 answer. Fixing the blocker false-positive (Phase 2) will widen cache coverage as a side effect.
+
+## Session 18: 2026-06-11/12 — Security Audit + Phase 0/1 Hardening
+
+### Summary
+Full code audit across the orchestration layer (agent, planner, navigator, state tracker, LLM client) and the browser/IO layer (server, engine, captcha, email). The findings were grouped into a phased fix plan anchored to Fantoma's three principles: DOM/ARIA-first, works with the smallest local LLMs, and maximally undetectable. Phase 0 (weak-LLM correctness) and Phase 1 (security) are done and validated on real sites. All changes live in the working tree, not yet committed or deployed.
+
+### Phase 0 — weak-LLM correctness
+Targets the "works with any LLM including 7B models" promise.
+- `navigator.py` parser: an unquoted `TYPE [3] hello` no longer falls through to the catch-all and becomes a wrong CLICK on the field; `DONE` now requires a full-line match (a stray `done_when:` echo no longer ends the subtask early); typed text keeps inner apostrophes; trailing punctuation is stripped from `NAVIGATE` URLs; a malformed `TYPE`/`SELECT` no longer degrades into a CLICK.
+- `llm/client.py`: a malformed 200 response returns `""` (feeding the existing empty-response recovery) instead of raising and killing the run; a stray 400 re-resolves the model before retrying and only pins `temperature=1` when the error body actually mentions temperature.
+- `state_tracker`/`navigator`: stagnation is measured against a fresh per-action DOM snapshot, so a multi-field form fill no longer trips a false `dom_stagnant` on its first round.
+- `agent.py`/`navigator.py`: a structured `is_placeholder` flag stops status lines ("Step budget exhausted", "LLM produced no parseable actions") leaking into results as if they were real answers; the Google-search fallback is exempt from the domain-drift guard so it can actually run.
+- Tests: new `tests/test_llm_client.py` (the module had none) plus parser cases in `tests/test_navigator.py`.
+
+### Phase 1 — security
+- `server.py`: shared-secret gate via a `before_request` hook (`FANTOMA_API_KEY`, `X-API-Key` or Bearer; `/health` stays open; unset logs a warning). `/evaluate` returns 403 unless `FANTOMA_ALLOW_EVAL=1`. The `/start` process kill is skipped while a manual noVNC session is live.
+- `navigator.py`: the step description is built from masked params, so credentials never reach `steps_detail` or the log file.
+- `captcha/orchestrator.py`: the token injection passes both token and field name as bound `page.evaluate` arguments (no string interpolation into the script body).
+- `browser/engine.py`: `ignore_https_errors` is now `FANTOMA_IGNORE_HTTPS_ERRORS`, default off, so TLS is validated by default.
+- `supervisord.conf`: x11vnc is password-protected when `FANTOMA_VNC_PASSWORD` is set.
+- `docker-compose.fantoma.yml`: four new security environment variables.
+- Tests: `TestApiKeyGate` and `TestEvaluateGate` in `tests/test_server.py`.
+
+### Validation
+- Unit suite scoped via `pyproject.toml` (`testpaths = tests`, unit files only). 470 pass; the 22 pre-existing DOM/landmark failures are unrelated and predate this work.
+- Old-vs-new A/B on real sites through a local Hermes model (one slot, sequential, hard per-task timeout): new code 5/5, old code 4/5 (old timed out on a Wikipedia read where new succeeded), zero regressions. Read/extract, form-fill, and credentialled login all green live.
+- Phase 1 validated over HTTP on an isolated authed server: 401 without a key, 403 on `/evaluate`, a real authenticated browser task completed.
+- Email verification validated end-to-end against a live ProtonMail Bridge: a message sent through the bridge SMTP was found and its link extracted by Fantoma's own `check_inbox`. Verified-STARTTLS connects to the bridge with no change needed.
+
+### Deploy notes
+When deploying, set `FANTOMA_API_KEY` and `FANTOMA_VNC_PASSWORD` and update any LAN callers to send the `X-API-Key` header. TLS validation is now on by default; set `FANTOMA_IGNORE_HTTPS_ERRORS=1` only for sites with known bad certificates.
+
 ## Session 17: 2026-04-09 — Infrastructure Hardening + Extraction Path Rewrite
 
 ### Summary

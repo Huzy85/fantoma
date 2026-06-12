@@ -1,9 +1,84 @@
 # tests/test_navigator.py
+import time
 import pytest
 from unittest.mock import MagicMock, PropertyMock, patch
 from fantoma.navigator import Navigator, NavigatorResult, _parse_actions, MODE_MAP
 from fantoma.planner import Subtask
 from fantoma.state_tracker import StateTracker
+
+
+class TestNavigationLoopGuard:
+    """Phase 3 — stop re-bouncing to an already-visited page (e.g. re-doing a login)."""
+
+    def test_repeated_bounce_back_stops(self):
+        nav = Navigator()
+        subtask = Subtask("do the thing", "find", "done")
+        state = {"url": "https://site.com/a"}
+
+        page = MagicMock()
+        type(page).url = PropertyMock(side_effect=lambda: state["url"])
+        page.title.return_value = "T"
+        page.inner_text.return_value = "body content here"
+
+        fantoma = MagicMock()
+        fantoma._engine.get_page.return_value = page
+        fantoma._dom.extract.return_value = "[0] link 'x'"
+        fantoma._dom.extract_content.return_value = "content"
+        fantoma._dom.signature.return_value = None
+
+        def navigate(url=None):
+            state["url"] = url
+            return {"success": True, "state": {"url": url}}
+        fantoma.navigate.side_effect = navigate
+
+        llm = MagicMock()
+        # bounce a -> b -> a -> b -> a ; the 2nd navigate back to /a trips the guard
+        llm.chat.side_effect = [
+            "NAVIGATE https://site.com/b",
+            "NAVIGATE https://site.com/a",
+            "NAVIGATE https://site.com/b",
+            "NAVIGATE https://site.com/a",
+            "extracted answer",  # _extract_answer call after the guard fires
+        ]
+        tracker = StateTracker()
+
+        with patch("fantoma.navigator.collect_mutations", return_value={"added": [], "removed": [], "changed_attrs": [], "text_changes": []}):
+            with patch("fantoma.navigator.format_mutations", return_value=""):
+                with patch("fantoma.navigator.classify_blocker", return_value=None):
+                    result = nav.execute(subtask, fantoma, llm, tracker, max_steps=10)
+
+        assert result.failure_reason == "navigation_loop"
+        # The 4th navigate (2nd bounce to /a) was blocked, so navigate ran only 3x
+        assert fantoma.navigate.call_count == 3
+
+
+class TestWallClockDeadline:
+    """Phase 2 — a slow LLM must not blow the time budget within the step budget."""
+
+    def test_past_deadline_returns_timeout_without_navigating(self):
+        nav = Navigator()
+        subtask = Subtask("do the thing", "find", "done")
+        fantoma = MagicMock()
+        page = MagicMock()
+        page.url = "https://example.com"
+        page.title.return_value = "Example"
+        page.inner_text.return_value = "page body content"
+        fantoma._engine.get_page.return_value = page
+        fantoma._dom.extract.return_value = "[0] button 'Go'"
+        fantoma._dom.extract_content.return_value = "content"
+        llm = MagicMock()
+        llm.chat.return_value = "extracted answer"
+        tracker = StateTracker()
+
+        with patch("fantoma.navigator.classify_blocker", return_value=None):
+            result = nav.execute(subtask, fantoma, llm, tracker, max_steps=10,
+                                 deadline=time.monotonic() - 1)
+
+        assert result.status == "timeout"
+        assert result.failure_reason == "timeout"
+        # No navigation action was dispatched (deadline hit before the LLM loop)
+        fantoma.click.assert_not_called()
+        fantoma.type_text.assert_not_called()
 
 
 class TestParseActions:
@@ -66,6 +141,37 @@ class TestParseActions:
     def test_empty_returns_empty(self):
         assert _parse_actions("") == []
         assert _parse_actions(None) == []
+
+    # --- Phase 0 weak-LLM parser hardening ---
+
+    def test_type_unquoted_is_a_type_not_a_click(self):
+        """Weak models drop the quotes. Must still parse as TYPE, never a
+        wrong CLICK on the input via the [N] catch-all."""
+        result = _parse_actions("TYPE [3] hello world")
+        assert result == [("type_text", {"element_id": 3, "text": "hello world"})]
+
+    def test_type_preserves_apostrophe(self):
+        """Quoted text with an inner apostrophe must not truncate at the
+        first quote character."""
+        result = _parse_actions("TYPE [5] \"it's here\"")
+        assert result == [("type_text", {"element_id": 5, "text": "it's here"})]
+
+    def test_done_requires_full_match(self):
+        """A line that merely starts with 'done' (e.g. the prompt's own
+        done_when: field echoed back) must NOT terminate the subtask."""
+        assert _parse_actions("done_when: the page shows results") == []
+
+    def test_done_allows_trailing_punctuation(self):
+        assert _parse_actions("DONE.") == [("done", {})]
+        assert _parse_actions("done") == [("done", {})]
+
+    def test_navigate_strips_trailing_punctuation(self):
+        result = _parse_actions("NAVIGATE https://example.com.")
+        assert result == [("navigate", {"url": "https://example.com"})]
+
+    def test_malformed_type_does_not_become_click(self):
+        """TYPE with no text must not degrade into a CLICK on the field."""
+        assert _parse_actions("TYPE [4]") == []
 
 
 class TestModeMap:

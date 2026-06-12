@@ -13,6 +13,7 @@ class Subtask:
     instruction: str
     mode: str       # "interact" | "read" | "find"
     done_when: str
+    allow_cross_domain: bool = False  # orchestrator-injected fallbacks may leave the start domain
 
 
 @dataclass

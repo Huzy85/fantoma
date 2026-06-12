@@ -50,6 +50,7 @@ fantoma test         # Verify it works
 - **ARIA + raw DOM** — always reads both. No form is invisible, even old-school HTML without ARIA labels.
 - **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
+- **Action caching (zero-LLM replay)** — a successful task plan is recorded as ARIA-node signatures `(role, name, value)` keyed by `(domain, task)`. Repeat the same task and Fantoma replays the actions with no navigation LLM calls, then re-extracts the answer (so dynamic results stay current). If the page changed and a step can't be resolved, replay falls back to a normal run and re-records. The biggest win for weak local models: a repeated task on a stable site costs ~zero tokens. On by default; disable with `Agent(action_cache=False)` or `FANTOMA_ACTION_CACHE=0`. Cached `type_text` values keep the `<secret:name>` placeholder, never the real credential.
 - **Flat-first agent (v0.9)** — Two-phase execution. Phase 1 runs a flat reactive loop (20 steps by default) that handles 70-80% of tasks without any planning overhead. Phase 2 activates the hierarchical planner only if Phase 1 stalls, receiving full context (visited URLs, partial data, failure reason) so it doesn't repeat what was already tried. Simple tasks complete in Phase 1 alone. Complex tasks get the full planner treatment with the remaining step budget.
 - **Hierarchical fallback (v0.8 core)** — Planner decomposes the task into typed subtasks, Navigator executes each one, StateTracker watches for stagnation and loops. Failure-typed replan guidance: each navigator failure carries a reason (`stagnation`, `loop`, `domain_drift`, `rate_limit`, `login_wall`, `captcha`, `llm_empty`) and the planner gets targeted recovery instructions.
 - **Search-first navigation policy (v0.8)** — Planner step 1 must either NAVIGATE to a known URL or NAVIGATE to a Google search. Scrolling a landing page is banned. Navigator must press Enter or click submit on any typed field before saying DONE, and may not say DONE on a search results page when the task targets a specific resource.
@@ -58,7 +59,7 @@ fantoma test         # Verify it works
 - **Empty-response bail-out** — If the LLM returns no parseable actions for 2 consecutive steps, the Navigator bails with `failure_reason="llm_empty"` instead of silently burning the step budget. Triggers escalation through the normal replan path.
 - **Multi-API compatible** — JSON mode (`response_format`) only sent to local endpoints. Cloud APIs (OpenRouter, OpenAI, Anthropic) work without 400 errors.
 - **Sequential session safety** — after each browser session closes, the asyncio "running loop" pointer is cleared so the next session starts clean. Prevents "Event loop is closed" errors when running many tests back-to-back. The Docker server resets the event loop before each `/start` to handle stale greenlet residue.
-- **SSL tolerance** — browser contexts are created with `ignore_https_errors=True`, so self-signed certs, expired certs, and HTTPS misconfigurations on target sites don't block navigation.
+- **TLS validation** — certificate validation is on by default. Set `FANTOMA_IGNORE_HTTPS_ERRORS=1` to tolerate self-signed or expired certs on target sites.
 - **Playwright traces** — `Agent(trace=True)` records full debug sessions
 - **Fingerprint self-test** — `fantoma test fingerprint` runs 7 in-browser checks
 - **Chromium fallback** — `Agent(browser="chromium")` via [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) for sites that block Firefox
@@ -335,6 +336,19 @@ docker compose -f docker-compose.fantoma.yml up -d
 | /manual/screenshot | GET | Screenshot of the manual session |
 | /manual/close | POST | Close manual session (cookies saved to profile) |
 | /manual/status | GET | Check if a manual session is active |
+
+### Security
+
+The HTTP API and noVNC ship without authentication by default, so secure them before exposing the container beyond localhost. The browser keeps logged-in sessions in a persistent profile, which means a reachable, unauthenticated API can read cookies and act as the logged-in user. All controls are environment variables (wired in `docker-compose.fantoma.yml`):
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `FANTOMA_API_KEY` | unset (open) | When set, every endpoint except `/health` requires it via `X-API-Key: <key>` or `Authorization: Bearer <key>`. Unset logs a warning at startup. |
+| `FANTOMA_VNC_PASSWORD` | unset (open) | Password-protects the noVNC display on port 6080. |
+| `FANTOMA_ALLOW_EVAL` | `0` (off) | `/evaluate` runs arbitrary JS in the page (a cookie and token theft surface). Returns 403 unless set to `1`. |
+| `FANTOMA_IGNORE_HTTPS_ERRORS` | `0` (off) | TLS certificate validation stays on by default. Set to `1` only for sites with known bad certificates. |
+
+On any shared network, set `FANTOMA_API_KEY` and `FANTOMA_VNC_PASSWORD`. Credentials passed via `sensitive_data` are masked in the ARIA tree sent to the LLM and in step logs; the real value is substituted only at execution time.
 
 <!-- BENCHMARK:START -->
 ## WebVoyager Benchmark (v0.8, GPT-4o)

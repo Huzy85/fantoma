@@ -3,6 +3,7 @@
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -25,6 +26,8 @@ class NavigatorResult:
     final_url: str
     failure_reason: str = ""    # "scroll_limit" | "action_cycle" | "dom_stagnant" | "rate_limit" | "login_wall" | "captcha" | "domain_drift" | "llm_empty"
     last_actions: list = None   # last 5 actions before stop
+    is_placeholder: bool = False  # True when `data` is a synthetic status line, not real extracted content
+    replay_steps: list = None   # successful actions as {action, role, name, value} for the action cache (None = not cacheable)
 
 
 NAVIGATOR_SYSTEM = """\
@@ -79,6 +82,12 @@ Rules:
 """
 
 
+def _norm_url(url: str) -> str:
+    """Strip fragment, query, and trailing slash for revisit comparison."""
+    u = (url or "").split("#")[0].split("?")[0].rstrip("/")
+    return u.lower()
+
+
 def _parse_actions(raw: str) -> list[tuple[str, dict]]:
     """Parse LLM response into (action_type, params) tuples."""
     results = []
@@ -94,7 +103,19 @@ def _parse_actions(raw: str) -> list[tuple[str, dict]]:
                 break
             continue
 
-        m = re.match(r'TYPE\s*\[?(\d+)\]?\s*["\'](.+?)["\']', line, re.IGNORECASE)
+        # Quoted TYPE — match the closing quote to the opener so apostrophes
+        # inside the text (it's, O'Brien) are not truncated at the first quote.
+        m = re.match(r'TYPE\s*\[?(\d+)\]?\s*(["\'])(.+?)\2\s*$', line, re.IGNORECASE)
+        if m:
+            results.append(("type_text", {"element_id": int(m.group(1)), "text": m.group(3)}))
+            if len(results) >= 5:
+                break
+            continue
+
+        # Unquoted TYPE — weak models routinely omit the quotes. Without this
+        # the line falls through to the [N] catch-all and becomes a wrong CLICK
+        # on the input field, corrupting the trajectory while looking successful.
+        m = re.match(r'TYPE\s*\[?(\d+)\]?\s+(.+?)\s*$', line, re.IGNORECASE)
         if m:
             results.append(("type_text", {"element_id": int(m.group(1)), "text": m.group(2)}))
             if len(results) >= 5:
@@ -117,7 +138,9 @@ def _parse_actions(raw: str) -> list[tuple[str, dict]]:
 
         m = re.match(r'NAVIGATE\s+["\']?(https?://\S+?)["\']?\s*$', line, re.IGNORECASE)
         if m:
-            results.append(("navigate", {"url": m.group(1)}))
+            # Strip trailing sentence punctuation the model may append.
+            url = m.group(1).rstrip('.,;)]')
+            results.append(("navigate", {"url": url}))
             break
 
         if re.match(r'BACK\b', line, re.IGNORECASE):
@@ -131,9 +154,18 @@ def _parse_actions(raw: str) -> list[tuple[str, dict]]:
                 break
             continue
 
-        if re.match(r'DONE', line, re.IGNORECASE):
+        # Full-match only (optional trailing . or !). A prefix match fired on
+        # any line starting with "done" — including the prompt's own
+        # "done_when:" field echoed back by a weak model — ending the subtask
+        # prematurely and triggering a wrong answer extraction.
+        if re.fullmatch(r'DONE[.!]?', line, re.IGNORECASE):
             results.append(("done", {}))
             break
+
+        # A malformed TYPE/SELECT line must not degrade into a CLICK on the
+        # field via the catch-all below.
+        if re.match(r'(TYPE|SELECT)\b', line, re.IGNORECASE):
+            continue
 
         m = re.search(r'\[(\d+)\]', line)
         if m:
@@ -156,17 +188,44 @@ class Navigator:
         max_steps: int = 15,
         start_domain: str = "",
         sensitive_data: dict = None,
+        deadline: float = None,
     ) -> NavigatorResult:
         steps_detail = []
         sensitive_data = sensitive_data or {}
         dom_mode = MODE_MAP.get(subtask.mode, "navigate")
+        # Orchestrator-injected fallback subtasks (the Google search escape
+        # hatch) legitimately leave the start domain. Disable drift detection
+        # for them — otherwise their first NAVIGATE to google.com trips the
+        # guard and the fallback is consumed without ever running.
+        if getattr(subtask, "allow_cross_domain", False):
+            start_domain = ""
         change_line = "First step"
         last_content = ""
+        replay_steps = []     # successful actions captured for the action cache
+        replay_ok = True      # cleared if an element action has no resolvable signature
         empty_streak = 0  # consecutive empty/unparseable LLM responses
+        visited_urls = set()       # pages seen this subtask
+        nav_loop_targets = {}      # how often we've bounced back to an already-seen URL
 
         for step_num in range(1, max_steps + 1):
+            # Wall-clock guard — a slow LLM can blow the time budget long before
+            # the step budget. Stop and extract whatever the page has.
+            if deadline and time.monotonic() > deadline:
+                log.info("Wall-clock deadline exceeded at step %d", step_num)
+                data = self._extract_answer(subtask, fantoma, llm)
+                return NavigatorResult(
+                    status="timeout", data=data or "Deadline exceeded",
+                    steps_taken=step_num, steps_detail=steps_detail,
+                    final_url=fantoma._engine.get_page().url,
+                    failure_reason="timeout",
+                    last_actions=[s["action"] for s in steps_detail[-5:]],
+                    is_placeholder=not bool(data),
+                    replay_steps=replay_steps if replay_ok else None,
+                )
+
             page = fantoma._engine.get_page()
             current_url = page.url
+            visited_urls.add(_norm_url(current_url))
 
             # Get filtered DOM
             aria = fantoma._dom.extract(page, task=subtask.instruction, mode=dom_mode)
@@ -209,6 +268,7 @@ class Navigator:
                         final_url=current_url,
                         failure_reason="llm_empty",
                         last_actions=[s["action"] for s in steps_detail[-5:]],
+                        is_placeholder=True,
                     )
                 continue
             empty_streak = 0
@@ -219,14 +279,57 @@ class Navigator:
                     return NavigatorResult(
                         status="done", data=data, steps_taken=step_num,
                         steps_detail=steps_detail, final_url=current_url,
+                        replay_steps=replay_steps if replay_ok else None,
                     )
+
+                # Navigation-loop guard: if the model keeps bouncing back to a
+                # page it already left (e.g. re-doing a login it already
+                # completed), stop here WITHOUT navigating away — the current
+                # page is the likely goal — and extract from it.
+                if action_type == "navigate":
+                    target = _norm_url(params.get("url", ""))
+                    live_url = _norm_url(fantoma._engine.get_page().url)
+                    if target and target in visited_urls and target != live_url:
+                        nav_loop_targets[target] = nav_loop_targets.get(target, 0) + 1
+                        if nav_loop_targets[target] >= 2:
+                            log.info("Navigation loop to %s — stopping on current page", target)
+                            data = self._extract_answer(subtask, fantoma, llm)
+                            tail = [s["action"] for s in steps_detail[-5:]]
+                            return NavigatorResult(
+                                status="stagnant", data=data or "Navigation loop",
+                                steps_taken=step_num, steps_detail=steps_detail,
+                                final_url=fantoma._engine.get_page().url,
+                                failure_reason="navigation_loop", last_actions=tail,
+                                is_placeholder=not bool(data),
+                                replay_steps=replay_steps if replay_ok else None,
+                            )
+
+                # Build the trace/log description from the MASKED params, before
+                # re-substituting real secrets — so passwords and 2FA codes never
+                # reach steps_detail or the log file (params still holds the
+                # <secret:name> placeholders at this point).
+                action_desc = f"{action_type}({params})"
+
+                # Capture a replayable signature + masked value BEFORE secret
+                # substitution, so cached plans store the <secret:name>
+                # placeholder, never the real credential.
+                replay_sig = None
+                if "element_id" in params:
+                    try:
+                        replay_sig = fantoma._dom.signature(params["element_id"])
+                    except Exception:
+                        replay_sig = None
+                replay_value = (
+                    params.get("text") or params.get("value")
+                    or params.get("direction") or params.get("key")
+                    or params.get("url")
+                )
 
                 for name, value in sensitive_data.items():
                     if "text" in params:
                         params["text"] = params["text"].replace(f"<secret:{name}>", value)
 
                 method = getattr(fantoma, action_type)
-                action_desc = f"{action_type}({params})"
                 try:
                     result = method(**params)
                     outcome = "OK" if result["success"] else "FAILED"
@@ -241,6 +344,20 @@ class Navigator:
                     "url": fantoma._engine.get_page().url,
                 })
 
+                # Capture the successful action for the cache. An element action
+                # without a resolvable (role, name) can't be replayed safely, so
+                # the whole plan is marked non-cacheable.
+                if result.get("success", False):
+                    needs_sig = "element_id" in params
+                    valid_sig = isinstance(replay_sig, (tuple, list)) and len(replay_sig) == 2
+                    if needs_sig and not valid_sig:
+                        replay_ok = False
+                    else:
+                        rs = {"action": action_type, "role": "", "name": "", "value": replay_value}
+                        if valid_sig:
+                            rs["role"], rs["name"] = replay_sig
+                        replay_steps.append(rs)
+
                 # Collect mutations immediately after action
                 try:
                     mutations = collect_mutations(fantoma._engine.get_page())
@@ -250,11 +367,22 @@ class Navigator:
                 except Exception:
                     change_line = "No changes detected"
 
-                # Update state tracker
+                # Update state tracker with the POST-action DOM content, not
+                # the stale once-per-round snapshot. Using last_content here
+                # made a multi-action batch (TYPE, TYPE, TYPE on a form — the
+                # exact pattern the prompt recommends) write three identical
+                # fingerprints and trip a false "dom_stagnant" abort on the
+                # subtask's very first round.
                 post_action_url = fantoma._engine.get_page().url
+                try:
+                    post_content = fantoma._dom.extract_content(
+                        fantoma._engine.get_page()
+                    )[:800]
+                except Exception:
+                    post_content = last_content
                 tracker.add(
                     post_action_url,
-                    last_content,
+                    post_content,
                     f"{action_desc} -> {outcome}",
                 )
 
@@ -270,6 +398,7 @@ class Navigator:
                         steps_taken=step_num, steps_detail=steps_detail,
                         final_url=post_action_url,
                         failure_reason="domain_drift", last_actions=tail,
+                        is_placeholder=True,
                     )
 
                 if not result.get("success", False):
@@ -290,6 +419,7 @@ class Navigator:
                     steps_taken=step_num, steps_detail=steps_detail,
                     final_url=fantoma._engine.get_page().url,
                     failure_reason=blocker, last_actions=tail,
+                    is_placeholder=not bool(data),
                 )
 
             # Check stagnation
@@ -302,6 +432,7 @@ class Navigator:
                     steps_taken=step_num, steps_detail=steps_detail,
                     final_url=fantoma._engine.get_page().url,
                     failure_reason=reason, last_actions=tail,
+                    is_placeholder=not bool(data),
                 )
 
             # Check domain drift
@@ -313,6 +444,7 @@ class Navigator:
                     steps_taken=step_num, steps_detail=steps_detail,
                     final_url=current_url,
                     failure_reason="domain_drift", last_actions=tail,
+                    is_placeholder=True,
                 )
 
         # Extract whatever is on the page before giving up
@@ -323,6 +455,7 @@ class Navigator:
             steps_taken=max_steps, steps_detail=steps_detail,
             final_url=fantoma._engine.get_page().url,
             failure_reason="max_steps", last_actions=tail,
+            is_placeholder=not bool(data),
         )
 
     def _extract_answer(self, subtask: Subtask, fantoma, llm) -> str:

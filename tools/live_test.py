@@ -161,8 +161,11 @@ def random_username():
     return f"fantoma_test_{random.randint(10000, 99999)}"
 
 def random_email():
-    tag = f"test{random.randint(1000, 9999)}"
-    return f"m5aibot+{tag}@proton.me"
+    base = os.environ.get("TEST_EMAIL", "")
+    user, sep, domain = base.partition("@")
+    if not sep:
+        return ""
+    return f"{user}+test{random.randint(1000, 9999)}@{domain}"
 
 def kill_stale_browsers():
     """Kill any leftover browser processes between tests."""

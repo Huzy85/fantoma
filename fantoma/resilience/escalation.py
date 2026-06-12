@@ -66,7 +66,8 @@ class EscalationChain:
         return endpoint
 
     def reset(self):
-        """Reset to the first (cheapest) model."""
+        """Reset to the first (cheapest) model. The lifetime escalation counter
+        is left intact for telemetry."""
         self._current_index = 0
 
     def can_escalate(self) -> bool:

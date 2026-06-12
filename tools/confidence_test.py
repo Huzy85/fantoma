@@ -141,7 +141,11 @@ def make_agent(timeout=120):
 
 
 def random_email():
-    return f"m5aibot+conf{random.randint(1000, 9999)}@proton.me"
+    base = os.environ.get("TEST_EMAIL", "")
+    user, sep, domain = base.partition("@")
+    if not sep:
+        return ""
+    return f"{user}+test{random.randint(1000, 9999)}@{domain}"
 
 def random_username():
     return f"fantoma_conf_{random.randint(10000, 99999)}"
@@ -256,7 +260,7 @@ TESTS = [
         "url": "https://dashboard.render.com/login",
         "run": lambda a: a.login(
             "https://dashboard.render.com/login",
-            email="m5aibot+test5182@proton.me",
+            email=random_email(),
             password=PASSWORD,
         ),
     },

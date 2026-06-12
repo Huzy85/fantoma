@@ -4,12 +4,15 @@ Provides run() — describe a task in English, the agent does it.
 Delegates all browser operations to the Fantoma tool class.
 """
 import logging
+import os
 import re
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote_plus, urlparse
 
+from fantoma.action_cache import ActionCache
 from fantoma.browser_tool import Fantoma
 from fantoma.llm.client import LLMClient
 from fantoma.resilience.escalation import EscalationChain
@@ -70,23 +73,43 @@ def _google_fallback_subtasks(task: str) -> list[Subtask]:
             ),
             mode="find",
             done_when="Landed on a page that is relevant to the task (not a search results page).",
+            allow_cross_domain=True,
         ),
         Subtask(
             instruction="Read the page content and extract every value the user asked for.",
             mode="read",
             done_when="The asked-for values are visible in the gathered data.",
+            allow_cross_domain=True,
         ),
     ]
 
 
+_PLACEHOLDER_PREFIXES = (
+    "Stopped:",
+    "Domain drift",
+    "Blocked:",
+    "LLM produced no parseable actions",
+    "Step budget exhausted",
+)
+
+
 def _has_real_data(data: str | None) -> bool:
     """True if data contains a real answer, not a placeholder status line."""
-    return bool(
-        data
-        and not data.startswith("Stopped:")
-        and not data.startswith("Domain drift")
-        and not data.startswith("Blocked:")
-    )
+    return bool(data and not data.startswith(_PLACEHOLDER_PREFIXES))
+
+
+def _result_has_real_data(result: "NavigatorResult") -> bool:
+    """True if a navigator result carries real extracted content.
+
+    Prefers the structured is_placeholder flag over string sniffing; falls
+    back to the prefix check for safety. Without this, placeholder status
+    lines ("Step budget exhausted", "LLM produced no parseable actions")
+    leaked into `completed` and were fed to the summariser as if they were
+    real gathered facts.
+    """
+    if getattr(result, "is_placeholder", False):
+        return False
+    return _has_real_data(result.data)
 
 
 def _build_phase1_context(result: NavigatorResult) -> dict:
@@ -94,7 +117,7 @@ def _build_phase1_context(result: NavigatorResult) -> dict:
     return {
         "visited_urls": [s.get("url", "") for s in result.steps_detail if s.get("url")],
         "steps_taken": result.steps_taken,
-        "partial_data": result.data if _has_real_data(result.data) else None,
+        "partial_data": result.data if _result_has_real_data(result) else None,
         "final_url": result.final_url,
         "failure_reason": result.failure_reason,
         "last_actions": result.last_actions,
@@ -132,6 +155,7 @@ class Agent:
         max_steps: int = 50,
         flat_budget: int = 20,
         sensitive_data: dict = None,
+        action_cache: bool = True,
         **kwargs,
     ):
         self.fantoma = Fantoma(llm_url=llm_url, api_key=api_key, model=model, **kwargs)
@@ -143,9 +167,76 @@ class Agent:
         keys = escalation_keys or [api_key] + [""] * (len(endpoints) - 1)
         models = escalation_models or [model] + ["auto"] * (len(endpoints) - 1)
         self.escalation = EscalationChain(endpoints, keys, models)
-        self._llm = LLMClient(base_url=llm_url, api_key=api_key, model=model)
+        # Tier-0 params, rebuilt fresh each run() so no escalated tier or
+        # 400-pinned temperature leaks across runs.
+        self._base_llm = {"base_url": llm_url, "api_key": api_key, "model": model}
+        self._llm = LLMClient(**self._base_llm)
         self._planner = Planner(self._llm)
         self._navigator = Navigator()
+        # Action-trace cache — replay known task plans with zero navigation LLM
+        # calls. Env override: FANTOMA_ACTION_CACHE=0 disables globally.
+        cache_on = action_cache and os.environ.get("FANTOMA_ACTION_CACHE", "1").lower() not in ("0", "false", "no")
+        self._action_cache = ActionCache(enabled=cache_on)
+
+    def _set_llm(self, llm: "LLMClient") -> None:
+        """Point the agent, planner, and browser tool at one LLM client.
+
+        The browser tool (extract, form-login labeller) must follow escalation
+        too — otherwise it keeps using the weak model that was just deemed
+        insufficient.
+        """
+        self._llm = llm
+        self._planner._llm = llm
+        try:
+            self.fantoma._llm = llm
+        except Exception:
+            pass
+
+    def _sub_secrets(self, text: str) -> str:
+        """Substitute <secret:name> placeholders with real sensitive values."""
+        for name, value in self._sensitive_data.items():
+            text = text.replace(f"<secret:{name}>", value)
+        return text
+
+    def _replay_steps(self, steps: list, start_url: str) -> bool:
+        """Replay a cached plan with no navigation LLM calls.
+
+        Returns False on the first unresolved element or failed action, so the
+        caller can invalidate the cache and fall back to a full run. A stale
+        cache therefore costs one normal run, never a wrong action.
+        """
+        try:
+            if start_url:
+                self.fantoma.navigate(start_url)
+            for st in steps:
+                act = st.get("action")
+                if act == "navigate":
+                    r = self.fantoma.navigate(st.get("value"))
+                elif act == "go_back":
+                    r = self.fantoma.go_back()
+                elif act == "scroll":
+                    r = self.fantoma.scroll(st.get("value") or "down")
+                elif act == "press_key":
+                    r = self.fantoma.press_key(st.get("value") or "Enter")
+                elif act in ("click", "type_text", "select"):
+                    self.fantoma.get_state()  # refresh the interactive element list
+                    idx = self.fantoma._dom.find_by_signature(st.get("role", ""), st.get("name", ""))
+                    if idx is None:
+                        return False
+                    if act == "click":
+                        r = self.fantoma.click(idx)
+                    elif act == "type_text":
+                        r = self.fantoma.type_text(idx, self._sub_secrets(st.get("value") or ""))
+                    else:
+                        r = self.fantoma.select(idx, st.get("value") or "")
+                else:
+                    return False
+                if not r.get("success", False):
+                    return False
+            return True
+        except Exception as e:
+            log.warning("Replay error: %s", e)
+            return False
 
     def _escalate_llm(self) -> bool:
         """Try escalating to the next tier in the chain.
@@ -162,21 +253,34 @@ class Agent:
         new_key = self.escalation.current_api_key()
         new_model = self.escalation.current_model()
         log.info("Escalating LLM to %s (model=%s)", new_endpoint, new_model)
-        self._llm = LLMClient(base_url=new_endpoint, api_key=new_key, model=new_model)
-        self._planner._llm = self._llm
+        self._set_llm(LLMClient(base_url=new_endpoint, api_key=new_key, model=new_model))
         # Fresh replan budget on the stronger model
         self._planner.reset()
         return True
 
-    def run(self, task: str, start_url: str = None) -> AgentResult:
+    def run(self, task: str, start_url: str = None, deadline_s: float = None) -> AgentResult:
         """Run a browser task described in English.
 
         Two-phase execution:
         - Phase 1: flat reactive loop with a single catch-all subtask
         - Phase 2: hierarchical planner (only if Phase 1 stalls)
+
+        deadline_s: optional wall-clock budget. The navigator stops and returns
+        a "timeout" status once it is exceeded, so a slow LLM can't run for hours
+        even within the step budget.
         """
         log.info("Task: %s", task)
         self.fantoma._task = task
+
+        # Reset escalation to tier 0 and rebuild a fresh LLM client for this run,
+        # so no escalated (expensive) tier or 400-pinned temperature carries over.
+        # (getattr guard tolerates partially-constructed test agents.)
+        base = getattr(self, "_base_llm", None)
+        if base:
+            self.escalation.reset()
+            self._set_llm(LLMClient(**base))
+
+        deadline = (time.monotonic() + deadline_s) if deadline_s else None
 
         start_domain = ""
         if start_url:
@@ -193,7 +297,26 @@ class Agent:
         total_steps = 0
         all_steps = []
 
+        # Tolerate a partially-constructed Agent (tests build via __new__).
+        cache = getattr(self, "_action_cache", None)
+
         try:
+            # ── Action cache: replay a known plan with zero navigation LLM ──
+            cached = cache.lookup(start_domain, task) if (cache and start_domain) else None
+            if cached:
+                log.info("Action cache hit (%d steps) — replaying without the navigation LLM", len(cached))
+                if self._replay_steps(cached, start_url):
+                    answer = self._navigator._extract_answer(
+                        Subtask(task, "read", "Task complete"), self.fantoma, self._llm
+                    )
+                    cache.mark_used(start_domain, task)
+                    return AgentResult(
+                        success=True, data=answer, steps_taken=len(cached),
+                        steps_detail=all_steps, escalations=0,
+                    )
+                log.info("Replay failed (page changed) — invalidating cache, full run")
+                cache.invalidate(start_domain, task)
+
             # ── Phase 1: Flat reactive loop ──────────────────────────
             flat_subtask = Subtask(
                 instruction=task,
@@ -209,13 +332,22 @@ class Agent:
                 max_steps=self._flat_budget,
                 start_domain=start_domain,
                 sensitive_data=self._sensitive_data,
+                deadline=deadline,
             )
 
             all_steps.extend(phase1_result.steps_detail)
             total_steps += phase1_result.steps_taken
 
             # Phase 1 success: skip Phase 2
-            if phase1_result.status == "done" and _has_real_data(phase1_result.data):
+            if phase1_result.status == "done" and _result_has_real_data(phase1_result):
+                # Cache the successful plan for zero-LLM replay next time.
+                if cache and start_domain:
+                    rs = phase1_result.replay_steps
+                    if rs:
+                        cache.record(start_domain, task, rs)
+                        log.info("Action cache: recorded %d-step plan for %s", len(rs), start_domain)
+                    else:
+                        log.info("Action cache: nothing to record (no replayable steps / not cacheable)")
                 answer = self._planner.summarise(
                     task, [(flat_subtask, phase1_result)]
                 )
@@ -270,7 +402,8 @@ class Agent:
             while i < len(subtasks) and remaining_budget > 0:
                 subtask = subtasks[i]
                 n_remaining = len(subtasks) - i
-                step_budget = max(5, remaining_budget // max(1, n_remaining))
+                # Cap at the remaining budget so subtasks can't overshoot max_steps.
+                step_budget = min(remaining_budget, max(5, remaining_budget // max(1, n_remaining)))
                 tracker = StateTracker()
 
                 result = self._navigator.execute(
@@ -281,13 +414,14 @@ class Agent:
                     max_steps=step_budget,
                     start_domain=start_domain,
                     sensitive_data=self._sensitive_data,
+                    deadline=deadline,
                 )
 
                 all_steps.extend(result.steps_detail)
                 total_steps += result.steps_taken
                 remaining_budget -= result.steps_taken
 
-                has_real_data = _has_real_data(result.data)
+                has_real_data = _result_has_real_data(result)
 
                 if result.status == "done":
                     completed.append((subtask, result))

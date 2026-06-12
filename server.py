@@ -4,6 +4,7 @@ Tool API: /start, /stop, /state, /click, /type, /navigate, etc.
 Convenience: /run (uses Agent wrapper), /login, /extract.
 Single session at a time.
 """
+import hmac
 import json
 import logging
 import os
@@ -19,6 +20,29 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(level
 log = logging.getLogger("fantoma.server")
 
 app = Flask(__name__)
+
+# ── Auth ─────────────────────────────────────────────────────
+# Shared-secret gate. When FANTOMA_API_KEY is set, every endpoint except
+# /health requires it via the X-API-Key header (or "Authorization: Bearer").
+# When unset the API is OPEN — a loud warning is logged at startup. This is a
+# browser tool that can read logged-in sessions, so on any shared network set
+# the key. /evaluate is additionally gated by FANTOMA_ALLOW_EVAL (see below).
+API_KEY = os.environ.get("FANTOMA_API_KEY", "")
+ALLOW_EVAL = os.environ.get("FANTOMA_ALLOW_EVAL", "").lower() in ("1", "true", "yes")
+
+
+@app.before_request
+def _require_api_key():
+    if not API_KEY or request.path == "/health":
+        return None
+    provided = request.headers.get("X-API-Key", "")
+    if not provided:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            provided = auth[7:]
+    if not hmac.compare_digest(provided, API_KEY):
+        return jsonify({"error": "unauthorized"}), 401
+    return None
 
 # ── Config from environment ──────────────────────────────────
 LOCAL_LLM_URL = os.environ.get("LOCAL_LLM_URL", "http://host.docker.internal:8081/v1")
@@ -75,9 +99,12 @@ def start():
     # and throws "Sync API inside asyncio loop". Killing them before each /start ensures
     # a clean slate. The 1s sleep gives the OS time to reap them before we re-launch.
     import subprocess, time, asyncio
-    subprocess.run(["pkill", "-f", "playwright/driver/node"], capture_output=True, timeout=5)
-    subprocess.run(["pkill", "-f", "camoufox-bin"], capture_output=True, timeout=5)
-    time.sleep(1)
+    # Don't nuke browser processes while a manual noVNC session is live — that
+    # session is a separate Chrome holding the user's real logins.
+    if _manual_fantoma is None:
+        subprocess.run(["pkill", "-f", "playwright/driver/node"], capture_output=True, timeout=5)
+        subprocess.run(["pkill", "-f", "camoufox-bin"], capture_output=True, timeout=5)
+        time.sleep(1)
     try:
         loop = asyncio.get_event_loop()
         if not loop.is_running() and not loop.is_closed():
@@ -122,6 +149,10 @@ def state():
 
 @app.route("/evaluate", methods=["POST"])
 def evaluate():
+    if not ALLOW_EVAL:
+        return jsonify({"error": "/evaluate is disabled. It runs arbitrary JS in the "
+                                 "page context (cookie/token theft surface). Set "
+                                 "FANTOMA_ALLOW_EVAL=1 to enable."}), 403
     err = _require_session()
     if err:
         return err
@@ -384,5 +415,13 @@ def stop_benchmark():
 
 if __name__ == "__main__":
     port = int(os.environ.get("FANTOMA_PORT", 7860))
-    log.info("Fantoma server starting on port %d", port)
+    if not API_KEY:
+        log.warning(
+            "FANTOMA_API_KEY is not set — the API is UNAUTHENTICATED. Anyone who "
+            "can reach this port can drive the browser and read logged-in sessions. "
+            "Set FANTOMA_API_KEY and keep the port on a trusted network."
+        )
+    if ALLOW_EVAL:
+        log.warning("FANTOMA_ALLOW_EVAL is on — /evaluate will run arbitrary JS in the page.")
+    log.info("Fantoma server starting on port %d (auth=%s)", port, "on" if API_KEY else "OFF")
     app.run(host="0.0.0.0", port=port, threaded=False)
