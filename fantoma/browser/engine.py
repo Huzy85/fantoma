@@ -11,6 +11,11 @@ from fantoma.browser.humanize import Humanizer
 
 _log = logging.getLogger("fantoma.browser")
 
+# TLS validation is ON by default. Set FANTOMA_IGNORE_HTTPS_ERRORS=1 only when
+# you knowingly need to hit bad-cert sites — disabling it lets a malicious proxy
+# MITM any login Fantoma performs.
+_IGNORE_HTTPS_ERRORS = os.environ.get("FANTOMA_IGNORE_HTTPS_ERRORS", "").lower() in ("1", "true", "yes")
+
 
 class BrowserEngine:
     """Manages a Camoufox browser session with anti-detection and human-like behaviour."""
@@ -110,7 +115,7 @@ class BrowserEngine:
                 cm_kwargs["screen"] = screen
             self._camoufox_cm = Camoufox(**cm_kwargs)
             self._browser = self._camoufox_cm.__enter__()
-            self._context = self._browser.new_context(ignore_https_errors=True)
+            self._context = self._browser.new_context(ignore_https_errors=_IGNORE_HTTPS_ERRORS)
             self._page = self._context.new_page()
 
         # Sync viewport with screen size for virtual display
@@ -168,6 +173,15 @@ class BrowserEngine:
         launch_args = {"headless": self.headless}
         if proxy:
             launch_args["proxy"] = proxy
+        # Opt-in WebRTC/WebGL kill-switches for the Chromium fallback (Camoufox
+        # handles these on Firefox; the Patchright path needs explicit flags).
+        chromium_flags = []
+        if os.environ.get("FANTOMA_BLOCK_WEBRTC", "").lower() in ("1", "true", "yes"):
+            chromium_flags.append("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
+        if os.environ.get("FANTOMA_DISABLE_WEBGL", "").lower() in ("1", "true", "yes"):
+            chromium_flags.append("--disable-webgl")
+        if chromium_flags:
+            launch_args["args"] = chromium_flags
         if self.profile_dir:
             self._context = self._playwright.chromium.launch_persistent_context(
                 self.profile_dir, **launch_args
@@ -176,7 +190,7 @@ class BrowserEngine:
         else:
             self._browser = self._playwright.chromium.launch(**launch_args)
             ctx_args = {"proxy": proxy} if proxy else {}
-            ctx_args["ignore_https_errors"] = True
+            ctx_args["ignore_https_errors"] = _IGNORE_HTTPS_ERRORS
             self._context = self._browser.new_context(**ctx_args)
             self._page = self._context.new_page()
 

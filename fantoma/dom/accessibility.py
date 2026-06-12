@@ -842,6 +842,22 @@ class AccessibilityExtractor:
             lines.append(f"  {card}")
         return "\n".join(lines)
 
+    def signature(self, index: int):
+        """Return (role, name) for an element index, or None. Used by the
+        action cache to record a replayable, index-free target."""
+        if 0 <= index < len(self._last_interactive):
+            el = self._last_interactive[index]
+            return el.get("role", ""), el.get("name", "")
+        return None
+
+    def find_by_signature(self, role: str, name: str):
+        """Return the current index whose (role, name) matches, or None. Used
+        on cache replay to re-resolve a step against a possibly-changed page."""
+        for i, el in enumerate(self._last_interactive):
+            if el.get("role", "") == role and el.get("name", "") == name:
+                return i
+        return None
+
     def get_element_by_index(self, page, index: int) -> Optional[Any]:
         """Find element by ARIA role and name using Playwright locators.
 

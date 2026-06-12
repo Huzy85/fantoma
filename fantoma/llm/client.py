@@ -136,40 +136,51 @@ class LLMClient:
         if resp.status_code != 200:
             log.warning("LLM returned %d: %s", resp.status_code, resp.text[:200])
             if resp.status_code == 400:
-                self._resolved_model = None  # Reset model cache
-                # Some models (e.g. Kimi K2.5) only accept temperature=1.
-                # Retry once with temperature=1 if the original was different.
-                if temperature != 1:
-                    log.info("Retrying with temperature=1 (API may require it)")
+                body_text = resp.text or ""
+                # A stale model id behind a model-swapping proxy is a common
+                # cause of 400. Re-resolve before retrying so we don't resend
+                # the id the server just rejected.
+                self._resolved_model = None
+                payload["model"] = self._resolve_model()
+                # Some models (e.g. Kimi K2.5) only accept temperature=1. Only
+                # treat this as a temperature problem when the error body
+                # actually says so — otherwise a coincidental 400 would pin
+                # temperature=1 for the client's lifetime and silently degrade
+                # deterministic navigation on every later call.
+                temp_issue = temperature != 1 and "temperature" in body_text.lower()
+                if temp_issue:
+                    log.info("Retrying with temperature=1 (API requires it)")
                     payload["temperature"] = 1
-                    try:
-                        resp = httpx.post(
-                            f"{self.base_url}/chat/completions",
-                            headers=self._headers(),
-                            json=payload,
-                            timeout=self.timeout,
-                        )
-                        if resp.status_code == 200:
-                            self._temperature_override = 1
-                        else:
-                            return ""
-                    except httpx.HTTPError:
-                        return ""
-                else:
+                try:
+                    resp = httpx.post(
+                        f"{self.base_url}/chat/completions",
+                        headers=self._headers(),
+                        json=payload,
+                        timeout=self.timeout,
+                    )
+                except httpx.HTTPError:
                     return ""
+                if resp.status_code != 200:
+                    return ""
+                if temp_issue:
+                    self._temperature_override = 1
             else:
                 return ""
 
-        data = resp.json()
-
+        # Honour the documented contract: return "" on an unparseable response
+        # rather than raising. A malformed 200 body from a flaky local server
+        # would otherwise crash the whole run instead of feeding the
+        # navigator's empty-response recovery (replan / escalate).
         try:
+            data = resp.json()
             message = data["choices"][0]["message"]
             content = message.get("content", "") or ""
             # Some reasoning models (Qwen3.5) put the answer in reasoning_content
             if not content.strip():
                 content = self._extract_from_reasoning(message)
-        except (KeyError, IndexError) as exc:
-            raise ValueError(f"Unexpected response structure: {data}") from exc
+        except (ValueError, KeyError, IndexError) as exc:
+            log.warning("Unparseable LLM response: %s", str(exc)[:200])
+            return ""
 
         return self._strip_code_fences(content)
 

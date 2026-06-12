@@ -32,7 +32,8 @@ except Exception:
 
 EMAIL_TAG = f"test{random.randint(1000, 9999)}"
 BASE_EMAIL = os.environ.get("TEST_EMAIL", "")
-EMAIL = f"{BASE_EMAIL.split('@')[0]}+{EMAIL_TAG}@{BASE_EMAIL.split('@')[1]}"
+_bu, _sep, _bd = BASE_EMAIL.partition("@")
+EMAIL = f"{_bu}+{EMAIL_TAG}@{_bd}" if _sep else ""
 IMAP_HOST = os.environ.get("IMAP_HOST", "127.0.0.1")
 IMAP_PORT = int(os.environ.get("IMAP_PORT", "1143"))
 IMAP_PASS = os.environ.get("IMAP_PASS", "")

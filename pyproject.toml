@@ -43,3 +43,11 @@ fantoma = "fantoma.cli:main"
 Homepage = "https://github.com/Huzy85/fantoma"
 Repository = "https://github.com/Huzy85/fantoma"
 Issues = "https://github.com/Huzy85/fantoma/issues"
+
+[tool.pytest.ini_options]
+# Unit suite only. The live/browser scripts (tests/*_test.py, tools/*_test.py,
+# tests/test_container_live.py) need a real browser/container and are run
+# separately, not as part of the unit suite.
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "--ignore=tests/test_container_live.py"

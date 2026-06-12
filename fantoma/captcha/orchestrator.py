@@ -136,9 +136,11 @@ def inject_token(page, token: str, captcha_type: str) -> bool:
         if captcha_type in ("recaptcha", "hcaptcha"):
             field = "g-recaptcha-response" if captcha_type == "recaptcha" else "h-captcha-response"
 
-            # Try 1: Set textarea/hidden input value (inline CAPTCHAs)
-            found = page.evaluate("""(token) => {
-                const field = '%s';
+            # Try 1: Set textarea/hidden input value (inline CAPTCHAs).
+            # Both token AND field are passed as bound args — no %-interpolation
+            # into the script body, so the docstring's "no JS injection" claim
+            # actually holds even if `field` ever becomes data-derived.
+            found = page.evaluate("""([token, field]) => {
                 const el = document.querySelector(
                     '[name="' + field + '"], #' + field + ', textarea#' + field
                 );
@@ -154,7 +156,7 @@ def inject_token(page, token: str, captcha_type: str) -> bool:
                     }
                 }
                 return false;
-            }""" % field, token)
+            }""", [token, field])
 
             if found:
                 log.info("Token injected via form field")

@@ -213,10 +213,13 @@ def _force_remove_overlays(page):
                 }} catch(e) {{}}
             }}
 
-            // Remove dark filter overlays (OneTrust, etc.)
+            // Remove dark filter overlays (OneTrust, etc.). These are
+            // consent-specific class names — the generic "modal-backdrop"
+            // (Bootstrap's class for ALL modals) is deliberately excluded so
+            // legitimate non-consent dialogs are not destroyed.
             document.querySelectorAll(
                 '.onetrust-pc-dark-filter, [class*="consent-overlay"], '
-                + '[class*="cookie-wall"], [class*="modal-backdrop"]'
+                + '[class*="cookie-wall"]'
             ).forEach(el => el.remove());
 
             // Restore body scroll (consent banners often set overflow:hidden)

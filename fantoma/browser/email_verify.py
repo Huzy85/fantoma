@@ -38,6 +38,9 @@ def check_inbox(email_config, site_domain, timeout=120, poll_interval=10, prefer
         stripped = stripped.replace(suffix, "")
     parts = [p for p in stripped.split(".") if p not in ("www", "app", "dashboard", "api", "mail", "my", "account", "portal")]
     brand = max(parts, key=len) if parts else site_lower
+    # A 1-2 char brand matches far too much; require the full domain instead.
+    if len(brand) < 3:
+        brand = site_lower
 
     from email.utils import parsedate_to_datetime
     check_start = time.time()
@@ -130,24 +133,26 @@ def extract_code_from_body(body):
     if not body:
         return None
 
-    patterns = [
-        # Labelled: "code is: 123456" or "code: G-123456"
+    # High-confidence patterns first: labelled ("code is: 123456") and prefixed
+    # ("G-284951"). Only fall back to bare digits if neither matches.
+    for pattern in (
         r'(?:code|OTP|pin|token)\s*(?:is|:)\s*([A-Z0-9][-A-Z0-9]{2,9})',
-        # Prefixed: G-284951
         r'\b([A-Z]{1,3}-\d{4,8})\b',
-        # Pure 4-8 digits (most common)
-        r'\b(\d{4,8})\b',
-    ]
+    ):
+        m = re.search(pattern, body, re.IGNORECASE)
+        if m:
+            return m.group(1)
 
-    for pattern in patterns:
-        matches = re.findall(pattern, body, re.IGNORECASE)
-        for match in matches:
-            # Filter out years and small numbers for digit-only matches
-            if match.isdigit():
-                num = int(match)
-                if 1900 <= num <= 2099 or num < 1000:
-                    continue
-            return match
+    # Bare-digit fallback — not part of a larger number/decimal, not a year or
+    # small number, and not a currency value (a price, not a code).
+    for m in re.finditer(r'(?<![\d.,$£€])(\d{4,8})(?![\d.,])', body):
+        val = m.group(1)
+        num = int(val)
+        if 1900 <= num <= 2099 or num < 1000:
+            continue
+        if m.start() > 0 and body[m.start() - 1] in "$£€":
+            continue
+        return val
 
     return None
 

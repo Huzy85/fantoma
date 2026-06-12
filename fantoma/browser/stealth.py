@@ -12,6 +12,7 @@ Applied via Camoufox launch config and context.add_init_script().
 """
 
 import logging
+import os
 
 log = logging.getLogger("fantoma.stealth")
 
@@ -28,7 +29,7 @@ def get_camoufox_config():
     These override values at the C++ level inside Firefox — JS can't detect
     or bypass them. Merge into Camoufox() constructor kwargs.
     """
-    return {
+    cfg = {
         "config": {
             "navigator.hardwareConcurrency": _HW_CONCURRENCY,
         },
@@ -41,6 +42,15 @@ def get_camoufox_config():
             "privacy.resistFingerprinting.reduceTimerPrecision.microseconds": 100,
         },
     }
+    # Opt-in stealth kill-switches. Off by default — outright blocking can be a
+    # tell on some sites, so Camoufox's spoofing is the default. Turn on for a
+    # session that must leak neither (e.g. behind a VPN where a WebRTC leak
+    # would expose the real IP).
+    if os.environ.get("FANTOMA_BLOCK_WEBRTC", "").lower() in ("1", "true", "yes"):
+        cfg["block_webrtc"] = True
+    if os.environ.get("FANTOMA_DISABLE_WEBGL", "").lower() in ("1", "true", "yes"):
+        cfg["firefox_user_prefs"]["webgl.disabled"] = True
+    return cfg
 
 
 def get_stealth_script():

@@ -18,6 +18,14 @@ services:
       # CAPTCHA solving
       - CAPTCHA_API=capsolver
       - CAPTCHA_KEY=${CAPSOLVER_KEY}
+      # Security — set these on any shared network. Without FANTOMA_API_KEY the
+      # HTTP API is unauthenticated; without FANTOMA_VNC_PASSWORD noVNC is open.
+      - FANTOMA_API_KEY=${FANTOMA_API_KEY:-}
+      - FANTOMA_VNC_PASSWORD=${FANTOMA_VNC_PASSWORD:-}
+      # /evaluate runs arbitrary JS in the page — off unless explicitly enabled.
+      - FANTOMA_ALLOW_EVAL=${FANTOMA_ALLOW_EVAL:-0}
+      # TLS validation stays on unless you knowingly need bad-cert sites.
+      - FANTOMA_IGNORE_HTTPS_ERRORS=${FANTOMA_IGNORE_HTTPS_ERRORS:-0}
       # Proxy (optional — uncomment to route through gluetun or residential proxy)
       # - FANTOMA_PROXY=http://host.docker.internal:8888
       # Display: "virtual" = Xvfb inside container

@@ -73,7 +73,7 @@ TESTS = [
         "anti_bot": "Cloudflare",
         "url": "https://huggingface.co/join",
         "method": "login",
-        "params": {"email": EMAIL, "password": "Fantoma2026Test!"},
+        "params": {"email": EMAIL, "password": os.environ.get("TEST_PASSWORD", "")},
     },
     {
         "name": "4. GitLab signup",
@@ -85,7 +85,7 @@ TESTS = [
             "last_name": "Agent",
             "username": f"fantoma_agent_{TS}",
             "email": EMAIL,
-            "password": "Fantoma2026Test!",
+            "password": os.environ.get("TEST_PASSWORD", ""),
         },
     },
     {

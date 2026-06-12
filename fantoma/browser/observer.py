@@ -53,7 +53,7 @@ _INJECT_JS = """() => {
         }
     });
 
-    observer.observe(document.body, {
+    observer.observe(document.body || document.documentElement, {
         childList: true,
         attributes: true,
         subtree: true,
@@ -161,7 +161,7 @@ _DOM_STABLE_JS = """(args) => {
             }, debounce);
         });
 
-        observer.observe(document.body, {
+        observer.observe(document.body || document.documentElement, {
             childList: true,
             subtree: true,
             attributes: true,
