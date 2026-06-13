@@ -10,6 +10,12 @@ Snapshots the ARIA tree before and after each action batch using `page.locator("
 
 519 tests passing (22 pre-existing landmark failures unchanged). Deployed to TC1, live-verified.
 
+### Bug fix: `deadline_s` never reached `agent.run()` via the HTTP API (`server.py`)
+`server.py` passed `timeout` to the Agent constructor (Playwright action timeout) but never forwarded it to `agent.run()`. The wall-clock deadline from Phase 2 was silently dead via the API. Fixed: `agent.run(..., deadline_s=data.get("timeout", 300))`.
+
+### Live API test suite (`tools/live_api_test.py`)
+6-site suite hitting all 3 TC1 containers round-robin. Sites chosen for <60s completion with Hermes at normal load: example.com, PyPI, MDN, httpbin JSON, IANA, ifconfig.me. 6/6 pass. Script auto-restarts the container via SSH on timeout (Flask is single-threaded — one hung LLM call blocks it for new connections even after client disconnect).
+
 ## Session 22: 2026-06-12 — Deploy Phase 0-3 to TC1
 
 Committed all Phase 0-3 work (32 files, 1,347 insertions, commit 55f8d92). Rebuilt all 3 TC1 containers from clean images. Rollback images tagged `rollback-20260612`.

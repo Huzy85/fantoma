@@ -327,7 +327,7 @@ def run_task():
             max_steps=data.get("max_steps", 50), timeout=data.get("timeout", 300),
             sensitive_data=data.get("sensitive_data"),
         )
-        result = agent.run(task, start_url=data.get("url"))
+        result = agent.run(task, start_url=data.get("url"), deadline_s=data.get("timeout", 300))
         return jsonify({
             "success": result.success, "data": result.data,
             "steps_taken": result.steps_taken, "error": result.error,
