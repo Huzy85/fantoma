@@ -1,5 +1,31 @@
 # Fantoma Development Progress
 
+## What's Next
+
+### 1. MCP server (Phase 3 — final item)
+Expose Fantoma as an MCP tool so Claude and other agents can call `/run`, `/login`, and `/extract` directly without crafting HTTP requests manually.
+
+Approach:
+- New `fantoma/mcp_server.py` using the MCP Python SDK (`mcp[cli]`)
+- Three tools: `fantoma_run(task, url, timeout)`, `fantoma_login(url, email, password, ...)`, `fantoma_extract(query, url, schema)`
+- Connects to a running Fantoma HTTP server (localhost or TC1 via LAN)
+- Claude Code MCPRC entry so Petru can call it from any claude session
+- Documented in README.md Docker API section
+
+### 2. Camoufox → cloverlabs-camoufox upgrade (separate task, needs timing)
+`cloverlabs-camoufox` is a maintained fork of the original `camoufox` package. The Docker images use `camoufox` installed at build time.
+
+Steps when ready:
+- `pip install cloverlabs-camoufox` in Dockerfile, `pip uninstall camoufox`
+- Check import paths — package API is API-compatible but verify `CamoufoxManager` references
+- Rebuild TC1 images with `--no-cache`, test live on all 3 containers
+- Re-run fingerprint self-test: `fantoma test fingerprint`
+- Tag new rollback images before deploying
+
+No code changes needed in Fantoma source — only the Docker dependency changes.
+
+---
+
 ## Session 23: 2026-06-13 — Validator stage + ARIA snapshot diffing
 
 ### Validator (`fantoma/validator.py`)

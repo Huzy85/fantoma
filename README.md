@@ -51,6 +51,9 @@ fantoma test         # Verify it works
 - **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
 - **Action caching (zero-LLM replay)** — a successful task plan is recorded as ARIA-node signatures `(role, name, value)` keyed by `(domain, task)`. Repeat the same task and Fantoma replays the actions with no navigation LLM calls, then re-extracts the answer (so dynamic results stay current). If the page changed and a step can't be resolved, replay falls back to a normal run and re-records. The biggest win for weak local models: a repeated task on a stable site costs ~zero tokens. On by default; disable with `Agent(action_cache=False)` or `FANTOMA_ACTION_CACHE=0`. Cached `type_text` values keep the `<secret:name>` placeholder, never the real credential.
+- **ARIA snapshot diffing** — after each action the navigator snapshots the ARIA tree before and after, producing a compact `+ [button] "Submit"` / `- [alert] "Error"` / `~ [textbox] "Email": "" → "x"` diff. The LLM gets a semantic view of what changed rather than raw DOM mutation events. Capped at 8 lines per step.
+- **Answer validator (opt-in)** — `Agent(validate=True)` or `FANTOMA_VALIDATE=1` runs a single LLM call at the end of a successful task to verify "does this answer satisfy the original question?" Returns YES/NO and a one-sentence reason. Result stored in `AgentResult.validated`. Fails open — any LLM error counts as passed so the task result is never discarded.
+- **Wall-clock deadline** — `agent.run(deadline_s=N)` (default 300) fires at step boundaries so a slow or stalled LLM cannot run indefinitely. Wired correctly through the HTTP `/run` API endpoint via the `timeout` field.
 - **Flat-first agent (v0.9)** — Two-phase execution. Phase 1 runs a flat reactive loop (20 steps by default) that handles 70-80% of tasks without any planning overhead. Phase 2 activates the hierarchical planner only if Phase 1 stalls, receiving full context (visited URLs, partial data, failure reason) so it doesn't repeat what was already tried. Simple tasks complete in Phase 1 alone. Complex tasks get the full planner treatment with the remaining step budget.
 - **Hierarchical fallback (v0.8 core)** — Planner decomposes the task into typed subtasks, Navigator executes each one, StateTracker watches for stagnation and loops. Failure-typed replan guidance: each navigator failure carries a reason (`stagnation`, `loop`, `domain_drift`, `rate_limit`, `login_wall`, `captcha`, `llm_empty`) and the planner gets targeted recovery instructions.
 - **Search-first navigation policy (v0.8)** — Planner step 1 must either NAVIGATE to a known URL or NAVIGATE to a Google search. Scrolling a landing page is banned. Navigator must press Enter or click submit on any typed field before saying DONE, and may not say DONE on a search results page when the task targets a specific resource.
@@ -378,7 +381,7 @@ Leaderboard scores are over the full WebVoyager suite, not the same 5-task pilot
 
 ## Test Results
 
-Tested across 25 real sites with 6 different LLMs. 355 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+Tested across 25 real sites with 6 different LLMs. 519 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
 **v0.7.0 live test — 25 sites, Hermes 9B local model (2026-03-31):**
 
@@ -489,9 +492,14 @@ Agent(
     max_steps=50,
     flat_budget=20,          # Steps for Phase 1 flat loop before hierarchical fallback
     timeout=300,
+    validate=False,          # Post-run answer validation (opt-in, fails open)
     sensitive_data=None,
     **fantoma_kwargs,        # All Fantoma params passed through
 )
+
+# agent.run() wall-clock guard
+result = agent.run("task", deadline_s=120)   # hard 120s limit, default 300
+print(result.validated)                      # True/False/None (None = not validated)
 ```
 
 ## CLI Commands
@@ -516,11 +524,13 @@ All activity is logged to `~/.fantoma/fantoma.log` — check it with `fantoma lo
 ```
 fantoma/
 ├── browser_tool.py      # Fantoma class — the browser tool (start, stop, click, type, login, extract)
-├── agent.py             # Agent class — flat-first with hierarchical fallback
+├── agent.py             # Agent class — flat-first with hierarchical fallback, deadline guard, validator
+├── validator.py         # Post-run answer validation (opt-in LLM YES/NO check)
 ├── session.py           # Encrypted session persistence
 ├── cli.py               # CLI + interactive mode (uses Agent)
 ├── config.py            # Settings
-├── dom/                 # Page reading (ARIA tree + raw DOM fallback)
+├── dom/                 # Page reading (ARIA tree + raw DOM fallback), ARIA snapshot diffing
+│   └── aria_diff.py     # Semantic before/after diff for step change lines
 ├── browser/             # Browser engine, anti-detection, forms, CAPTCHA, consent
 ├── captcha/             # Detection + solving (PoW, API, human fallback)
 ├── llm/                 # Thin OpenAI-compatible client (for field labelling + extract)
