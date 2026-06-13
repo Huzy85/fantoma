@@ -1,5 +1,15 @@
 # Fantoma Development Progress
 
+## Session 23: 2026-06-13 — Validator stage + ARIA snapshot diffing
+
+### Validator (`fantoma/validator.py`)
+One LLM call after a successful `run()` — "Does this answer satisfy the task?" Returns YES/NO + one sentence. Opt-in: `Agent(validate=True)` or `FANTOMA_VALIDATE=1`. Fails open on any LLM error. Adds `AgentResult.validated: bool` (None = not validated, True = passed, False = failed). Wired into all 3 success return paths in `agent.run()`. 9 unit tests.
+
+### ARIA snapshot diffing (`fantoma/dom/aria_diff.py`)
+Snapshots the ARIA tree before and after each action batch using `page.locator("body").aria_snapshot()`. Diffs into `+ [role] "name"` (added), `- [role] "name"` (removed), `~ [role] "name": "old" → "new"` (value changed). Replaces the MutationObserver `change_line` in the navigator — LLM already reads ARIA format every step, so semantic diffs are more useful than raw DOM mutation events. Capped at 8 lines. 13 unit tests. Updated 4 navigator tests from `collect_mutations` → `aria_snapshot`/`aria_diff` mocks.
+
+519 tests passing (22 pre-existing landmark failures unchanged). Deployed to TC1, live-verified.
+
 ## Session 22: 2026-06-12 — Deploy Phase 0-3 to TC1
 
 Committed all Phase 0-3 work (32 files, 1,347 insertions, commit 55f8d92). Rebuilt all 3 TC1 containers from clean images. Rollback images tagged `rollback-20260612`.
