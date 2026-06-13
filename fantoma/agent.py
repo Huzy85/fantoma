@@ -19,6 +19,7 @@ from fantoma.resilience.escalation import EscalationChain
 from fantoma.planner import Planner, Subtask, Checkpoint
 from fantoma.navigator import Navigator, NavigatorResult
 from fantoma.state_tracker import StateTracker
+from fantoma.validator import validate_answer
 
 log = logging.getLogger("fantoma")
 
@@ -134,6 +135,7 @@ class AgentResult:
     error: str = ""
     tokens_used: int = 0
     escalations: int = 0
+    validated: bool = None   # None = not validated, True = passed, False = failed
 
 
 class Agent:
@@ -156,6 +158,7 @@ class Agent:
         flat_budget: int = 20,
         sensitive_data: dict = None,
         action_cache: bool = True,
+        validate: bool = None,
         **kwargs,
     ):
         self.fantoma = Fantoma(llm_url=llm_url, api_key=api_key, model=model, **kwargs)
@@ -177,6 +180,22 @@ class Agent:
         # calls. Env override: FANTOMA_ACTION_CACHE=0 disables globally.
         cache_on = action_cache and os.environ.get("FANTOMA_ACTION_CACHE", "1").lower() not in ("0", "false", "no")
         self._action_cache = ActionCache(enabled=cache_on)
+        # Answer validator — opt-in. Env: FANTOMA_VALIDATE=1 enables globally.
+        env_validate = os.environ.get("FANTOMA_VALIDATE", "0").lower() in ("1", "true", "yes")
+        self._validate = validate if validate is not None else env_validate
+
+    def _apply_validator(self, task: str, result: "AgentResult") -> "AgentResult":
+        """If validation is on and the run succeeded, run one LLM check.
+
+        Mutates result.validated in-place and returns it. Fails open.
+        """
+        if not getattr(self, "_validate", False) or not result.success:
+            return result
+        passed, reason = validate_answer(task, result.data or "", self._llm)
+        result.validated = passed
+        if not passed:
+            log.warning("Validator: answer did not satisfy task — %s", reason)
+        return result
 
     def _set_llm(self, llm: "LLMClient") -> None:
         """Point the agent, planner, and browser tool at one LLM client.
@@ -310,10 +329,10 @@ class Agent:
                         Subtask(task, "read", "Task complete"), self.fantoma, self._llm
                     )
                     cache.mark_used(start_domain, task)
-                    return AgentResult(
+                    return self._apply_validator(task, AgentResult(
                         success=True, data=answer, steps_taken=len(cached),
                         steps_detail=all_steps, escalations=0,
-                    )
+                    ))
                 log.info("Replay failed (page changed) — invalidating cache, full run")
                 cache.invalidate(start_domain, task)
 
@@ -351,13 +370,13 @@ class Agent:
                 answer = self._planner.summarise(
                     task, [(flat_subtask, phase1_result)]
                 )
-                return AgentResult(
+                return self._apply_validator(task, AgentResult(
                     success=True,
                     data=answer,
                     steps_taken=total_steps,
                     steps_detail=all_steps,
                     escalations=self.escalation.total_escalations,
-                )
+                ))
 
             # ── Phase 2: Hierarchical fallback ───────────────────────
             log.info(
@@ -499,13 +518,13 @@ class Agent:
                 continue
 
             answer = self._planner.summarise(task, completed)
-            return AgentResult(
+            return self._apply_validator(task, AgentResult(
                 success=bool(completed),
                 data=answer,
                 steps_taken=total_steps,
                 steps_detail=all_steps,
                 escalations=self.escalation.total_escalations,
-            )
+            ))
         except Exception as e:
             return AgentResult(success=False, error=str(e),
                                steps_taken=total_steps,

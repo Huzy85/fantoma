@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from fantoma.browser.observer import collect_mutations, format_mutations
+from fantoma.dom.aria_diff import aria_diff, aria_snapshot
 from fantoma.browser.page_state import classify_blocker
 from fantoma.planner import Planner, Subtask
 from fantoma.state_tracker import StateTracker
@@ -227,6 +227,10 @@ class Navigator:
             current_url = page.url
             visited_urls.add(_norm_url(current_url))
 
+            # Snapshot ARIA before actions — used to compute the change_line diff
+            # that will appear in the NEXT step's "Change:" header.
+            snap_before = aria_snapshot(page)
+
             # Get filtered DOM
             aria = fantoma._dom.extract(page, task=subtask.instruction, mode=dom_mode)
             for name, value in sensitive_data.items():
@@ -358,12 +362,14 @@ class Navigator:
                             rs["role"], rs["name"] = replay_sig
                         replay_steps.append(rs)
 
-                # Collect mutations immediately after action
+                # ARIA diff: snapshot after action and compare with step-start state.
+                # Produces a semantic change summary the LLM already speaks
+                # (role/name/value), replacing the raw MutationObserver output.
                 try:
-                    mutations = collect_mutations(fantoma._engine.get_page())
-                    change_line = format_mutations(mutations)
-                    if not change_line:
-                        change_line = "No changes detected"
+                    snap_after = aria_snapshot(fantoma._engine.get_page())
+                    diff = aria_diff(snap_before, snap_after)
+                    change_line = diff if diff else "No visible changes"
+                    snap_before = snap_after  # track across multi-action batches
                 except Exception:
                     change_line = "No changes detected"
 
