@@ -42,8 +42,8 @@ class TestNavigationLoopGuard:
         ]
         tracker = StateTracker()
 
-        with patch("fantoma.navigator.collect_mutations", return_value={"added": [], "removed": [], "changed_attrs": [], "text_changes": []}):
-            with patch("fantoma.navigator.format_mutations", return_value=""):
+        with patch("fantoma.navigator.aria_snapshot", return_value={}):
+            with patch("fantoma.navigator.aria_diff", return_value=""):
                 with patch("fantoma.navigator.classify_blocker", return_value=None):
                     result = nav.execute(subtask, fantoma, llm, tracker, max_steps=10)
 
@@ -233,15 +233,15 @@ class TestMutationFeedback:
 
         tracker = StateTracker()
 
-        with patch("fantoma.navigator.collect_mutations", return_value={"added": ["div.results"], "removed": [], "changed_attrs": [], "text_changes": ["3 items found"]}):
-            with patch("fantoma.navigator.format_mutations", return_value="Added: div.results | New text: 3 items found"):
+        with patch("fantoma.navigator.aria_snapshot", return_value={}):
+            with patch("fantoma.navigator.aria_diff", return_value="+ [button] \"Results\""):
                 with patch("fantoma.navigator.classify_blocker", return_value=None):
                     result = nav.execute(subtask, fantoma, llm, tracker, max_steps=5)
 
-        # Check second LLM call includes mutation feedback
+        # Check second LLM call includes ARIA diff feedback
         second_call = llm.chat.call_args_list[1][0][0]
         user_msg = [m for m in second_call if m["role"] == "user"][0]["content"]
-        assert "Added: div.results" in user_msg
+        assert "+ [button]" in user_msg
 
 
 class TestDomainDriftMidBatch:
@@ -282,8 +282,8 @@ class TestDomainDriftMidBatch:
 
         tracker = StateTracker()
 
-        with patch("fantoma.navigator.collect_mutations", return_value={"added": [], "removed": [], "changed_attrs": [], "text_changes": []}):
-            with patch("fantoma.navigator.format_mutations", return_value=""):
+        with patch("fantoma.navigator.aria_snapshot", return_value={}):
+            with patch("fantoma.navigator.aria_diff", return_value=""):
                 with patch("fantoma.navigator.classify_blocker", return_value=None):
                     result = nav.execute(
                         subtask, fantoma, llm, tracker,
@@ -366,8 +366,8 @@ class TestEmptyResponseBailout:
         llm.chat.side_effect = ["", "CLICK [0]", "DONE"]
         tracker = StateTracker()
 
-        with patch("fantoma.navigator.collect_mutations", return_value={"added": [], "removed": [], "changed_attrs": [], "text_changes": []}):
-            with patch("fantoma.navigator.format_mutations", return_value=""):
+        with patch("fantoma.navigator.aria_snapshot", return_value={}):
+            with patch("fantoma.navigator.aria_diff", return_value=""):
                 with patch("fantoma.navigator.classify_blocker", return_value=None):
                     result = nav.execute(subtask, fantoma, llm, tracker, max_steps=10)
 
