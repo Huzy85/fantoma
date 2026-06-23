@@ -56,7 +56,7 @@ def detect_llm() -> tuple[str, str]:
 
 
 def send_telegram(message: str):
-    """Send result to Telegram via Nero's bot."""
+    """Send result to Telegram via the configured bot."""
     bot_token = chat_id = None
 
     # Read from fantoma config or environment

@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s: %(messa
 
 EMAIL = os.environ.get("TEST_EMAIL", "")
 IMAP = {"host": "127.0.0.1", "port": 1143, "user": EMAIL, "password": os.environ.get("IMAP_PASS", ""), "security": "none"}
-HERCULES = "http://localhost:8080/v1"
+LLM_URL = "http://localhost:8080/v1"
 MAX_TIME = 150
 
 try:
@@ -34,7 +34,7 @@ TS = str(int(time.time()) % 100000)
 
 def make_agent(timeout=120):
     return Agent(
-        llm_url=HERCULES,
+        llm_url=LLM_URL,
         headless=True,
         timeout=timeout,
         captcha_api="capsolver",

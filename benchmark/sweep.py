@@ -1,6 +1,6 @@
 """Mid-run benchmark sweep — lightweight assessment without GPT-4o cost.
 
-Uses heuristics + optional local-llm LLM (local, swap-proxy port 8081) to estimate pass
+Uses heuristics + optional local-llm LLM (local, llm-proxy port 8081) to estimate pass
 rate while the benchmark is still running. local-llm is best-effort: if it's
 busy or slow, the sweep falls back to heuristics only.
 
@@ -112,7 +112,7 @@ def heuristic_check(result: dict, max_steps: int) -> tuple[bool, str]:
 # local-llm LLM scoring (local, best-effort)
 # ---------------------------------------------------------------------------
 
-HERMES_URL = "http://localhost:8081/v1/chat/completions"
+LLM_URL = "http://localhost:8081/v1/chat/completions"
 LLM_TIMEOUT = 20  # seconds per call — short so we don't block on busy local-llm
 
 
@@ -126,7 +126,7 @@ def llm_judge(client: httpx.Client, instruction: str, answer: str) -> bool | Non
     )
     try:
         resp = client.post(
-            HERMES_URL,
+            LLM_URL,
             json={
                 "model": "local-llm",
                 "messages": [{"role": "user", "content": prompt}],
@@ -161,12 +161,12 @@ def llm_sweep(results: list[dict]) -> tuple[int, int, int]:
         return 0, 0, 0
 
     passes = fails = skipped = 0
-    hermes_dead = False  # Stop trying after first N consecutive failures
+    llm_dead = False  # Stop trying after first N consecutive failures
 
     with httpx.Client() as client:
         consecutive_failures = 0
         for r in candidates:
-            if hermes_dead:
+            if llm_dead:
                 skipped += len(candidates) - passes - fails - skipped
                 break
             verdict = llm_judge(client, r.get("instruction", ""), r.get("answer", ""))
@@ -174,7 +174,7 @@ def llm_sweep(results: list[dict]) -> tuple[int, int, int]:
                 skipped += 1
                 consecutive_failures += 1
                 if consecutive_failures >= 3:
-                    hermes_dead = True
+                    llm_dead = True
             else:
                 consecutive_failures = 0
                 if verdict:

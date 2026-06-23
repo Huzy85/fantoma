@@ -367,7 +367,7 @@ def manual_open():
             "success": True,
             "url": url,
             "profile": profile_dir,
-            "novnc": "http://<M5-IP>:6080/vnc.html",
+            "novnc": "http://<HOST-IP>:6080/vnc.html",
             "note": "Browser is visible on :99 — open noVNC to interact. POST /manual/close when done.",
         })
     except Exception as e:

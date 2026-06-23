@@ -9,7 +9,7 @@ Approach:
 - New `fantoma/mcp_server.py` using the MCP Python SDK (`mcp[cli]`)
 - Three tools: `fantoma_run(task, url, timeout)`, `fantoma_login(url, email, password, ...)`, `fantoma_extract(query, url, schema)`
 - Connects to a running Fantoma HTTP server (localhost or browser-host via LAN)
-- Claude Code MCPRC entry so Petru can call it from any claude session
+- Claude Code MCPRC entry so you can call it from any claude session
 - Documented in README.md Docker API section
 
 ### 2. Camoufox → cloverlabs-camoufox upgrade (separate task, needs timing)

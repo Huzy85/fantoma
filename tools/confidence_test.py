@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # ── Config ───────────────────────────────────────────────────────────
 
-HERCULES = os.environ.get("FANTOMA_LLM_URL", "http://localhost:8080/v1")
+LLM_URL = os.environ.get("FANTOMA_LLM_URL", "http://localhost:8080/v1")
 CLOUD_LLM = os.environ.get("CLOUD_LLM_URL", "https://openrouter.ai/api/v1")
 CLOUD_LLM_KEY = os.environ.get("CLOUD_LLM_KEY", "")
 try:
@@ -74,7 +74,7 @@ def validate():
     log.info("Checking LLM ...")
     try:
         import httpx
-        r = httpx.get(f"{HERCULES}/models", timeout=10)
+        r = httpx.get(f"{LLM_URL}/models", timeout=10)
         r.raise_for_status()
         log.info("  LLM OK: %s", r.json()["data"][0]["id"])
     except Exception as e:
@@ -121,8 +121,8 @@ def validate():
 def make_agent(timeout=120):
     from fantoma import Agent
     return Agent(
-        llm_url=HERCULES,
-        escalation=[HERCULES, CLOUD_LLM],
+        llm_url=LLM_URL,
+        escalation=[LLM_URL, CLOUD_LLM],
         escalation_keys=["", CLOUD_LLM_KEY],
         headless=True,
         timeout=timeout,
@@ -174,20 +174,20 @@ TESTS = [
         ),
     },
     {
-        "name": "2. Replinova signup",
+        "name": "2. DemoQA signup",
         "category": "signup+verify",
-        "url": "https://replinova.co.uk/signup",
+        "url": "https://demoqa.com/register",
         "run": lambda a: a.login(
-            "https://replinova.co.uk/signup",
+            "https://demoqa.com/register",
             email=random_email(),
         ),
     },
     {
-        "name": "3. CouchSync signup",
+        "name": "3. ExpandTesting signup",
         "category": "signup+verify",
-        "url": "https://couchsync.com",
+        "url": "https://practice.expandtesting.com/register",
         "run": lambda a: a.login(
-            "https://couchsync.com",
+            "https://practice.expandtesting.com/register",
             email=random_email(),
         ),
     },
