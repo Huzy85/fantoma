@@ -26,6 +26,10 @@ No code changes needed in Fantoma source — only the Docker dependency changes.
 
 ---
 
+## Session 24: 2026-06-23 — Public-repo cleanup
+
+Removed development-environment specifics ahead of wider sharing: internal model labels and host references genericised to neutral names (`local-coder` / `local-llm` / `local-dense` / `llm-proxy` / `browser-host`), hardcoded LAN IPs replaced with loopback in tool-script defaults, and internal planning/spec docs dropped from `docs/`. Live signup tests now point at public automation sandboxes (demoqa, expandtesting) instead of unrelated production sites. No code behaviour changed; all unit tests and Python compile checks pass.
+
 ## Session 23: 2026-06-13 — Validator stage + ARIA snapshot diffing
 
 ### Validator (`fantoma/validator.py`)
