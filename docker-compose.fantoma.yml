@@ -7,9 +7,9 @@ services:
       - "7860:7860"
       - "6080:6080"   # noVNC — manual intervention hatch
     environment:
-      # Local LLM (Hercules on host)
+      # Local LLM (local-coder on host)
       - LOCAL_LLM_URL=http://host.docker.internal:8081/v1
-      # Backup LLM (Hermes via swap-proxy — same pool, redundant entry point)
+      # Backup LLM (local-llm via llm-proxy — same pool, redundant entry point)
       - BACKUP_LLM_URL=http://host.docker.internal:8081/v1
       # Cloud LLM backup (OpenRouter — Qwen 3.6 Plus)
       - CLOUD_LLM_URL=https://openrouter.ai/api/v1

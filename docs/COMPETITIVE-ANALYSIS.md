@@ -21,7 +21,7 @@
 1. **Accessibility mode** — emulate assistive tech, use ARIA accessibility tree for DOM extraction. Legal protection (sites can't block assistive tech without risking ADA/WCAG/Equality Act violations). Better structured data. Nobody else does this.
 2. **VPN/proxy support** — `proxy="socks5://vpn:1080"` routes through VPN. Triggers CAPTCHAs (validates our solvers), provides IP rotation, more realistic stealth profile. Camoufox already supports proxy params. Build alongside accessibility mode — both change how Fantoma presents to websites.
 3. **Structured extraction** — `agent.extract("products", schema={"name": str, "price": float})` returns validated JSON. Table stakes for scraping use cases.
-4. **Weekly anti-detection monitor** — automated weekly test against 20 bot-protected sites. Compares against baseline, alerts on regressions via Telegram. "Nike started blocking Fantoma — investigate." Runs on M5 via systemd timer (Sunday 02:30). Companies will build countermeasures once Fantoma is public — this detects them early. Essential for a product that claims anti-detection.
+4. **Weekly anti-detection monitor** — automated weekly test against 20 bot-protected sites. Compares against baseline, alerts on regressions via Telegram. "Nike started blocking Fantoma — investigate." Runs on the host via systemd timer (Sunday 02:30). Companies will build countermeasures once Fantoma is public — this detects them early. Essential for a product that claims anti-detection.
 
 ### v0.2.0 (post-launch)
 3. **Proxy rotation** — Camoufox supports proxy config. Add `proxy_rotation=["http://proxy1", "http://proxy2"]` to rotate per session. Solves IP rate limiting (Reddit is the only site that blocks, and it's IP-based not fingerprint-based — proven by 8-hour stress test: 422 tests, only Reddit blocked, all after 2+ hours from same IP).
@@ -66,7 +66,7 @@ Implementation:
 | Provider | Model | Tests | Total Cost | Per Task | Speed |
 |----------|-------|-------|-----------|----------|-------|
 | Local (Homer 122B) | Qwen3.5-122B | 8 | £0 | Free | 20-70s |
-| Local (Hercules 45B) | Qwen3-Coder | 3 | £0 | Free | 27-47s |
+| Local (local-coder 45B) | Qwen3-Coder | 3 | £0 | Free | 27-47s |
 | Local (Llama 8B) | Llama-3.1-8B | 5 | £0 | Free | 5-7s |
 | Kimi | moonshot-v1-auto | 178 | $0.45 | **$0.003** | 8-16s |
 | OpenAI | gpt-4o-mini | 3+ | TBD | ~$0.01 | 9-13s |

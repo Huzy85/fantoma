@@ -201,8 +201,8 @@ agent = Agent(
 agent = Agent(
     llm_url="http://localhost:8081/v1",
     escalation=[
-        "http://localhost:8081/v1",          # Hercules (local coder)
-        "http://localhost:8082/v1",          # Hermes (local backup)
+        "http://localhost:8081/v1",          # local-coder (local coder)
+        "http://localhost:8082/v1",          # local-llm (local backup)
         "https://openrouter.ai/api/v1",      # Cloud escalation
     ],
     escalation_keys=["", "", "sk-or-..."],
@@ -383,7 +383,7 @@ Leaderboard scores are over the full WebVoyager suite, not the same 5-task pilot
 
 Tested across 25 real sites with 6 different LLMs. 519 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
 
-**v0.7.0 live test — 25 sites, Hermes 9B local model (2026-03-31):**
+**v0.7.0 live test — 25 sites, local-llm 9B local model (2026-03-31):**
 
 | # | Site | Result | Time |
 |---|------|--------|------|

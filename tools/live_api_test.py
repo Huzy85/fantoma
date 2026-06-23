@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Live API test suite — hits TC1 Fantoma HTTP endpoints with real sites.
+"""Live API test suite — hits browser-host Fantoma HTTP endpoints with real sites.
 
 Tests the deployed containers exactly as callers (openclaw, etc.) would use them.
 No mocks. No local browser. Just POST /run and check the result.
 
 Usage:
     python3 tools/live_api_test.py
-    python3 tools/live_api_test.py --host 192.168.0.101
+    python3 tools/live_api_test.py --host 127.0.0.1
 """
 import argparse
 import json
@@ -115,7 +115,7 @@ def run_test(host: str, port: int, test: dict, timeout: int = 90) -> dict:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="192.168.0.101")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--ports", default="7860,7861,7862")
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
@@ -154,7 +154,7 @@ def main():
             if test.get("expect") and not expect_ok:
                 print(f"         expected '{test['expect']}' in answer")
             # Restart the container if it timed out — Flask single-threaded,
-            # slow Hermes call blocks the server even after client disconnect.
+            # slow local-llm call blocks the server even after client disconnect.
             if "timed out" in r.get("error", ""):
                 print(f"         (restarting container on :{port} to unblock Flask)")
                 restart_container(args.host, port)

@@ -22,7 +22,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("signup_test")
 
 # Config — use environment variables for secrets
-HERCULES = os.environ.get("FANTOMA_LLM_URL", "http://localhost:8080/v1")
+LLM_URL = os.environ.get("FANTOMA_LLM_URL", "http://localhost:8080/v1")
 CLOUD_LLM = os.environ.get("CLOUD_LLM_URL", "https://openrouter.ai/api/v1")
 CLOUD_LLM_KEY = os.environ.get("CLOUD_LLM_KEY", "")
 try:
@@ -46,8 +46,8 @@ log.info("Username: %s", USERNAME)
 from fantoma import Agent
 
 agent = Agent(
-    llm_url=HERCULES,
-    escalation=[HERCULES, CLOUD_LLM],
+    llm_url=LLM_URL,
+    escalation=[LLM_URL, CLOUD_LLM],
     escalation_keys=["", CLOUD_LLM_KEY],
     headless=True,
     timeout=120,

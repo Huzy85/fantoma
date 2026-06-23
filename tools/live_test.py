@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # ── Config (copied from working test files) ─────────────────────────
 
-HERCULES = os.environ.get("FANTOMA_LLM_URL", "http://localhost:8080/v1")
+LLM_URL = os.environ.get("FANTOMA_LLM_URL", "http://localhost:8080/v1")
 CLOUD_LLM = os.environ.get("CLOUD_LLM_URL", "https://openrouter.ai/api/v1")
 CLOUD_LLM_KEY = os.environ.get("CLOUD_LLM_KEY", "")
 try:
@@ -77,15 +77,15 @@ def validate_integrations():
     errors = []
 
     # 1. LLM reachable
-    log.info("Checking LLM at %s ...", HERCULES)
+    log.info("Checking LLM at %s ...", LLM_URL)
     try:
         import httpx
-        r = httpx.get(f"{HERCULES}/models", timeout=10)
+        r = httpx.get(f"{LLM_URL}/models", timeout=10)
         r.raise_for_status()
         model = r.json()["data"][0]["id"]
         log.info("  LLM OK: %s", model)
     except Exception as e:
-        errors.append(f"LLM unreachable at {HERCULES}: {e}")
+        errors.append(f"LLM unreachable at {LLM_URL}: {e}")
 
     # 2. Cloud LLM escalation reachable
     log.info("Checking cloud LLM escalation at %s ...", CLOUD_LLM)
@@ -128,7 +128,7 @@ def validate_integrations():
         sys.exit(1)
 
     log.info("All integrations OK")
-    log.info("Config: LLM=%s, Escalation=%s, Email=%s, CapSolver=YES", HERCULES, CLOUD_LLM, EMAIL)
+    log.info("Config: LLM=%s, Escalation=%s, Email=%s, CapSolver=YES", LLM_URL, CLOUD_LLM, EMAIL)
 
 
 # ── Agent Factory ────────────────────────────────────────────────────
@@ -136,8 +136,8 @@ def validate_integrations():
 def make_agent(timeout=90):
     from fantoma import Agent
     return Agent(
-        llm_url=HERCULES,
-        escalation=[HERCULES, CLOUD_LLM],
+        llm_url=LLM_URL,
+        escalation=[LLM_URL, CLOUD_LLM],
         escalation_keys=["", CLOUD_LLM_KEY],
         headless=True,
         timeout=timeout,

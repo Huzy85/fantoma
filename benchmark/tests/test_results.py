@@ -57,7 +57,7 @@ def test_generate_comparison_table():
     """Comparison table is valid Markdown."""
     summary = {
         "agent": "fantoma-0.7.0",
-        "llm": "hercules",
+        "llm": "local-coder",
         "evaluated": 588,
         "success": 470,
         "score_pct": 79.9,

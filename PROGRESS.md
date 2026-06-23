@@ -8,8 +8,8 @@ Expose Fantoma as an MCP tool so Claude and other agents can call `/run`, `/logi
 Approach:
 - New `fantoma/mcp_server.py` using the MCP Python SDK (`mcp[cli]`)
 - Three tools: `fantoma_run(task, url, timeout)`, `fantoma_login(url, email, password, ...)`, `fantoma_extract(query, url, schema)`
-- Connects to a running Fantoma HTTP server (localhost or TC1 via LAN)
-- Claude Code MCPRC entry so Petru can call it from any claude session
+- Connects to a running Fantoma HTTP server (localhost or browser-host via LAN)
+- Claude Code MCPRC entry so you can call it from any claude session
 - Documented in README.md Docker API section
 
 ### 2. Camoufox → cloverlabs-camoufox upgrade (separate task, needs timing)
@@ -18,7 +18,7 @@ Approach:
 Steps when ready:
 - `pip install cloverlabs-camoufox` in Dockerfile, `pip uninstall camoufox`
 - Check import paths — package API is API-compatible but verify `CamoufoxManager` references
-- Rebuild TC1 images with `--no-cache`, test live on all 3 containers
+- Rebuild browser-host images with `--no-cache`, test live on all 3 containers
 - Re-run fingerprint self-test: `fantoma test fingerprint`
 - Tag new rollback images before deploying
 
@@ -34,17 +34,17 @@ One LLM call after a successful `run()` — "Does this answer satisfy the task?"
 ### ARIA snapshot diffing (`fantoma/dom/aria_diff.py`)
 Snapshots the ARIA tree before and after each action batch using `page.locator("body").aria_snapshot()`. Diffs into `+ [role] "name"` (added), `- [role] "name"` (removed), `~ [role] "name": "old" → "new"` (value changed). Replaces the MutationObserver `change_line` in the navigator — LLM already reads ARIA format every step, so semantic diffs are more useful than raw DOM mutation events. Capped at 8 lines. 13 unit tests. Updated 4 navigator tests from `collect_mutations` → `aria_snapshot`/`aria_diff` mocks.
 
-519 tests passing (22 pre-existing landmark failures unchanged). Deployed to TC1, live-verified.
+519 tests passing (22 pre-existing landmark failures unchanged). Deployed to browser-host, live-verified.
 
 ### Bug fix: `deadline_s` never reached `agent.run()` via the HTTP API (`server.py`)
 `server.py` passed `timeout` to the Agent constructor (Playwright action timeout) but never forwarded it to `agent.run()`. The wall-clock deadline from Phase 2 was silently dead via the API. Fixed: `agent.run(..., deadline_s=data.get("timeout", 300))`.
 
 ### Live API test suite (`tools/live_api_test.py`)
-6-site suite hitting all 3 TC1 containers round-robin. Sites chosen for <60s completion with Hermes at normal load: example.com, PyPI, MDN, httpbin JSON, IANA, ifconfig.me. 6/6 pass. Script auto-restarts the container via SSH on timeout (Flask is single-threaded — one hung LLM call blocks it for new connections even after client disconnect).
+6-site suite hitting all 3 browser-host containers round-robin. Sites chosen for <60s completion with local-llm at normal load: example.com, PyPI, MDN, httpbin JSON, IANA, ifconfig.me. 6/6 pass. Script auto-restarts the container via SSH on timeout (Flask is single-threaded — one hung LLM call blocks it for new connections even after client disconnect).
 
-## Session 22: 2026-06-12 — Deploy Phase 0-3 to TC1
+## Session 22: 2026-06-12 — Deploy Phase 0-3 to browser-host
 
-Committed all Phase 0-3 work (32 files, 1,347 insertions, commit 55f8d92). Rebuilt all 3 TC1 containers from clean images. Rollback images tagged `rollback-20260612`.
+Committed all Phase 0-3 work (32 files, 1,347 insertions, commit 55f8d92). Rebuilt all 3 browser-host containers from clean images. Rollback images tagged `rollback-20260612`.
 
 Live validation:
 - All 3 health endpoints (:7860/:7861/:7862) returned `{"status":"ok"}` immediately
@@ -56,7 +56,7 @@ Next: validator stage, MCP server, ARIA snapshot diffing. Camoufox→cloverlabs 
 ## Session 21: 2026-06-12 — Phase 3 continued: loop guard + stealth switches
 
 ### Navigation-loop guard (navigator.py)
-The flat loop could re-do a login several times — the cycle detector misses 4-action cycles (type, type, click, navigate). Added a per-subtask URL-revisit guard: if the model navigates back to an already-visited page (compared against the LIVE page URL, so a mid-batch click→/secure then navigate→/login is seen as a bounce) twice for the same target, the navigator stops WITHOUT navigating away and extracts from the current (good) page. Live-traced firing on the the-internet login: after 2 cycles, "Navigation loop ... stopping on current page", then DONE on the success page. Hermes is non-deterministic so it won't catch every variant, but the navigate-bounce pattern is now handled. New `TestNavigationLoopGuard`.
+The flat loop could re-do a login several times — the cycle detector misses 4-action cycles (type, type, click, navigate). Added a per-subtask URL-revisit guard: if the model navigates back to an already-visited page (compared against the LIVE page URL, so a mid-batch click→/secure then navigate→/login is seen as a bounce) twice for the same target, the navigator stops WITHOUT navigating away and extracts from the current (good) page. Live-traced firing on the the-internet login: after 2 cycles, "Navigation loop ... stopping on current page", then DONE on the success page. local-llm is non-deterministic so it won't catch every variant, but the navigate-bounce pattern is now handled. New `TestNavigationLoopGuard`.
 
 ### WebRTC/WebGL kill-switches (browser/stealth.py, browser/engine.py)
 Opt-in `FANTOMA_BLOCK_WEBRTC` and `FANTOMA_DISABLE_WEBGL`. For Camoufox: `block_webrtc=True` and the `webgl.disabled` Firefox pref. For the Chromium fallback: `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` and `--disable-webgl`. Off by default (outright blocking can itself be a tell; Camoufox's spoofing is the default). Useful behind a VPN where a WebRTC leak would expose the real IP. New `tests/test_stealth.py`.
@@ -104,7 +104,7 @@ v1 records Phase 1 (flat-loop) successes only. Phase 2 (hierarchical) plans are 
 
 ### Tests + validation
 - `tests/test_action_cache.py` (13) and `tests/test_agent_cache.py` (4, including a test that credentials are never cached in plaintext and resolve only at replay). Full suite 487 pass; the 22 pre-existing DOM/landmark failures are unrelated.
-- Live cold-vs-warm through a local Hermes model, both action types:
+- Live cold-vs-warm through a local local-llm model, both action types:
   - Non-element (Wikipedia scroll): cold recorded a 2-step plan (56s); warm "Action cache hit — replaying without the navigation LLM", same answer, 25s.
   - Element actions (the-internet add/remove, a button click): cold recorded `click button "Add Element"` by ARIA signature; warm re-resolved the button by `(role, name)` and replayed the click with no navigation LLM, same answer "Delete". Confirms the index-free signature replay works on a live page.
 
@@ -135,7 +135,7 @@ Targets the "works with any LLM including 7B models" promise.
 
 ### Validation
 - Unit suite scoped via `pyproject.toml` (`testpaths = tests`, unit files only). 470 pass; the 22 pre-existing DOM/landmark failures are unrelated and predate this work.
-- Old-vs-new A/B on real sites through a local Hermes model (one slot, sequential, hard per-task timeout): new code 5/5, old code 4/5 (old timed out on a Wikipedia read where new succeeded), zero regressions. Read/extract, form-fill, and credentialled login all green live.
+- Old-vs-new A/B on real sites through a local local-llm model (one slot, sequential, hard per-task timeout): new code 5/5, old code 4/5 (old timed out on a Wikipedia read where new succeeded), zero regressions. Read/extract, form-fill, and credentialled login all green live.
 - Phase 1 validated over HTTP on an isolated authed server: 401 without a key, 403 on `/evaluate`, a real authenticated browser task completed.
 - Email verification validated end-to-end against a live ProtonMail Bridge: a message sent through the bridge SMTP was found and its link extracted by Fantoma's own `check_inbox`. Verified-STARTTLS connects to the bridge with no change needed.
 
@@ -341,8 +341,8 @@ Added env var reads for the three-tier chain:
 - `CLOUD_LLM_URL`, `CLOUD_LLM_KEY`, `CLOUD_LLM_MODEL`
 
 Container default chain:
-1. Hercules (Qwen3-Coder-Next, local, `auto`)
-2. Hermes (Qwen3.5-35B-A3B, local, `auto`)
+1. local-coder (Qwen3-Coder-Next, local, `auto`)
+2. local-llm (Qwen3.5-35B-A3B, local, `auto`)
 3. OpenRouter Qwen 3.6 Plus (`qwen/qwen3.6-plus`)
 
 `docker-compose.fantoma.yml` already had `CLOUD_LLM_MODEL=qwen/qwen3.6-plus` from the prior OpenRouter migration.
@@ -374,7 +374,7 @@ Before this session, "Fantoma has escalation" was a lie. The chain object existe
 | `tests/test_agent_orchestrator.py` | +125 lines (4 tests + helper update) |
 
 ### Still TODO
-- Re-run WebVoyager benchmark with the live escalation chain (Hercules first, Qwen 3.6 Plus on escalation).
+- Re-run WebVoyager benchmark with the live escalation chain (local-coder first, Qwen 3.6 Plus on escalation).
 - Wire Opus 4.6 as an optional fourth tier above the cloud Qwen.
 - Push v0.6 → main on GitHub, then layer v0.7 / v0.8 on top.
 
@@ -400,7 +400,7 @@ Ported two critical patches from the running container back to the git repo so t
 ## Session 13: 2026-03-31 — Camoufox glibc 2.42 Fix + 25-Site Live Test
 
 ### Summary
-Fixed Camoufox SIGSEGV on Fedora 43 / glibc 2.42 using an LD_PRELOAD shim. Validated the fix with a full 25-site live test run using Hermes (9B local model). Result: 23/25 passing (92%). Zero browser crashes across all 25 tests.
+Fixed Camoufox SIGSEGV on Fedora 43 / glibc 2.42 using an LD_PRELOAD shim. Validated the fix with a full 25-site live test run using local-llm (9B local model). Result: 23/25 passing (92%). Zero browser crashes across all 25 tests.
 
 ### Root Cause
 
@@ -423,7 +423,7 @@ Also requires `glxtest` binary copied from `/usr/lib64/firefox/glxtest` to `~/.c
 
 **Upgrade warning:** Camoufox upgrades wipe `~/.cache/camoufox/`. After any upgrade: re-copy glxtest, verify Xvfb is on :99, run one test to confirm the shim still works.
 
-### 25-Site Live Test Results (Hermes 9B, 2026-03-31)
+### 25-Site Live Test Results (local-llm 9B, 2026-03-31)
 
 | # | Site | Result | Time | Notes |
 |---|------|--------|------|-------|
@@ -774,7 +774,7 @@ Top-down data-flow audit of every Python file. 15 commits, 155 tests passing.
 
 ### Bug Fixes (6)
 
-1. **LLM prompt fix** — REACTIVE_SYSTEM prompt rewritten. LLM was saying DONE immediately without acting. Now: "Only say DONE when the task is fully COMPLETED." Hercules navigates correctly after fix.
+1. **LLM prompt fix** — REACTIVE_SYSTEM prompt rewritten. LLM was saying DONE immediately without acting. Now: "Only say DONE when the task is fully COMPLETED." local-coder navigates correctly after fix.
 2. **Raw DOM fallback** — when ARIA tree misses form inputs (HN, nopCommerce), Fantoma queries raw `<input>` elements via JS. Falls back when: (a) no textboxes in ARIA, or (b) textboxes exist but none match login/signup labels.
 3. **Raw DOM buttons** — also finds `<button>` and `input[type=submit]` via JS when ARIA misses the submit button.
 4. **OAuth button skip** — SKIP_LABELS now includes Apple, Facebook, GitHub, Google, Twitter, etc. Won't click "Continue with Google" when looking for the login button.
@@ -823,7 +823,7 @@ Top-down data-flow audit of every Python file. 15 commits, 155 tests passing.
 | Model | Type | Size | Tests | Pass | Fastest |
 |-------|------|------|-------|------|---------|
 | Homer (Qwen3.5-122B) | Local | 122B | 13+ | 13/13 | 14s |
-| Hercules (Qwen3-Coder) | Local | 45B | 3 | 3/3 | 27s |
+| local-coder (Qwen3-Coder) | Local | 45B | 3 | 3/3 | 27s |
 | Phi-3.5-mini | Local | 3.8B | 22 | 22/22 | 7s |
 | Claude Sonnet | Cloud API | — | 280+ | ~98% | 12s |
 | Kimi moonshot | Cloud API | — | 183+ | ~96% | 8s |
@@ -958,7 +958,7 @@ Fantoma uses 3-5 LLM calls per task at ~200 tokens each. Check each provider's c
 - [x] Proxy rotation: VPNProxy class, round-robin/random
 - [x] Stress test infrastructure: parallel 8-hour runs + audit
 - [x] Competitive analysis + roadmap
-- [x] Authenticated login: ProtonMail inbox accessed (Hercules + Phi)
+- [x] Authenticated login: ProtonMail inbox accessed (local-coder + Phi)
 - [x] SPA navigation: React/SPA apps with network idle wait
 - [x] Multi-tab sessions: new_tab(), switch_tab(), close_tab() with named tabs
 - [x] Account creation: Reddit (verified), Booking.com (verified), Stack Overflow (reached verification)
@@ -970,7 +970,7 @@ Fantoma uses 3-5 LLM calls per task at ~200 tokens each. Check each provider's c
 **Session 1 (2026-03-22):**
 - 41 unit tests (planner, DOM extractor, resilience) — all pass
 - 13 live tests with Homer (Qwen3.5-122B) — 13/13 PASS
-- 3 live tests with Hercules (Qwen3-Coder) — 3/3 PASS
+- 3 live tests with local-coder (Qwen3-Coder) — 3/3 PASS
 - 10-site batch test (anti-detection) — 10/10 PASS
 - Bot fingerprint tests: bot.sannysoft.com PASS, nowsecure.nl PASS
 
@@ -995,7 +995,7 @@ Fantoma uses 3-5 LLM calls per task at ~200 tokens each. Check each provider's c
   - Instagram 40s, Facebook 9s, TikTok 37s, Reddit 9s, X.com 40s, Amazon UK 11s, Nike 53s, Walmart 25s, Indeed 76s, Craigslist 23s, LinkedIn 43s, Booking.com 11s, nowsecure.nl 81s, GitHub 10s, DuckDuckGo 26s
 
 - Authenticated login tests (ProtonMail):
-  - Hercules (Qwen3-Coder): PASS — logged in, extracted 3/3 emails with subjects, senders, dates
+  - local-coder (Qwen3-Coder): PASS — logged in, extracted 3/3 emails with subjects, senders, dates
   - Phi-3.5-mini (3.8B): PASS — logged in, extracted 2/3 emails (SPA rendering delay)
   - ProtonMail security did not detect bot activity
 - Code improvements from login testing:
@@ -1018,9 +1018,9 @@ Fantoma uses 3-5 LLM calls per task at ~200 tokens each. Check each provider's c
 - Content extraction fix: uses `main` or `[role=main]` selector instead of `body` — strips nav noise
 - Phi ProtonMail extraction: 3/3 emails after `main` selector fix (was 2/3 before)
 
-- Full monitor suite (20 tests, Hercules + Phi side-by-side):
+- Full monitor suite (20 tests, local-coder + Phi side-by-side):
 
-  | Test | Hercules (45B) | Phi (3.8B) |
+  | Test | local-coder (45B) | Phi (3.8B) |
   |------|---------------|------------|
   | bot.sannysoft (fingerprint) | PASS 18s | — |
   | nowsecure.nl (fingerprint) | PASS 15s | PASS 31s |
@@ -1045,7 +1045,7 @@ Fantoma uses 3-5 LLM calls per task at ~200 tokens each. Check each provider's c
 
   19/20 PASS. Only failure: reCAPTCHA demo (needs paid CapSolver API key — expected).
 
-  **Timing comparison:** Hercules averages ~18s per test. Phi averages ~30s but some sites take much longer (Instagram 108s, Nike 85s, CS Jobs 77s). Simple sites Phi is faster (GitHub 5s vs 15s, books.toscrape 7s vs 15s). Complex SPAs favour the larger model.
+  **Timing comparison:** local-coder averages ~18s per test. Phi averages ~30s but some sites take much longer (Instagram 108s, Nike 85s, CS Jobs 77s). Simple sites Phi is faster (GitHub 5s vs 15s, books.toscrape 7s vs 15s). Complex SPAs favour the larger model.
 
 - Overnight stress test (7 hours, 3 cloud APIs, 20 sites each, 2026-03-24):
 

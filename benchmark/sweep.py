@@ -1,7 +1,7 @@
 """Mid-run benchmark sweep — lightweight assessment without GPT-4o cost.
 
-Uses heuristics + optional Hermes LLM (local, swap-proxy port 8081) to estimate pass
-rate while the benchmark is still running. Hermes is best-effort: if it's
+Uses heuristics + optional local-llm LLM (local, llm-proxy port 8081) to estimate pass
+rate while the benchmark is still running. local-llm is best-effort: if it's
 busy or slow, the sweep falls back to heuristics only.
 
 Usage:
@@ -109,15 +109,15 @@ def heuristic_check(result: dict, max_steps: int) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# Hermes LLM scoring (local, best-effort)
+# local-llm LLM scoring (local, best-effort)
 # ---------------------------------------------------------------------------
 
-HERMES_URL = "http://localhost:8081/v1/chat/completions"
-LLM_TIMEOUT = 20  # seconds per call — short so we don't block on busy Hermes
+LLM_URL = "http://localhost:8081/v1/chat/completions"
+LLM_TIMEOUT = 20  # seconds per call — short so we don't block on busy local-llm
 
 
 def llm_judge(client: httpx.Client, instruction: str, answer: str) -> bool | None:
-    """Ask Hermes PASS/FAIL. Returns None if Hermes is unavailable/busy."""
+    """Ask local-llm PASS/FAIL. Returns None if local-llm is unavailable/busy."""
     prompt = (
         "You are evaluating a web automation result. "
         "Reply with exactly one word: PASS or FAIL.\n\n"
@@ -126,9 +126,9 @@ def llm_judge(client: httpx.Client, instruction: str, answer: str) -> bool | Non
     )
     try:
         resp = client.post(
-            HERMES_URL,
+            LLM_URL,
             json={
-                "model": "Hermes",
+                "model": "local-llm",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0,
                 "max_tokens": 8,
@@ -143,15 +143,15 @@ def llm_judge(client: httpx.Client, instruction: str, answer: str) -> bool | Non
             return False
         return None
     except Exception:
-        return None  # Hermes busy or down — caller handles
+        return None  # local-llm busy or down — caller handles
 
 
 def llm_sweep(results: list[dict]) -> tuple[int, int, int]:
     """
-    Run Hermes over all completed results with a non-empty answer.
+    Run local-llm over all completed results with a non-empty answer.
 
     Returns (pass_count, fail_count, skipped_count).
-    skipped = Hermes was unavailable for that task.
+    skipped = local-llm was unavailable for that task.
     """
     candidates = [
         r for r in results
@@ -161,12 +161,12 @@ def llm_sweep(results: list[dict]) -> tuple[int, int, int]:
         return 0, 0, 0
 
     passes = fails = skipped = 0
-    hermes_dead = False  # Stop trying after first N consecutive failures
+    llm_dead = False  # Stop trying after first N consecutive failures
 
     with httpx.Client() as client:
         consecutive_failures = 0
         for r in candidates:
-            if hermes_dead:
+            if llm_dead:
                 skipped += len(candidates) - passes - fails - skipped
                 break
             verdict = llm_judge(client, r.get("instruction", ""), r.get("answer", ""))
@@ -174,7 +174,7 @@ def llm_sweep(results: list[dict]) -> tuple[int, int, int]:
                 skipped += 1
                 consecutive_failures += 1
                 if consecutive_failures >= 3:
-                    hermes_dead = True
+                    llm_dead = True
             else:
                 consecutive_failures = 0
                 if verdict:
@@ -266,12 +266,12 @@ def print_report(
     if not no_llm:
         if llm_total > 0:
             llm_rate = llm_pass / llm_total * 100
-            note = f"  ({llm_skip} skipped — Hermes busy)" if llm_skip else ""
-            print(f"  Hermes est:   {llm_pass}/{llm_total} PASS ({llm_rate:.1f}%){note}")
+            note = f"  ({llm_skip} skipped — local-llm busy)" if llm_skip else ""
+            print(f"  local-llm est:   {llm_pass}/{llm_total} PASS ({llm_rate:.1f}%){note}")
         else:
-            print("  Hermes est:   unavailable — heuristics only")
+            print("  local-llm est:   unavailable — heuristics only")
     else:
-        print("  Hermes est:   skipped (--no-llm)")
+        print("  local-llm est:   skipped (--no-llm)")
 
     # Per-site
     if len(sites) > 1:
@@ -337,13 +337,13 @@ def run_sweep(run_dir: Path, no_llm: bool, sweep_n: int, total_tasks: int):
 def main():
     parser = argparse.ArgumentParser(
         prog="python3 -m benchmark.sweep",
-        description="Mid-run sweep: heuristic + Hermes assessment of in-progress benchmark",
+        description="Mid-run sweep: heuristic + local-llm assessment of in-progress benchmark",
     )
     parser.add_argument("run_dir", help="Path to benchmark run directory")
     parser.add_argument("--interval", type=int, default=15,
                         help="Trigger sweep every N new completions (default: 15)")
     parser.add_argument("--no-llm", action="store_true",
-                        help="Skip Hermes LLM scoring (heuristics only)")
+                        help="Skip local-llm LLM scoring (heuristics only)")
     parser.add_argument("--watch", action="store_true",
                         help="Keep watching and auto-sweep every --interval completions")
     parser.add_argument("--total", type=int, default=590,

@@ -5,7 +5,7 @@ Run the [WebVoyager](https://github.com/MinorJerry/WebVoyager) benchmark (643 ta
 ## Quick Start
 
 ```bash
-# Local LLM (Hercules)
+# Local LLM (local-coder)
 python -m benchmark --llm http://localhost:8080/v1
 
 # Claude Sonnet

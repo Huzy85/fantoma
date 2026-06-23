@@ -52,9 +52,9 @@ class TestEscalationChain:
         c = EscalationChain(
             endpoints=["http://localhost:8081/v1", "http://localhost:8082/v1", "https://api.example.com/v1"],
             api_keys=["", "", "sk-x"],
-            models=["hercules"],  # short on purpose
+            models=["model-a"],  # short on purpose
         )
-        assert c.current_model() == "hercules"
+        assert c.current_model() == "model-a"
         c.escalate()
         assert c.current_model() == "auto"
         c.escalate()
@@ -63,8 +63,8 @@ class TestEscalationChain:
     def test_three_tier_chain(self):
         c = EscalationChain(
             endpoints=[
-                "http://localhost:8081/v1",  # Hermes via swap-proxy (primary)
-                "http://localhost:8082/v1",  # Apollo (since 2026-04-28 migration; was Hermes bulk)
+                "http://localhost:8081/v1",  # local-llm via llm-proxy (primary)
+                "http://localhost:8082/v1",  # local-dense (since 2026-04-28 migration; was local-llm bulk)
                 "https://openrouter.ai/api/v1",  # Qwen 3.6 Plus
             ],
             api_keys=["", "", "sk-or-test"],

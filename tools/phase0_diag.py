@@ -20,7 +20,7 @@ from fantoma import Agent
 
 task = sys.argv[1]
 url = sys.argv[2]
-llm = os.environ.get("LOCAL_LLM_URL", "http://192.168.0.100:8081/v1")
+llm = os.environ.get("LOCAL_LLM_URL", "http://127.0.0.1:8081/v1")
 agent = Agent(llm_url=llm, model="Qwen3.6-35B-A3B", escalation=[llm],
               escalation_models=["Qwen3.6-35B-A3B"], max_steps=6,
               headless=True, browser="camoufox")

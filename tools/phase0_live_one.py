@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Single real-site task runner for Phase 0 live validation.
 
-Runs ONE task through a Hermes-only Agent (no cloud escalation) and prints a
+Runs ONE task through a local-llm-only Agent (no cloud escalation) and prints a
 one-line JSON result. Invoke under `timeout` for a hard wall-clock guard, one
-task at a time so only a single Hermes slot is used. No credentials, no email,
+task at a time so only a single local-llm slot is used. No credentials, no email,
 no signups — read/extract tasks only.
 """
 import json
@@ -17,7 +17,7 @@ from fantoma import Agent
 def main():
     task = sys.argv[1]
     url = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
-    llm = os.environ.get("LOCAL_LLM_URL", "http://192.168.0.100:8081/v1")
+    llm = os.environ.get("LOCAL_LLM_URL", "http://127.0.0.1:8081/v1")
     model = os.environ.get("PHASE0_MODEL", "Qwen3.6-35B-A3B")
     max_steps = int(os.environ.get("PHASE0_MAX_STEPS", "15"))
 
@@ -26,7 +26,7 @@ def main():
         agent = Agent(
             llm_url=llm,
             model=model,
-            escalation=[llm],            # Hermes only — never escalate to cloud
+            escalation=[llm],            # local-llm only — never escalate to cloud
             escalation_models=[model],
             max_steps=max_steps,
             headless=True,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Overnight full benchmark run with local Hercules (port 8081).
+# Overnight full benchmark run with local local-coder (port 8081).
 # Expected duration: ~15 hours (590 tasks, single worker).
 #
 # Usage: run via systemd timer or at/cron. Not interactive.
@@ -31,9 +31,9 @@ for i in {1..30}; do
     sleep 10
 done
 
-# Verify Hercules is responding
+# Verify local-coder is responding
 if ! curl -sf http://localhost:8081/v1/models > /dev/null 2>&1; then
-    echo "ERROR: Hercules not responding on port 8081. Aborting."
+    echo "ERROR: local-coder not responding on port 8081. Aborting."
     exit 1
 fi
 
@@ -49,8 +49,8 @@ docker exec fantoma-browser find /app -name __pycache__ -type d -exec rm -rf {} 
 
 echo "Code deployed to container. Starting benchmark..."
 
-# Run the full benchmark with local Hercules
-# - workers=1 (Hercules handles one request at a time)
+# Run the full benchmark with local local-coder
+# - workers=1 (local-coder handles one request at a time)
 # - max_steps=50 (default, plenty for flat-first)
 # - flat_budget=20 (Phase 1 gets 20 steps)
 BENCHMARK_LLM_URL="http://host.docker.internal:8081/v1" \
