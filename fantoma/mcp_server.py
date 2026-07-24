@@ -286,8 +286,29 @@ def fantoma_extract(
         # each call individually.
         body: dict = {}
         for attempt in range(2):
-            _post(backend, "/start", {"url": url}, timeout=TASK_TIMEOUT,
-                  retry_transport=True)
+            # Clear any session left behind by an earlier call. Without this,
+            # /start answers 409 "session active" and /extract silently reads
+            # whatever page the browser was already on — returning confident,
+            # wrong content for the URL that was asked for.
+            try:
+                _post(backend, "/stop", {}, timeout=60.0, retry_transport=True)
+            except Exception:
+                pass
+
+            started = _post(backend, "/start", {"url": url},
+                            timeout=TASK_TIMEOUT, retry_transport=True)
+            # A successful /start returns page state. Anything without a url
+            # means we do not know what is on screen, so extracting would be
+            # guesswork — fail loudly instead.
+            if not started.get("url"):
+                if attempt == 0:
+                    time.sleep(2.0)
+                    continue
+                return TaskResult(
+                    success=False,
+                    error=f"Could not open {url}: "
+                          f"{started.get('error') or 'no page state returned'}",
+                )
             try:
                 body = _post(backend, "/extract", payload, timeout=TASK_TIMEOUT)
             finally:
