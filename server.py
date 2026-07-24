@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file
@@ -44,6 +45,69 @@ def _require_api_key():
         return jsonify({"error": "unauthorized"}), 401
     return None
 
+
+# ── Request watchdog ─────────────────────────────────────────
+#
+# Playwright can hang rather than raise: the Firefox driver crashes on some
+# pages (a page JS error with no location kills coreBundle.js) and the sync
+# API then blocks forever waiting on a process that will never answer. A
+# hung worker is worse than a crashed one — supervisord sees RUNNING and
+# leaves it alone, so the container serves timeouts indefinitely. That is
+# how three containers stayed dead for 24 days while /health said "ok".
+#
+# Flask runs threaded=False here, so exactly one request is in flight and a
+# single module-level timer is enough. Any request that outlives its budget
+# takes the process down; supervisord returns a clean one in ~2 s.
+
+# Per-path ceilings. /run legitimately takes minutes; everything else is a
+# single browser operation and should be quick.
+_WATCHDOG_DEFAULT = 120
+# A cold Camoufox start is ~15 s, so 75 s means "hung", not "slow". Keeping
+# this tight matters: the worker cannot be reused until the watchdog fires,
+# so this figure is the real recovery time a client waits through.
+_WATCHDOG_BY_PATH = {"/run": 420, "/login": 240, "/extract": 240, "/start": 75}
+# /health must never arm a watchdog — it is how callers check liveness.
+_WATCHDOG_EXEMPT = {"/health", "/manual/status"}
+
+_watchdog_timer: threading.Timer | None = None
+
+
+def _watchdog_fire(path: str, budget: int) -> None:
+    log.error(
+        "Request %s exceeded %ds — worker is hung, restarting", path, budget
+    )
+    os._exit(1)
+
+
+@app.before_request
+def _arm_watchdog():
+    global _watchdog_timer
+    if request.path in _WATCHDOG_EXEMPT:
+        return None
+    budget = _WATCHDOG_BY_PATH.get(request.path, _WATCHDOG_DEFAULT)
+    # A caller may ask for a longer task than the default ceiling. Honour it,
+    # with headroom for browser startup and the final extraction, so the
+    # watchdog only ever fires on a genuine hang — never on slow-but-working.
+    if request.path in ("/run", "/login", "/extract"):
+        body = request.get_json(silent=True) or {}
+        requested = body.get("timeout")
+        if isinstance(requested, (int, float)) and requested > 0:
+            budget = max(budget, int(requested) + 120)
+    if _watchdog_timer is not None:
+        _watchdog_timer.cancel()
+    _watchdog_timer = threading.Timer(budget, _watchdog_fire, args=(request.path, budget))
+    _watchdog_timer.daemon = True
+    _watchdog_timer.start()
+    return None
+
+
+@app.teardown_request
+def _disarm_watchdog(exc=None):
+    global _watchdog_timer
+    if _watchdog_timer is not None:
+        _watchdog_timer.cancel()
+        _watchdog_timer = None
+
 # ── Config from environment ──────────────────────────────────
 LOCAL_LLM_URL = os.environ.get("LOCAL_LLM_URL", "http://host.docker.internal:8081/v1")
 LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL", "auto")
@@ -77,6 +141,42 @@ def _require_session():
     if _fantoma is None:
         return jsonify({"error": "No active session. POST /start first."}), 400
     return None
+
+
+# Signatures that mean this worker's Playwright machinery is dead for good.
+# The Node.js driver can crash outright (a page JS error with no location
+# takes down coreBundle.js), and once it does, the sync API in THIS process
+# is bound to a dead transport. /start already tries pkill + a fresh event
+# loop and it still fails, so there is nothing left to repair in-process.
+_UNRECOVERABLE = (
+    "sync api inside the asyncio loop",
+    "playwright already stopped",
+    "target page, context or browser has been closed",
+    "connection closed while reading from the driver",
+)
+
+
+def _is_unrecoverable(err: str) -> bool:
+    low = (err or "").lower()
+    return any(sig in low for sig in _UNRECOVERABLE)
+
+
+def _restart_worker(reason: str) -> None:
+    """Exit so supervisord hands us a clean process (autorestart, startsecs=2).
+
+    Crash-only recovery. A worker in this state fails every future request,
+    which is how three containers stayed silently broken for 24 days while
+    /health kept answering "ok" — /health never starts a browser.
+    """
+    log.error("Unrecoverable browser state (%s) — restarting worker", reason)
+
+    def _die():
+        os._exit(1)
+
+    # Delay just long enough for the HTTP response to flush to the client.
+    t = threading.Timer(0.5, _die)
+    t.daemon = True
+    t.start()
 
 
 def _release_session() -> None:
@@ -143,7 +243,16 @@ def start():
         return jsonify(state)
     except Exception as e:
         _fantoma = None
-        return jsonify({"error": str(e)}), 500
+        err = str(e)
+        if _is_unrecoverable(err):
+            _restart_worker("start: " + err[:120])
+            return jsonify({
+                "error": err,
+                "retryable": True,
+                "detail": "Browser driver died; this worker is restarting. "
+                          "Retry in a few seconds.",
+            }), 503
+        return jsonify({"error": err}), 500
 
 
 @app.route("/stop", methods=["POST"])
@@ -352,13 +461,28 @@ def run_task():
             sensitive_data=data.get("sensitive_data"),
         )
         result = agent.run(task, start_url=data.get("url"), deadline_s=data.get("timeout", 300))
+        if _is_unrecoverable(result.error or ""):
+            _restart_worker("run: " + (result.error or "")[:120])
+            return jsonify({
+                "success": False, "error": result.error, "retryable": True,
+                "detail": "Browser driver died; this worker is restarting. "
+                          "Retry in a few seconds.",
+            }), 503
         return jsonify({
             "success": result.success, "data": result.data,
             "steps_taken": result.steps_taken, "error": result.error,
             "escalations": result.escalations,
         })
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        err = str(e)
+        if _is_unrecoverable(err):
+            _restart_worker("run: " + err[:120])
+            return jsonify({
+                "success": False, "error": err, "retryable": True,
+                "detail": "Browser driver died; this worker is restarting. "
+                          "Retry in a few seconds.",
+            }), 503
+        return jsonify({"success": False, "error": err}), 500
 
 
 # ── Manual intervention endpoints (visible via noVNC on :6080) ─
