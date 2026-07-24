@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import os
 import queue
+import time
 import threading
 
 import httpx
@@ -101,7 +102,7 @@ def _api_key_headers() -> dict[str, str]:
     return {"X-API-Key": key} if key else {}
 
 
-def _post(backend: str, path: str, payload: dict, timeout: float) -> dict:
+def _post_once(backend: str, path: str, payload: dict, timeout: float) -> tuple[int, dict]:
     with httpx.Client(timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT)) as client:
         resp = client.post(
             f"{backend}{path}", json=payload, headers=_api_key_headers()
@@ -113,7 +114,55 @@ def _post(backend: str, path: str, payload: dict, timeout: float) -> dict:
         except Exception:
             resp.raise_for_status()
             raise
+        return resp.status_code, body
+
+
+def _post(
+    backend: str,
+    path: str,
+    payload: dict,
+    timeout: float,
+    retry_transport: bool = False,
+) -> dict:
+    """POST, absorbing one worker restart.
+
+    A backend answers 503 with retryable=true when its browser driver has
+    died and supervisord is replacing the process (startsecs=2). That is a
+    routine, self-healing event, so waiting it out is better than handing
+    the model an error it cannot act on.
+
+    retry_transport also retries connection-level failures, which happen
+    when the worker exits mid-request. Only pass it for calls that are safe
+    to repeat: a retried /run or /login could submit a form twice.
+    """
+    def attempt():
+        try:
+            return _post_once(backend, path, payload, timeout)
+        except httpx.HTTPError:
+            if not retry_transport:
+                raise
+            return None, None
+
+    status, body = attempt()
+    if body is not None and not (status == 503 and body.get("retryable")):
         return body
+
+    # A hung worker is only reclaimed when its request watchdog fires (up to
+    # ~75 s for /start), so the ladder has to outlast that or the client gives
+    # up on a backend that was about to come back.
+    for delay in (5.0, 15.0, 30.0, 45.0):
+        time.sleep(delay)
+        try:
+            status, body = attempt()
+        except httpx.HTTPError:
+            continue  # worker still coming back up
+        if body is not None and not (status == 503 and body.get("retryable")):
+            return body
+    if body is None:
+        raise RuntimeError(
+            f"Fantoma backend {backend} did not come back after a restart"
+        )
+    return body
 
 
 def _get(backend: str, path: str, timeout: float) -> dict:
@@ -226,21 +275,34 @@ def fantoma_extract(
     query: str,
     schema: dict | None = None,
 ) -> TaskResult:
+    payload: dict = {"query": query}
+    if schema:
+        payload["schema"] = schema
+
     with _pool_instance().acquire() as backend:
-        _post(backend, "/start", {"url": url}, timeout=TASK_TIMEOUT)
-        try:
-            payload: dict = {"query": query}
-            if schema:
-                payload["schema"] = schema
-            body = _post(backend, "/extract", payload, timeout=TASK_TIMEOUT)
-        finally:
-            # Always release the browser session, or this backend is poisoned
-            # for the next caller even though the pool thinks it is free.
+        # /start and /extract are two calls against one session. If the worker
+        # restarts between them the session is gone and /extract answers "No
+        # active session", so the pair has to be retried as a unit rather than
+        # each call individually.
+        body: dict = {}
+        for attempt in range(2):
+            _post(backend, "/start", {"url": url}, timeout=TASK_TIMEOUT,
+                  retry_transport=True)
             try:
-                _post(backend, "/stop", {}, timeout=60.0)
-            except Exception:
-                pass
-    if "error" in body and body.get("error"):
+                body = _post(backend, "/extract", payload, timeout=TASK_TIMEOUT)
+            finally:
+                # Always release the session, or this backend is poisoned for
+                # the next caller even though the pool believes it is free.
+                try:
+                    _post(backend, "/stop", {}, timeout=60.0, retry_transport=True)
+                except Exception:
+                    pass
+            if "no active session" not in str(body.get("error", "")).lower():
+                break
+            if attempt == 0:
+                time.sleep(2.0)
+
+    if body.get("error"):
         return TaskResult(success=False, error=str(body["error"]))
     data = body.get("data", body)
     return TaskResult(
