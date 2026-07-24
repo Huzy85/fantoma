@@ -65,7 +65,7 @@ Implementation:
 
 | Provider | Model | Tests | Total Cost | Per Task | Speed |
 |----------|-------|-------|-----------|----------|-------|
-| Local (Homer 122B) | Qwen3.5-122B | 8 | £0 | Free | 20-70s |
+| Local (local-writer 122B) | Qwen3.5-122B | 8 | £0 | Free | 20-70s |
 | Local (local-coder 45B) | Qwen3-Coder | 3 | £0 | Free | 27-47s |
 | Local (Llama 8B) | Llama-3.1-8B | 5 | £0 | Free | 5-7s |
 | Kimi | moonshot-v1-auto | 178 | $0.45 | **$0.003** | 8-16s |

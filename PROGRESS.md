@@ -826,7 +826,7 @@ Top-down data-flow audit of every Python file. 15 commits, 155 tests passing.
 
 | Model | Type | Size | Tests | Pass | Fastest |
 |-------|------|------|-------|------|---------|
-| Homer (Qwen3.5-122B) | Local | 122B | 13+ | 13/13 | 14s |
+| local-writer (Qwen3.5-122B) | Local | 122B | 13+ | 13/13 | 14s |
 | local-coder (Qwen3-Coder) | Local | 45B | 3 | 3/3 | 27s |
 | Phi-3.5-mini | Local | 3.8B | 22 | 22/22 | 7s |
 | Claude Sonnet | Cloud API | — | 280+ | ~98% | 12s |
@@ -906,7 +906,7 @@ Auto-dismisses on: OneTrust (Rightmove, Indeed), Amazon (sp-cc), Meta (Instagram
 
 ### Autocomplete Handler (proven)
 
-Spatial detection of dropdown suggestions near focused input. Clicks best text match. Proven on Rightmove ("LL65" exact match) and Booking.com ("Holyhead, Anglesey").
+Spatial detection of dropdown suggestions near focused input. Clicks best text match. Proven on Rightmove (postcode exact match) and Booking.com (town-name suggestion).
 
 ### API Usage (measured during stress tests)
 
@@ -973,7 +973,7 @@ Fantoma uses 3-5 LLM calls per task at ~200 tokens each. Check each provider's c
 
 **Session 1 (2026-03-22):**
 - 41 unit tests (planner, DOM extractor, resilience) — all pass
-- 13 live tests with Homer (Qwen3.5-122B) — 13/13 PASS
+- 13 live tests with local-writer (Qwen3.5-122B) — 13/13 PASS
 - 3 live tests with local-coder (Qwen3-Coder) — 3/3 PASS
 - 10-site batch test (anti-detection) — 10/10 PASS
 - Bot fingerprint tests: bot.sannysoft.com PASS, nowsecure.nl PASS
@@ -1008,7 +1008,7 @@ Fantoma uses 3-5 LLM calls per task at ~200 tokens each. Check each provider's c
   - Minimum context window documented: 8K minimum, 12K+ recommended
 
 - Account creation tests (10 sites, 2 models in parallel):
-  - Homer: Reddit (verified with code), Booking.com (code sent), GitHub (all steps OK), Pinterest (3/4), Medium (email submitted)
+  - local-writer: Reddit (verified with code), Booking.com (code sent), GitHub (all steps OK), Pinterest (3/4), Medium (email submitted)
   - Phi: Stack Overflow (reached verification), Etsy (form filled), HackerNews (form filled), Indeed (email typed), TripAdvisor (accessed)
 - Multi-tab verification (Reddit):
   - Tab 0: signup, Tab 1: ProtonMail login, regex extracted code 611955, switched back, entered code, Reddit accepted
