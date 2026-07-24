@@ -246,17 +246,59 @@ class BrowserEngine:
             self._browser = None
             self._playwright = None
         else:
-            # Close context and pages before exiting Camoufox
+            # Close context first so Camoufox has a chance to flush cookies.
             if self._context:
                 try:
                     self._context.close()
                 except Exception:
                     pass
+
             if self._camoufox_cm is not None:
-                try:
-                    self._camoufox_cm.__exit__(None, None, None)
-                except Exception:
-                    pass
+                # Run __exit__ in a background thread so a crashed/hung
+                # Playwright Node.js driver can't spin the main thread at
+                # 100% CPU forever. If it doesn't finish in 10 s, force-kill
+                # the driver and any leftover Camoufox process.
+                import subprocess
+                import threading
+
+                done = threading.Event()
+
+                def _do_exit():
+                    try:
+                        self._camoufox_cm.__exit__(None, None, None)
+                    except Exception:
+                        pass
+                    finally:
+                        done.set()
+
+                t = threading.Thread(target=_do_exit, daemon=True)
+                t.start()
+
+                if not done.wait(timeout=10):
+                    _log.warning(
+                        "Camoufox __exit__ hung for 10 s — force-killing playwright driver"
+                    )
+                    subprocess.run(
+                        ["pkill", "-9", "-f", "playwright/driver/node"],
+                        capture_output=True, timeout=5,
+                    )
+                    subprocess.run(
+                        ["pkill", "-9", "-f", "camoufox-bin"],
+                        capture_output=True, timeout=5,
+                    )
+
+            # Clean up orphaned 1×1 Xvfb glxtest instances left by crashed sessions.
+            # The main supervisord-managed Xvfb runs on :99 with a 1920×1080 screen,
+            # so "-screen 0 1x1x24" is unique to the glxtest children.
+            try:
+                import subprocess
+                subprocess.run(
+                    ["pkill", "-f", r"Xvfb :[0-9]+ -screen 0 1x1x24"],
+                    capture_output=True, timeout=3,
+                )
+            except Exception:
+                pass
+
             self._page = None
             self._context = None
             self._browser = None
