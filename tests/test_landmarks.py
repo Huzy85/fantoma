@@ -10,6 +10,11 @@ def _make_page(title="Test Page", url="https://example.com", snapshot=""):
     page.title.return_value = title
     page.url = url
     page.locator.return_value.aria_snapshot.return_value = snapshot
+    # extract_aria() also asks for viewport scroll metrics. A bare MagicMock
+    # returns a MagicMock, which blows up on the numeric comparison in
+    # format_scroll_hints. None is the documented "no scroll info" value and
+    # keeps these tests focused on landmarks rather than scroll hints.
+    page.evaluate.return_value = None
     return page
 
 
