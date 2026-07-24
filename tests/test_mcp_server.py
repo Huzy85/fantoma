@@ -142,11 +142,13 @@ class TestToolTranslation:
 
         def fake_post(backend, path, payload, timeout, retry_transport=False):
             paths.append(path)
+            if path == "/start":
+                return {"url": "http://x", "title": "X"}
             return {"data": "extracted"}
 
         monkeypatch.setattr(mcp_server, "_post", fake_post)
         result = mcp_server.fantoma_extract("http://x", "get the title")
-        assert paths == ["/start", "/extract", "/stop"]
+        assert paths == ["/stop", "/start", "/extract", "/stop"]
         assert result.success and result.data == "extracted"
 
     def test_extract_stops_session_even_when_extract_fails(self, monkeypatch):
@@ -158,6 +160,8 @@ class TestToolTranslation:
             paths.append(path)
             if path == "/extract":
                 raise RuntimeError("extraction exploded")
+            if path == "/start":
+                return {"url": "http://x"}
             return {}
 
         monkeypatch.setattr(mcp_server, "_post", fake_post)
@@ -171,6 +175,8 @@ class TestToolTranslation:
         def fake_post(backend, path, payload, timeout, retry_transport=False):
             if path == "/extract":
                 raise RuntimeError("boom")
+            if path == "/start":
+                return {"url": "http://x"}
             return {}
 
         monkeypatch.setattr(mcp_server, "_post", fake_post)
@@ -189,6 +195,8 @@ class TestToolTranslation:
 
         def fake_post(backend, path, payload, timeout, retry_transport=False):
             paths.append(path)
+            if path == "/start":
+                return {"url": "http://x"}
             if path == "/extract":
                 # First attempt: the worker restarted, session gone.
                 if paths.count("/extract") == 1:
@@ -209,6 +217,7 @@ class TestToolTranslation:
         def fake_post(backend, path, payload, timeout, retry_transport=False):
             if path == "/start":
                 starts.append(1)
+                return {"url": "http://x"}
             if path == "/extract":
                 return {"error": "No active session. POST /start first."}
             return {}
@@ -217,6 +226,46 @@ class TestToolTranslation:
         result = mcp_server.fantoma_extract("http://x", "q")
         assert len(starts) == 2, "one retry, not an infinite loop"
         assert not result.success
+
+    def test_extract_clears_a_stale_session_before_starting(self, monkeypatch):
+        """/start answers 409 when a session exists; extracting then reads the
+        OLD page and reports success with the wrong content."""
+        _install_pool(["http://a"])
+        paths = []
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False):
+            paths.append(path)
+            if path == "/start":
+                return {"url": "http://x", "title": "X"}
+            if path == "/extract":
+                return {"data": "correct content"}
+            return {}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        mcp_server.fantoma_extract("http://x", "q")
+        assert paths[0] == "/stop", "must clear any stale session first"
+        assert paths[:3] == ["/stop", "/start", "/extract"]
+
+    def test_extract_fails_loudly_when_start_returns_no_page_state(
+        self, monkeypatch
+    ):
+        """The bug this guards: a failed /start followed by a successful
+        /extract returns the previous page's content as if it were correct."""
+        _install_pool(["http://a"])
+        monkeypatch.setattr(mcp_server.time, "sleep", lambda s: None)
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False):
+            if path == "/start":
+                return {"error": "session active"}   # 409 body, no url
+            if path == "/extract":
+                return {"data": "STALE content from a previous page"}
+            return {}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        result = mcp_server.fantoma_extract("http://wanted", "q")
+        assert not result.success
+        assert "STALE" not in (result.data or "")
+        assert "wanted" in result.error
 
     def test_health_counts_only_reachable_backends(self, monkeypatch):
         _install_pool(["http://a", "http://b"])
