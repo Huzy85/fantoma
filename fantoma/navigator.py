@@ -223,8 +223,26 @@ class Navigator:
                     replay_steps=replay_steps if replay_ok else None,
                 )
 
-            page = fantoma._engine.get_page()
-            current_url = page.url
+            # Browser liveness check — if the Playwright driver crashed (e.g. a
+            # Node.js TypeError in the Firefox backend), page.url raises. Catch
+            # it here so the loop exits cleanly rather than spinning until
+            # engine.stop() is called and hangs on the dead process.
+            try:
+                page = fantoma._engine.get_page()
+                current_url = page.url
+            except Exception as e:
+                log.warning("Browser connection lost at step %d: %s", step_num, e)
+                tail = [s["action"] for s in steps_detail[-5:]]
+                return NavigatorResult(
+                    status="failed",
+                    data="Browser connection lost",
+                    steps_taken=step_num,
+                    steps_detail=steps_detail,
+                    final_url="",
+                    failure_reason="browser_crashed",
+                    last_actions=tail,
+                    is_placeholder=True,
+                )
             visited_urls.add(_norm_url(current_url))
 
             # Snapshot ARIA before actions — used to compute the change_line diff
