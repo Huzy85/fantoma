@@ -1,6 +1,8 @@
 # Fantoma
 
-The undetectable browser automation library. Drives browsers via the accessibility API — the same channel used by screen readers. No mouse movements, no screenshots, no pixel coordinates.
+Browser automation for AI agents that reads pages the way a screen reader does — through the accessibility tree, not screenshots.
+
+No vision model, no pixel coordinates, no mouse telemetry. Pages arrive as structured text, which costs roughly 500 tokens a step instead of the 1,000-5,000 a screenshot costs. That is what makes it practical to drive a browser with a small local model instead of a frontier API.
 
 Two classes. Use whichever fits:
 
@@ -79,7 +81,25 @@ fantoma test         # Verify it works
 - **ARIA landmark grouping** — interactive elements grouped under their nearest ARIA landmark (`[form: Login]`, `[navigation: Main nav]`). LLM sees structural context, not a flat list.
 - **Cookie consent auto-dismiss** — detects and closes consent banners without LLM involvement.
 
-## Accessibility-First Stealth
+## What It's For
+
+- **Agentic workflows on your own systems.** Give an LLM a browser it can actually drive, including past a login, without handing credentials to a third-party cloud.
+- **QA and regression testing of your own web apps**, including the signup and login flows that are painful to script by hand and break every redesign.
+- **Accessibility auditing.** Fantoma navigates through the same tree a screen reader uses. If it cannot complete a task on your site, that is direct evidence a screen-reader user cannot either. Most testing tools check for static WCAG violations; this checks whether the journey actually works.
+- **Personal automation** against accounts you own, running locally, with credentials that never leave your machine.
+- **Research and data collection** where you have the right to the data and want it done without a cloud dependency.
+
+The local-model support is the point of the architecture, not a footnote. If a task can run on a 7B model on your own hardware, it costs nothing per run and no third party sees the page or the credentials.
+
+## Responsible Use
+
+Fantoma is general-purpose automation, in the same category as Playwright or Selenium. It can be pointed anywhere, and what you point it at is your responsibility.
+
+What the project will not do: ship recipes targeting specific third-party platforms, or optimise for bulk account creation. Those are the uses that get automation projects taken down, and they are not what this is built for.
+
+Before pointing it at a site you do not own, check that site's terms and applicable law. Automating your own systems, or systems you are authorised to test, is unambiguous. Beyond that, the judgement is yours to make.
+
+## How It Reads Pages
 
 Fantoma interacts via the browser's accessibility API (ARIA tree) — the same channel used by screen readers like JAWS, NVDA, and VoiceOver.
 
@@ -87,9 +107,11 @@ Fantoma interacts via the browser's accessibility API (ARIA tree) — the same c
 
 **Zero visual layer interaction.** No screenshots, no pixel coordinates. The browser processes accessibility API calls — identical to what it sees from a screen reader user.
 
-**Legally protected channel.** WCAG, ADA, and the EU Accessibility Act require websites to support accessibility APIs. Blocking accessibility API access means blocking disabled users — sites cannot do this without legal exposure.
+**A channel sites cannot cheaply degrade.** WCAG, the ADA and the EU Accessibility Act push sites to expose a working accessibility tree, and real assistive-technology users depend on it. That does not grant automated access any legal right — it means the channel Fantoma reads is one sites have strong reasons to keep working, unlike a scraping-specific surface they can break freely.
 
-**Competitors produce detectable signals.** browser-use takes screenshots. Stagehand uses CDP. Skyvern combines LLM with computer vision. All three produce signals that anti-bot systems can fingerprint. Fantoma produces none.
+**Different signal profile to screenshot-driven agents.** browser-use runs a hybrid of accessibility tree and vision, Stagehand drives CDP, Skyvern is vision-first. Approaches that synthesise pointer input or drive over CDP emit signals those channels expose. Fantoma emits none of that, because it never generates pointer input at all.
+
+Worth stating plainly: no automation is undetectable. Modern bot management (Cloudflare's Precursor, behavioural Turnstile) scores behaviour across a whole session, not just fingerprints, and any tool claiming otherwise is selling something. Fantoma's design goal is a small, honest signal profile, not invisibility.
 
 ## Login & Signup (No LLM)
 
@@ -126,7 +148,7 @@ print(result.data)          # {"fields_filled": [...], "url": "...", "steps": 1}
 
 ## Limitations
 
-- **CAPTCHAs:** Proof-of-work types (ALTCHA) are solved automatically for free. reCAPTCHA and hCaptcha need a paid solver like CapSolver. Most sites never show CAPTCHAs because Camoufox prevents detection.
+- **CAPTCHAs:** Proof-of-work types (ALTCHA) are solved automatically for free. reCAPTCHA and hCaptcha need a paid solver like CapSolver. How often you see one varies by site and by IP reputation.
 - **Context window:** Local LLMs need at least 8K tokens. Set `--ctx-size 8192` in llama.cpp or `num_ctx: 8192` in Ollama.
 - **Small models:** A 3.8B model handles browsing, extraction, and simple forms. Complex multi-step signups work better with a larger model. The escalation chain handles this — your local model tries first, and after 3 failed planner replans on the current tier, Fantoma automatically switches to the next model in the chain and re-decomposes the task fresh.
 - **IP rate limiting:** Reddit detects repeated visits from the same IP after 2+ hours. Use proxy rotation for heavy scraping.
