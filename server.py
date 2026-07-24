@@ -79,6 +79,25 @@ def _require_session():
     return None
 
 
+def _release_session() -> None:
+    """Tear down the shared session before starting an independent browser.
+
+    /login and /start leave a session open on purpose. /run builds its own
+    Agent with its own browser, and Playwright's sync API cannot hold two
+    live instances on one thread — the second start fails with "Sync API
+    inside the asyncio loop" and the container stays broken until restart.
+    Calling this first makes /run safe to use after /login.
+    """
+    global _fantoma
+    if _fantoma is not None:
+        try:
+            _fantoma.stop()
+        except Exception as e:
+            log.warning("Failed to stop existing session cleanly: %s", e)
+        finally:
+            _fantoma = None
+
+
 # ── Lifecycle endpoints ──────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
@@ -303,6 +322,11 @@ def run_task():
     task = data.get("task")
     if not task:
         return jsonify({"error": "Missing 'task'"}), 400
+
+    # The Agent owns its own browser, so any session left open by /start or
+    # /login has to go first — two sync Playwright instances on one thread
+    # is what wedges the container.
+    _release_session()
 
     defaults = _get_fantoma_defaults()
     escalation = [defaults["llm_url"]]
