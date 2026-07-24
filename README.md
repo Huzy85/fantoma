@@ -42,13 +42,45 @@ fantoma test         # Verify it works
 
 **Requirements:** Python 3.10+, Linux or macOS (Windows via WSL). No other dependencies — everything installs automatically.
 
+## Use It From Any LLM (MCP)
+
+Fantoma ships an MCP server, so any MCP client — Claude Code, Claude Desktop, Cursor, or your own agent — can drive a browser directly.
+
+```bash
+pip install "fantoma[mcp]"
+python -m fantoma.mcp_server          # stdio
+```
+
+Register it with Claude Code:
+
+```bash
+claude mcp add fantoma -- python -m fantoma.mcp_server
+```
+
+Four tools:
+
+| Tool | What it does |
+|---|---|
+| `fantoma_run` | Give it a task in plain English; it drives the browser to completion |
+| `fantoma_login` | Fill and submit a login form using code alone — no LLM call, usually one step |
+| `fantoma_extract` | Open a page and pull out data, optionally against a JSON Schema |
+| `fantoma_health` | Which backends are reachable and how many tasks can run at once |
+
+**Concurrency.** Each browser backend serves one task at a time, so the MCP server hands out one backend per call and blocks when they are all busy. Run more containers to raise the ceiling:
+
+```bash
+export FANTOMA_MCP_BACKENDS=http://127.0.0.1:7860,http://127.0.0.1:7861
+```
+
+Set `FANTOMA_API_KEY` if your backends are gated, and `FANTOMA_MCP_TRANSPORT=http` to serve over streamable HTTP instead of stdio.
+
 ## What It Does
 
 - **Gets through the gate** — login, signup, CAPTCHA solving. Code handles the forms, LLM handles the unexpected.
 - **LLM as brain, code as hands** — Code matches form fields by label (fast, zero tokens). When it can't match, one LLM call labels all fields at once. Code fills based on the LLM's answer. Results cached in SQLite — LLM never called twice for the same site.
 - **Signup forms** — fills first name, last name, email, username, password, confirm password. Clicks terms checkboxes. Tracks what's been filled to avoid double-submission.
-- **25 real sites tested** — GitHub, HN, Etsy, eBay, Reddit, Discord, Spotify, and 18 more. Zero bot detections.
-- [Camoufox](https://github.com/daijro/camoufox) anti-detection — passes bot.sannysoft.com and nowsecure.nl. 2,241 stress tests, zero fingerprint detections.
+- **25 real sites tested** (March 2026) — GitHub, HN, Etsy, eBay, Reddit, Discord, Spotify, and 18 more, with no detection events recorded in that run.
+- [Camoufox](https://github.com/daijro/camoufox) anti-detection — passed bot.sannysoft.com and nowsecure.nl across 2,241 stress tests (March 2026). Detection moves; treat any such figure as a snapshot, not a guarantee.
 - **ARIA + raw DOM** — always reads both. No form is invisible, even old-school HTML without ARIA labels.
 - **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
