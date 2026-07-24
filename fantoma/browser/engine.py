@@ -254,27 +254,20 @@ class BrowserEngine:
                     pass
 
             if self._camoufox_cm is not None:
-                # Run __exit__ in a background thread so a crashed/hung
-                # Playwright Node.js driver can't spin the main thread at
-                # 100% CPU forever. If it doesn't finish in 10 s, force-kill
-                # the driver and any leftover Camoufox process.
+                # Run __exit__ on the main thread with a background watchdog
+                # timer. The 2026-06-30 version ran __exit__ in a worker
+                # thread, but Playwright's sync API is thread-bound: the
+                # cross-thread call failed instantly and silently, the driver
+                # was never shut down (one leaked Camoufox per session), and
+                # the main thread's asyncio state stayed dirty, so the next
+                # start() failed with "Sync API inside the asyncio loop".
+                # The watchdog kills the driver processes if __exit__ blocks
+                # longer than 10 s (crashed/wedged driver); severing the
+                # connection unblocks the main thread.
                 import subprocess
                 import threading
 
-                done = threading.Event()
-
-                def _do_exit():
-                    try:
-                        self._camoufox_cm.__exit__(None, None, None)
-                    except Exception:
-                        pass
-                    finally:
-                        done.set()
-
-                t = threading.Thread(target=_do_exit, daemon=True)
-                t.start()
-
-                if not done.wait(timeout=10):
+                def _kill_driver():
                     _log.warning(
                         "Camoufox __exit__ hung for 10 s — force-killing playwright driver"
                     )
@@ -286,6 +279,54 @@ class BrowserEngine:
                         ["pkill", "-9", "-f", "camoufox-bin"],
                         capture_output=True, timeout=5,
                     )
+
+                # If the driver process is already dead (the 2026-06-30 crash
+                # case), __exit__ busy-waits forever trying to reach it and no
+                # amount of pkill unblocks the loop — skip the graceful path
+                # entirely and go straight to cleanup.
+                driver_alive = subprocess.run(
+                    ["pgrep", "-f", "playwright/driver/node"],
+                    capture_output=True, timeout=5,
+                ).returncode == 0
+
+                exit_ok = False
+                if driver_alive:
+                    watchdog = threading.Timer(10, _kill_driver)
+                    watchdog.daemon = True
+                    watchdog.start()
+                    try:
+                        self._camoufox_cm.__exit__(None, None, None)
+                        exit_ok = True
+                    except Exception as e:
+                        _log.warning("Camoufox __exit__ failed: %s", e)
+                    finally:
+                        watchdog.cancel()
+                else:
+                    _log.warning(
+                        "Playwright driver process already dead — skipping __exit__"
+                    )
+
+                if not exit_ok:
+                    # Graceful shutdown failed — make sure nothing leaks.
+                    subprocess.run(
+                        ["pkill", "-9", "-f", "playwright/driver/node"],
+                        capture_output=True, timeout=5,
+                    )
+                    subprocess.run(
+                        ["pkill", "-9", "-f", "camoufox-bin"],
+                        capture_output=True, timeout=5,
+                    )
+
+                # Playwright's sync wrapper can leave the thread's running-loop
+                # pointer set after an abnormal shutdown, which makes the next
+                # sync start() raise "Sync API inside the asyncio loop"
+                # (see Session 12, 2026-03-30). Reset both pointers.
+                try:
+                    import asyncio
+                    asyncio._set_running_loop(None)
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+                except Exception:
+                    pass
 
             # Clean up orphaned 1×1 Xvfb glxtest instances left by crashed sessions.
             # The main supervisord-managed Xvfb runs on :99 with a 1920×1080 screen,
