@@ -426,7 +426,12 @@ def extract():
 
 @app.route("/run", methods=["POST"])
 def run_task():
-    """Convenience — uses Agent wrapper. Manages its own lifecycle."""
+    """Convenience — uses Agent wrapper. Manages its own lifecycle.
+
+    Pass keep_session=true to leave the browser on the final page so the
+    caller can inspect the end state via /state.
+    """
+    global _fantoma
     data = request.get_json(force=True)
     task = data.get("task")
     if not task:
@@ -460,7 +465,15 @@ def run_task():
             max_steps=data.get("max_steps", 50), timeout=data.get("timeout", 300),
             sensitive_data=data.get("sensitive_data"),
         )
-        result = agent.run(task, start_url=data.get("url"), deadline_s=data.get("timeout", 300))
+        keep = bool(data.get("keep_session"))
+        result = agent.run(task, start_url=data.get("url"),
+                           deadline_s=data.get("timeout", 300), keep_open=keep)
+        if keep:
+            # Hand the live browser to the shared session so /state and /stop
+            # can reach it. This is how a caller checks what the run actually
+            # did — whether the item reached the cart — instead of trusting
+            # the agent's own account of it.
+            _fantoma = agent.fantoma
         if _is_unrecoverable(result.error or ""):
             _restart_worker("run: " + (result.error or "")[:120])
             return jsonify({

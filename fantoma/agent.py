@@ -301,7 +301,8 @@ class Agent:
         self._planner.reset()
         return True
 
-    def run(self, task: str, start_url: str = None, deadline_s: float = None) -> AgentResult:
+    def run(self, task: str, start_url: str = None, deadline_s: float = None,
+            keep_open: bool = False) -> AgentResult:
         """Run a browser task described in English.
 
         Two-phase execution:
@@ -555,7 +556,14 @@ class Agent:
                 steps_taken=total_steps, steps_detail=all_steps,
             ))
         finally:
-            self.fantoma.stop()
+            # keep_open leaves the browser on the final page so a caller can
+            # inspect what the run actually did — did the item reach the cart,
+            # is the form really submitted. Without it there is no session left
+            # to check and you are left grading the agent's own prose, which is
+            # how a run that changed nothing can still look like a success.
+            # The caller owns the browser from here and must stop it.
+            if not keep_open:
+                self.fantoma.stop()
 
     def _get_page_summary(self) -> str:
         """Get a brief page summary for the planner (URL + title + headings + content)."""
