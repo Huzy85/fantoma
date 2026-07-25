@@ -77,6 +77,11 @@ class Fantoma:
 
         self._verification_callback = verification_callback
         self._task = ""
+        # Accessibility tree captured after the previous action, so the next
+        # one can tell whether it changed anything. None until the session
+        # starts; the first action then has no baseline and reports only a
+        # URL change, which is correct rather than a guess.
+        self._last_tree = None
         self._engine = None
         self._dom = AccessibilityExtractor(
             max_elements=self.config.extraction.max_elements,
@@ -99,7 +104,10 @@ class Fantoma:
             self._engine.navigate(url)
             time.sleep(2)
             dismiss_consent(self._engine.get_page())
-        return self.get_state(task=self._task)
+        state = self.get_state(task=self._task)
+        # Baseline for the first action's `changed` comparison.
+        self._last_tree = state.get("aria_tree", "")
+        return state
 
     def stop(self) -> None:
         """Close the browser and clean up."""
@@ -174,12 +182,27 @@ class Fantoma:
     # ── Actions ──────────────────────────────────────────────
 
     def _action_result(self, success: bool, pre_url: str = None) -> dict:
-        """Build a standard action result with fresh state."""
+        """Build a standard action result with fresh state.
+
+        `changed` used to be a copy of `url_changed`, which made every
+        in-page interaction report that nothing happened: clicking "Add to
+        cart" on a single-page shop leaves the URL alone, so a caller was
+        told the click did nothing while the DOM had plainly changed.
+
+        It now compares the accessibility tree against the one captured
+        after the previous action. That costs nothing extra — the previous
+        result already extracted it — and it is the signal a caller actually
+        wants: did this action do anything at all.
+        """
         state = self.get_state(task=self._task)
+        tree = state.get("aria_tree", "")
+        url_changed = pre_url is not None and state["url"] != pre_url
+        dom_changed = self._last_tree is not None and tree != self._last_tree
+        self._last_tree = tree
         return {
             "success": success,
-            "changed": pre_url is not None and state["url"] != pre_url,
-            "url_changed": pre_url is not None and state["url"] != pre_url,
+            "changed": bool(url_changed or dom_changed),
+            "url_changed": url_changed,
             "errors": state["errors"],
             "state": state,
         }
