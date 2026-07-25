@@ -224,13 +224,30 @@ def verify_outcome(spec: TaskSpec, end_url: str, end_page: str) -> tuple[bool, s
             low = line.lower()
             if target in low and "add to cart" in low:
                 return False, f"{spec.target} still shows an add-to-cart control"
-        # Otherwise the item's own line should sit beside a remove control.
+        # The target's own line should sit beside a remove control.
+        found = False
         for i, line in enumerate(lines):
             if target in line.lower():
                 near = " ".join(lines[i:i + 3]).lower()
                 if "remove" in near:
-                    return True, f"{spec.target} sits with a remove control"
-        return False, f"no evidence {spec.target} was added"
+                    found = True
+                    break
+        if not found:
+            return False, f"no evidence {spec.target} was added"
+
+        # Asking for one item and getting two is a failure, not a success.
+        # Checking only that the target is present is the permissive matching
+        # WebArena Verified removed for inflating scores, and it passed a real
+        # run here that added the right jacket AND a second product from a
+        # stale index. Benchmarks that count side effects (Mind2Web's
+        # efficiency score, ST-WebAgentBench's completion-under-policy) exist
+        # because agents overshoot far more often than headline numbers admit.
+        removals = sum(1 for line in lines if '"remove"' in line.lower())
+        if removals > 1:
+            return False, (
+                f"{removals} items were added, expected only {spec.target}"
+            )
+        return True, f"{spec.target} sits with a remove control"
 
     if target in page_low:
         return True, f"{spec.target} present on the final page"

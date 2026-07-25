@@ -325,7 +325,7 @@ def _parse_aria_line(line: str) -> dict | None:
     return result
 
 
-def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate") -> str:
+def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate", _shown_out: list = None) -> str:
     """Extract page content via ARIA accessibility tree.
 
     Returns a numbered element map similar to DOMExtractor but using
@@ -474,12 +474,29 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
         # button even if the title itself is pruned away.
         annotate_ambiguous(interactive)
 
+        # Which of the identically-named controls this is, in DOM order.
+        # Resolution used get_by_role(...).first, so every one of six "Add to
+        # cart" buttons resolved to the first product no matter which index
+        # the model picked. Recorded here, while the list is still in DOM
+        # order — pruning reorders it moments later.
+        seen_sig: dict = {}
+        for el in interactive:
+            sig = (el.get("role", ""), el.get("name", ""))
+            el["_ordinal"] = seen_sig.get(sig, 0)
+            seen_sig[sig] = el["_ordinal"] + 1
+
         if task and mode != "form":
             shown = prune_elements(interactive, task, _max_el)
         else:
             shown = interactive[:_max_el]
 
         new_flags = mark_new_elements(previous_elements or [], shown)
+
+        # Hand back the very elements that were numbered. Re-parsing them out
+        # of the rendered text loses _ordinal and _context, and any mismatch
+        # between what was numbered and what is resolved is a wrong click.
+        if _shown_out is not None:
+            _shown_out.extend(shown)
 
         output.append(f"Elements ({len(shown)} of {len(interactive)}):")
 
@@ -644,8 +661,10 @@ class AccessibilityExtractor:
             return self.extract_content(page)
 
         previous = list(self._last_interactive)  # copy before overwriting
+        shown: list = []
         result = extract_aria(page, self._max_elements, self._max_headings,
-                              task=task, previous_elements=previous, mode=mode)
+                              task=task, previous_elements=previous, mode=mode,
+                              _shown_out=shown)
         if not result or "Elements: none found" in result:
             log.debug("ARIA tree empty — falling back to DOM extraction")
             self._last_interactive = []
@@ -653,8 +672,10 @@ class AccessibilityExtractor:
             fallback = DOMExtractor()
             return fallback.extract(page)
 
-        # Cache interactive elements for get_element_by_index
-        self._last_interactive = self._parse_interactive_from_output(result)
+        # Cache the elements exactly as numbered, so index N resolves to the
+        # element the model saw as [N]. Falls back to re-parsing the text if
+        # nothing came back, which keeps older callers working.
+        self._last_interactive = shown or self._parse_interactive_from_output(result)
         if self._last_interactive:
             self._last_interactive = self._filter_occluded(page, self._last_interactive)
 
@@ -913,6 +934,42 @@ class AccessibilityExtractor:
             return el.get("role", ""), el.get("name", "")
         return None
 
+    def find_index_for_target(self, index: int, target: str):
+        """Return the index of the control belonging to `target`, if different.
+
+        A repeated control ("Add to cart") tells a model nothing about which
+        item it acts on, and weak models take the first match — measured live,
+        asked for the Fleece Jacket the agent added the first product on the
+        page. The item each control belongs to is already known here, so the
+        right index can be resolved in code rather than hoped for in a prompt.
+
+        Returns None when there is nothing to correct: no target, the choice
+        already matches, or no single unambiguous alternative. Silence is the
+        safe answer — a wrong correction is worse than no correction.
+        """
+        if not target or index is None:
+            return None
+        if not (0 <= index < len(self._last_interactive)):
+            return None
+
+        chosen = self._last_interactive[index]
+        ctx = (chosen.get("_context") or "").lower()
+        want = target.lower()
+        if not ctx:
+            return None      # not an ambiguous control; leave it alone
+        if want in ctx or ctx in want:
+            return None      # already the right one
+
+        matches = [
+            el for el in self._last_interactive
+            if el.get("role") == chosen.get("role")
+            and el.get("name") == chosen.get("name")
+            and want in (el.get("_context") or "").lower()
+        ]
+        if len(matches) != 1:
+            return None      # ambiguous or absent — do not guess
+        return self._last_interactive.index(matches[0])
+
     def find_by_signature(self, role: str, name: str):
         """Return the current index whose (role, name) matches, or None. Used
         on cache replay to re-resolve a step against a possibly-changed page."""
@@ -938,10 +995,18 @@ class AccessibilityExtractor:
         if el.get("_frame"):
             return self._find_in_frame(page, el)
 
-        # Use Playwright's role-based locator (the modern, recommended way)
+        # Use Playwright's role-based locator, at the right position among
+        # identically-named controls. Taking .first here meant every one of
+        # six "Add to cart" buttons resolved to the first product, so the
+        # model's choice of index was discarded and the wrong item was
+        # actioned no matter what it picked.
+        ordinal = el.get("_ordinal", 0)
         try:
             locator = page.get_by_role(role, name=name)
-            if locator.count() > 0:
+            count = locator.count()
+            if count > 0:
+                if ordinal and ordinal < count:
+                    return locator.nth(ordinal).element_handle()
                 return locator.first.element_handle()
         except Exception:
             pass
@@ -979,14 +1044,20 @@ class AccessibilityExtractor:
 
     @staticmethod
     def _parse_interactive_from_output(output: str) -> list[dict]:
-        """Parse the numbered elements from the output string."""
+        """Parse the numbered elements back out of the rendered output.
+
+        The inferred "(in: ...)" label is captured too, so a caller can tell
+        which item a repeated control belongs to without re-extracting.
+        """
         elements = []
         for line in output.split("\n"):
             match = re.match(r'\*?\[(\d+)\]\s+(\w+)\s+"([^"]*)"', line)
             if match:
+                ctx = re.search(r'\(in: (.+?)\)\s*$', line)
                 elements.append({
                     "index": int(match.group(1)),
                     "role": match.group(2),
                     "name": match.group(3),
+                    "_context": ctx.group(1) if ctx else "",
                 })
         return elements
