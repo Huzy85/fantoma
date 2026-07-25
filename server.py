@@ -490,6 +490,9 @@ def run_task():
             "final_url": result.final_url, "final_title": result.final_title,
             # Independent check of the end state against the parsed task.
             "verified": result.verified, "verify_reason": result.verify_reason,
+            # What the agent actually did, step by step. Without this a failed
+            # run can only be guessed at from its final state.
+            "steps_detail": (result.steps_detail or [])[:40],
         })
     except Exception as e:
         err = str(e)
