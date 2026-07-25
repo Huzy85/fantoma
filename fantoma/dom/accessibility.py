@@ -496,6 +496,12 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
         # of the rendered text loses _ordinal and _context, and any mismatch
         # between what was numbered and what is resolved is a wrong click.
         if _shown_out is not None:
+            # Stamp the number each element is rendered with. Callers resolve
+            # by it (form_login, browser_tool), and the re-parsed dicts this
+            # replaced carried it — without it, field lookup silently returns
+            # nothing and a login fills no fields at all.
+            for i, el in enumerate(shown):
+                el["index"] = i
             _shown_out.extend(shown)
 
         output.append(f"Elements ({len(shown)} of {len(interactive)}):")
