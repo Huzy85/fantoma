@@ -4,15 +4,19 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fantoma"
-version = "0.8.0"
-description = "Accessibility-first browser automation. Zero mouse telemetry. Works with any LLM."
+version = "0.9.0"
+description = "Accessibility-first browser automation for AI agents. MCP server included. Runs on small local LLMs."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
     {name = "Petru", email = "support@steamvibe.com"},
 ]
-keywords = ["browser", "automation", "ai", "agent", "anti-detect", "camoufox", "llm"]
+keywords = [
+    "browser", "automation", "ai", "agent", "llm", "mcp",
+    "model-context-protocol", "accessibility", "aria", "playwright",
+    "anti-detect", "camoufox", "local-llm",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
