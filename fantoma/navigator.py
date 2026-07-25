@@ -14,6 +14,39 @@ from fantoma.state_tracker import StateTracker
 
 log = logging.getLogger("fantoma.navigator")
 
+# Actions that can actually change the page. navigate/scroll/back move you
+# around but leave the site's state untouched, so they are not evidence that
+# a "do something" task was carried out.
+_STATE_CHANGING = frozenset({"click", "type_text", "select", "press_key"})
+
+# Imperatives that mean the task is not complete until the page changes.
+# Kept deliberately narrow: a false positive here blocks DONE on a read-only
+# task and burns the whole step budget, which is worse than the bug being fixed.
+_ACTION_VERBS = frozenset({
+    "add", "click", "select", "choose", "tick", "check", "uncheck", "submit",
+    "send", "log in", "login", "sign in", "signin", "sign up", "signup",
+    "register", "buy", "order", "purchase", "checkout", "check out",
+    "upload", "download", "fill", "enter", "type", "search for", "set",
+    "remove", "delete", "clear", "apply", "post", "reply", "subscribe",
+    "accept", "decline", "confirm", "toggle", "drag", "sort", "filter",
+})
+
+_MAX_DONE_REJECTIONS = 2
+
+
+def _requires_state_change(instruction: str) -> bool:
+    """True when the instruction asks the agent to act, not merely to read.
+
+    Word-boundary matched so "search for" does not fire on "research", and
+    "post" does not fire on "postcode".
+    """
+    text = (instruction or "").lower()
+    for verb in _ACTION_VERBS:
+        if re.search(rf"\b{re.escape(verb)}\b", text):
+            return True
+    return False
+
+
 MODE_MAP = Planner.MODE_MAP
 
 
@@ -206,6 +239,13 @@ class Navigator:
         empty_streak = 0  # consecutive empty/unparseable LLM responses
         visited_urls = set()       # pages seen this subtask
         nav_loop_targets = {}      # how often we've bounced back to an already-seen URL
+        # Premature-DONE guard state. requires_action is decided once from the
+        # instruction; state_changed flips when an action that can actually
+        # alter the page succeeds.
+        requires_action = _requires_state_change(subtask.instruction)
+        state_changed = False
+        done_rejections = 0
+        nudge = ""
 
         for step_num in range(1, max_steps + 1):
             # Wall-clock guard — a slow LLM can blow the time budget long before
@@ -265,7 +305,9 @@ class Navigator:
                 instruction=subtask.instruction,
                 done_when=subtask.done_when,
             )
-            user_msg = f"Change: {change_line}\n\nPage ({current_url}):\n{aria}"
+            prefix = f"{nudge}\n\n" if nudge else ""
+            nudge = ""  # shown once; the model gets a fresh look at the page
+            user_msg = f"{prefix}Change: {change_line}\n\nPage ({current_url}):\n{aria}"
 
             messages = [
                 {"role": "system", "content": system},
@@ -297,6 +339,29 @@ class Navigator:
 
             for action_type, params in actions:
                 if action_type == "done":
+                    # A task that asks the agent to *do* something is not
+                    # finished until something was actually done. Weak models
+                    # routinely announce DONE on arriving at the right page —
+                    # measured live: "add the backpack to the cart" reached the
+                    # product listing and stopped, cart untouched. The prompt
+                    # already asks the model to check this; prompts do not bind
+                    # weak models, so the check lives here instead.
+                    if (requires_action and not state_changed
+                            and done_rejections < _MAX_DONE_REJECTIONS):
+                        done_rejections += 1
+                        log.info(
+                            "Rejected DONE: task needs an action but none has "
+                            "succeeded yet (rejection %d/%d)",
+                            done_rejections, _MAX_DONE_REJECTIONS,
+                        )
+                        nudge = (
+                            "NOT DONE: this task requires you to act on the page, "
+                            "and no click, typing or selection has succeeded yet. "
+                            "Find the control that performs the task and use it. "
+                            "Only say DONE once the page reflects the change."
+                        )
+                        break  # abandon the rest of this batch, re-prompt
+
                     data = self._extract_answer(subtask, fantoma, llm)
                     return NavigatorResult(
                         status="done", data=data, steps_taken=step_num,
@@ -370,6 +435,8 @@ class Navigator:
                 # without a resolvable (role, name) can't be replayed safely, so
                 # the whole plan is marked non-cacheable.
                 if result.get("success", False):
+                    if action_type in _STATE_CHANGING:
+                        state_changed = True
                     needs_sig = "element_id" in params
                     valid_sig = isinstance(replay_sig, (tuple, list)) and len(replay_sig) == 2
                     if needs_sig and not valid_sig:
