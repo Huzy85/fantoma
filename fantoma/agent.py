@@ -414,6 +414,7 @@ class Agent:
                 start_domain=start_domain,
                 sensitive_data=self._sensitive_data,
                 deadline=deadline,
+                target=self._spec.target,
             )
 
             all_steps.extend(phase1_result.steps_detail)
@@ -496,6 +497,7 @@ class Agent:
                     start_domain=start_domain,
                     sensitive_data=self._sensitive_data,
                     deadline=deadline,
+                    target=self._spec.target,
                 )
 
                 all_steps.extend(result.steps_detail)
