@@ -109,6 +109,37 @@ Rotating on every request is the wrong default for residential proxies: you thro
 
 **Browser engines.** The accessibility layer reads whatever engine is underneath, so the stealth backend is swappable without touching the agent, planner or navigator. Camoufox is the default; Chromium via Patchright is `Agent(browser="chromium")`.
 
+## Knowing It Worked
+
+An agent describing its own work is not evidence. A run that added the wrong
+item to a cart will report success just as confidently as one that got it
+right, and nothing downstream can tell the difference.
+
+Fantoma parses a task once into fields, then checks the finished page against
+them:
+
+```python
+result = agent.run("Add the 'Sauce Labs Fleece Jacket' to the cart")
+result.success        # False if the end state does not match the task
+result.verified       # whether the check ran and what it concluded
+result.verify_reason  # "Sauce Labs Fleece Jacket still shows an add-to-cart control"
+result.final_url      # where the browser actually finished
+```
+
+Target extraction is deterministic — quoted text is the target in nearly every
+task a person writes, and code finds it more reliably than a small model. An
+LLM is consulted only when a task carries no quotes, and its answer is
+discarded unless it appears verbatim in the task, so a model cannot substitute
+something nobody asked for.
+
+Verification is fail-open. A task it cannot parse, or a browser that has
+already closed, reports ok rather than inventing a failure, so it can never
+fail a run that actually worked.
+
+Over HTTP, pass `keep_session: true` to `/run` to leave the browser on the
+final page and inspect the end state yourself. `steps_detail` returns what the
+agent actually did, step by step.
+
 ## Reliability
 
 The Playwright Firefox driver Camoufox rides on can die outright: a page whose JavaScript throws an error with no location takes down the Node driver process. When that happens the sync API in that worker is bound to a dead transport, and every later request fails — killing the driver and installing a fresh event loop does not bring it back.

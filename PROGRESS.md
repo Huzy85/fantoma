@@ -24,6 +24,75 @@ If token cost is revisited, the system prompt is the target: it is 2.5x the page
 
 ---
 
+## Session 26: 2026-07-25 — Why the agent acted on the wrong thing
+
+Started as "measure where we actually stand" and turned into finding why write
+tasks fail. The short version: the agent could not act on a *specific* item,
+and four separate defects hid that from view.
+
+**Measured first.** `tools/live_site_matrix.py` runs 19 real sites across five
+tiers. 16/19 in 145s, protected sites 5/5 (Etsy, Indeed, old.reddit,
+DuckDuckGo, cloudflare.com), JS-heavy 3/3, docs 4/4. Two of the three
+non-passes were the harness's fault — httpbin genuinely 503'd, and iana.org
+answered "Public Technical Identifiers", which is correct. So the read path is
+strong. That said nothing about the write path.
+
+**Two testing traps, both fallen into before getting it right.** A task with a
+single-step shortcut measures nothing: "search Wikipedia for Ada Lovelace"
+passed in one step because the agent navigated straight to the article. And
+grading the agent's prose lets a run that read the wrong page pass with a
+plausible sentence. `tools/live_flow_test.py` fixes both — journeys that
+cannot be shortcut, graded on the browser's end state, partial credit per
+checkpoint.
+
+That needed a precondition that did not exist: `AgentResult` had no
+`final_url`, and `/run` tore down its own browser, so there was nothing left
+to inspect. Added `final_url`, `final_title`, `steps_detail` and a
+`keep_session` flag. The first run with it exposed the real problem —
+asked for the Sauce Labs Fleece Jacket, the agent added the Backpack and
+reported success.
+
+**Four defects behind that, each hiding the next:**
+
+1. Interactive elements were deduplicated by `(role, name)`, so five of six
+   "Add to cart" buttons were deleted before the model saw the page. No major
+   framework does this — Playwright MCP assigns a ref per element, and
+   Vercel's agent-browser documents the identical case as two entries.
+2. Resolution then looked elements up by role and name and took `.first`, so
+   every index resolved to the first product regardless. **This silently
+   discarded the dedup fix, the context labels and the ranking fix** — every
+   improvement was thrown away one line before the click.
+3. The action cache was replaying a plan recorded while the bug was live, so
+   for several rounds the fixed code never ran at all. An empty `steps_detail`
+   is the tell.
+4. Queued actions reused element numbers captured once per step, so an action
+   after a re-render acted on whatever then sat at that number — two clicks on
+   one index added two different products.
+
+**Validated before fixing, not after.** browser-use batches actions and does
+not enforce its own "execute until the page changes" rule, with open issues
+#286 and #2208 for exactly this. Stagehand and Skyvern act once per
+observation. Playwright MCP and agent-browser both require a re-snapshot
+before the next reference. A first idea — labelling buttons with the nearest
+heading — was dropped after checking W3C AccName 1.2, which is explicit that
+ancestors do not contribute to an accessible name by proximity.
+
+**Also added**, from the same line of thinking: tasks are parsed once into
+action/target/values, and the finished page is checked against that target.
+Verification failing flips `success` to `False`. Checking only that the target
+was present passed a run that added the right item and a wrong one, which is
+the permissive matching WebArena Verified removed for inflating scores.
+
+**Where it stands.** The named item now reaches the cart, which was impossible
+before. But this is not yet a working end-to-end flow: with one action per
+observation the local model needs far more steps and loses its way. It now
+fails honestly instead of succeeding wrongly. The plumbing is right; the next
+lever is the model or the step budget.
+
+659 tests pass, from 519 passing with 22 failing.
+
+---
+
 ## Session 25: 2026-07-24 — MCP server, crash-only recovery, pool failover
 
 **MCP server.** `fantoma/mcp_server.py` exposes `fantoma_run`, `fantoma_login`, `fantoma_extract` and `fantoma_health` over stdio or streamable HTTP (MCP SDK 1.26, `FastMCP`). It is a translator over the Flask API and holds no session or navigation logic. Backends are single-session (`threaded=False`), so a queue hands out one backend per call; `FANTOMA_MCP_BACKENDS` lists them.
