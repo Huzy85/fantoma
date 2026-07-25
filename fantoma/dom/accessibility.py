@@ -141,9 +141,15 @@ def prune_elements(elements: list[dict], task: str = "", max_elements: int = 20)
         name_lower = el.get("name", "").lower()
         role = el.get("role", "")
 
-        # Substring keyword matching, cumulative across all keywords
+        # Substring keyword matching, cumulative across all keywords.
+        # The inferred context counts too: the button for a named product is
+        # called "Add to cart" and matches no keyword at all, so scoring the
+        # name alone leaves the one control the task is about ranked bottom.
+        context_lower = (el.get("_context") or "").lower()
         for kw in keywords:
             if kw in name_lower:
+                score += 3
+            if context_lower and kw in context_lower:
                 score += 3
 
         # Landmark keyword matching
@@ -170,6 +176,60 @@ def prune_elements(elements: list[dict], task: str = "", max_elements: int = 20)
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [el for _, el in scored[:max_elements]]
+
+
+# How far back to look for a label when a control's name is ambiguous. Short
+# on purpose: a product's own title sits immediately before its button, and a
+# wider window starts pulling in unrelated text.
+_CONTEXT_LOOKBACK = 4
+
+
+def annotate_ambiguous(elements: list[dict]) -> list[dict]:
+    """Tag repeated controls with the nearest preceding distinct label.
+
+    A product grid gives every button the bare name "Add to cart", so the
+    model has no way to say which one it means. The page ought to solve this
+    with aria-label or aria-labelledby, and a bare repeated control is a WCAG
+    2.4.4 failure, but real pages frequently do not — so the label has to be
+    inferred here.
+
+    The inference is deliberately marked as such when rendered. Per W3C
+    AccName, an ancestor or neighbour does NOT contribute to an accessible
+    name by proximity, so this is a hint and not a name. It can be wrong, and
+    the model has to be able to tell the difference between what the page
+    states and what we guessed.
+
+    Sets `_context` on ambiguous elements only. Mutates and returns the list.
+    """
+    counts = {}
+    for el in elements:
+        key = (el.get("role", ""), el.get("name", ""))
+        counts[key] = counts.get(key, 0) + 1
+
+    for i, el in enumerate(elements):
+        key = (el.get("role", ""), el.get("name", ""))
+        if counts.get(key, 0) < 2:
+            continue  # unique already; naming it again only adds noise
+        # A link's name IS its destination, so two links sharing a name
+        # usually share a target and need no help. Annotating them borrowed
+        # the PREVIOUS product's title, which is worse than saying nothing.
+        if el.get("role") == "link":
+            continue
+        name = el.get("name", "")
+        for j in range(i - 1, max(-1, i - 1 - _CONTEXT_LOOKBACK), -1):
+            source = elements[j]
+            candidate = source.get("name", "")
+            # Only borrow from a link. Links name a destination, so a product
+            # title is a real label for the button beneath it. Borrowing from
+            # a control instead produces confident nonsense — measured live,
+            # product links picked up "(in: Price (high to low))" from a sort
+            # dropdown and "(in: Remove)" from the button above them.
+            if source.get("role") != "link":
+                continue
+            if candidate and candidate != name:
+                el["_context"] = candidate
+                break
+    return elements
 
 
 def mark_new_elements(previous: list[dict], current: list[dict]) -> list[bool]:
@@ -410,6 +470,10 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
             others = [el for el in interactive if el["role"] not in input_roles]
             interactive = inputs + others
 
+        # Before pruning, so a product's title is still present to label its
+        # button even if the title itself is pruned away.
+        annotate_ambiguous(interactive)
+
         if task and mode != "form":
             shown = prune_elements(interactive, task, _max_el)
         else:
@@ -446,7 +510,13 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
             for idx, el, is_new in items:
                 prefix = "*" if is_new else ""
                 state = enrich_field_state(el) or el["state"]
-                output.append(f'{prefix}[{idx}] {el["role"]} "{el["name"]}"{state}')
+                ctx = el.get("_context")
+                # "in:" marks this as inferred from page order, not an
+                # accessible name the page actually provides.
+                hint = f' (in: {ctx})' if ctx else ""
+                output.append(
+                    f'{prefix}[{idx}] {el["role"]} "{el["name"]}"{state}{hint}'
+                )
     else:
         output.append("Elements: none found")
 

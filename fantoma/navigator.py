@@ -81,6 +81,11 @@ DONE
 
 Rules:
 - Match [number] to the element list shown below.
+- When several controls share a name, each shows the item it belongs to as
+  (in: ...). To act on a specific item, pick the [number] whose (in: ...)
+  names that item. Do NOT pick the first matching control -- that is a
+  different item. This hint is inferred from page order and can be wrong,
+  so prefer a control whose own name already identifies the item.
 - To fill a form: TYPE each field, then CLICK submit, all in one response.
 - After typing in a search field, add PRESS Enter.
 - BACK returns to the previous page (use when current page is a dead end).
