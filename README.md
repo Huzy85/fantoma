@@ -76,6 +76,39 @@ Backends restart themselves when their browser driver dies (see [Reliability](#r
 
 Set `FANTOMA_API_KEY` if your backends are gated, and `FANTOMA_MCP_TRANSPORT=http` to serve over streamable HTTP instead of stdio.
 
+## Plugging Things In
+
+Fantoma defines the extension points and stays out of the way. It does not bundle every provider — a bundled integration is a dependency that rots, and you almost certainly want your own solver and your own proxies.
+
+**Proxies.** Anything with a `.next()` returning a Playwright proxy dict works, so a custom pool needs no plumbing. A single proxy, a list, and a rotator are built in; for residential pools there is `ProxyPool`, which holds one exit IP and rotates only when it is actually blocked:
+
+```python
+from fantoma.browser.residential import ProxyPool
+
+# One port per exit IP (the common residential idiom)
+pool = ProxyPool.port_based(
+    host="gw.your-provider.com", port_base=10000, port_span=100,
+    username="user", password="pass", pin_gateway_ip=True,
+)
+
+# Or a session token inside the username
+pool = ProxyPool.session_based(
+    host="gw.your-provider.com", port=7000,
+    username="customer", password="pass", sessions=50,
+)
+
+agent = Agent(proxy=pool)
+pool.report_failure("429")   # too many strikes and it moves to a fresh IP
+```
+
+Rotating on every request is the wrong default for residential proxies: you throw away cookies, logins, and any anti-bot clearance tied to that IP. `ProxyPool` is sticky and rotates on failure.
+
+**CAPTCHA solvers.** `APICaptchaSolver` reads from a `PROVIDERS` table, so adding one is a dict entry with its two endpoints. CapSolver and 2Captcha ship configured. There are also proof-of-work solvers (ALTCHA, Friendly Captcha — free, no service needed), a human-in-the-loop solver, and a Telegram solver.
+
+**The coupling worth knowing about.** A CAPTCHA solution is bound to the exit IP it was solved through — clearance obtained on one IP is worthless from another. So a solver and a proxy pool are not independent plugins. Solve through the same proxy you then browse through, and treat "rotate the IP" and "discard the clearance" as a single action. `ProxyPool(on_rotate=...)` exists for that: register a callback that clears whatever was bound to the retired IP.
+
+**Browser engines.** The accessibility layer reads whatever engine is underneath, so the stealth backend is swappable without touching the agent, planner or navigator. Camoufox is the default; Chromium via Patchright is `Agent(browser="chromium")`.
+
 ## Reliability
 
 The Playwright Firefox driver Camoufox rides on can die outright: a page whose JavaScript throws an error with no location takes down the Node driver process. When that happens the sync API in that worker is bound to a dead transport, and every later request fails — killing the driver and installing a fresh event loop does not bring it back.
