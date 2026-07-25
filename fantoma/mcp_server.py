@@ -117,23 +117,34 @@ def _post_once(backend: str, path: str, payload: dict, timeout: float) -> tuple[
         return resp.status_code, body
 
 
+class BackendRestarting(RuntimeError):
+    """A backend's worker died and is being replaced by supervisord.
+
+    Raised instead of waiting when another backend is free to take the work.
+    """
+
+
 def _post(
     backend: str,
     path: str,
     payload: dict,
     timeout: float,
     retry_transport: bool = False,
+    wait_for_restart: bool = True,
 ) -> dict:
-    """POST, absorbing one worker restart.
+    """POST, absorbing a worker restart.
 
     A backend answers 503 with retryable=true when its browser driver has
-    died and supervisord is replacing the process (startsecs=2). That is a
-    routine, self-healing event, so waiting it out is better than handing
-    the model an error it cannot act on.
+    died and supervisord is replacing the process (startsecs=2).
 
-    retry_transport also retries connection-level failures, which happen
-    when the worker exits mid-request. Only pass it for calls that are safe
-    to repeat: a retried /run or /login could submit a form twice.
+    wait_for_restart=False raises BackendRestarting immediately so the caller
+    can move to a different backend — far quicker than waiting, because a hung
+    worker is only reclaimed when its request watchdog fires (up to ~75 s).
+    Waiting is only right when there is nowhere else to go.
+
+    retry_transport also handles connection-level failures, which happen when
+    the worker exits mid-request. Only pass it for calls that are safe to
+    repeat: a retried /run or /login could submit a form twice.
     """
     def attempt():
         try:
@@ -147,9 +158,10 @@ def _post(
     if body is not None and not (status == 503 and body.get("retryable")):
         return body
 
-    # A hung worker is only reclaimed when its request watchdog fires (up to
-    # ~75 s for /start), so the ladder has to outlast that or the client gives
-    # up on a backend that was about to come back.
+    if not wait_for_restart:
+        raise BackendRestarting(f"{backend} is restarting")
+
+    # Last resort: outlast the worker's own watchdog rather than fail.
     for delay in (5.0, 15.0, 30.0, 45.0):
         time.sleep(delay)
         try:
@@ -159,10 +171,32 @@ def _post(
         if body is not None and not (status == 503 and body.get("retryable")):
             return body
     if body is None:
-        raise RuntimeError(
+        raise BackendRestarting(
             f"Fantoma backend {backend} did not come back after a restart"
         )
     return body
+
+
+def _with_backend(operation):
+    """Run operation(backend, wait_for_restart) against a healthy backend.
+
+    On a restart-class failure the backend is returned to the pool (the queue
+    puts it at the back, so it gets time to recover) and the work moves to the
+    next one. The final attempt waits instead of failing, so a single-backend
+    setup still behaves correctly.
+    """
+    pool = _pool_instance()
+    attempts = max(1, min(pool.size, 3))
+    last_error: Exception | None = None
+    for i in range(attempts):
+        is_final = i == attempts - 1
+        try:
+            with pool.acquire() as backend:
+                return operation(backend, is_final)
+        except BackendRestarting as e:
+            last_error = e
+            continue
+    raise last_error if last_error else RuntimeError("no backend available")
 
 
 def _get(backend: str, path: str, timeout: float) -> dict:
@@ -214,8 +248,12 @@ def fantoma_run(
     payload: dict = {"task": task, "max_steps": max_steps, "timeout": timeout}
     if url:
         payload["url"] = url
-    with _pool_instance().acquire() as backend:
-        body = _post(backend, "/run", payload, timeout=timeout + 30)
+
+    def op(backend, is_final):
+        return _post(backend, "/run", payload, timeout=timeout + 30,
+                     wait_for_restart=is_final)
+
+    body = _with_backend(op)
     return TaskResult(
         success=bool(body.get("success")),
         data=body.get("data") or "",
@@ -249,8 +287,11 @@ def fantoma_login(
         "url": url, "email": email, "username": username, "password": password,
         "first_name": first_name, "last_name": last_name,
     }
-    with _pool_instance().acquire() as backend:
-        body = _post(backend, "/login", payload, timeout=TASK_TIMEOUT)
+    def op(backend, is_final):
+        return _post(backend, "/login", payload, timeout=TASK_TIMEOUT,
+                     wait_for_restart=is_final)
+
+    body = _with_backend(op)
     return LoginResult(
         success=bool(body.get("success")),
         url=body.get("url") or "",
@@ -279,7 +320,7 @@ def fantoma_extract(
     if schema:
         payload["schema"] = schema
 
-    with _pool_instance().acquire() as backend:
+    def op(backend, is_final):
         # /start and /extract are two calls against one session. If the worker
         # restarts between them the session is gone and /extract answers "No
         # active session", so the pair has to be retried as a unit rather than
@@ -291,12 +332,16 @@ def fantoma_extract(
             # whatever page the browser was already on — returning confident,
             # wrong content for the URL that was asked for.
             try:
-                _post(backend, "/stop", {}, timeout=60.0, retry_transport=True)
+                _post(backend, "/stop", {}, timeout=60.0, retry_transport=True,
+                      wait_for_restart=is_final)
+            except BackendRestarting:
+                raise
             except Exception:
                 pass
 
             started = _post(backend, "/start", {"url": url},
-                            timeout=TASK_TIMEOUT, retry_transport=True)
+                            timeout=TASK_TIMEOUT, retry_transport=True,
+                            wait_for_restart=is_final)
             # A successful /start returns page state. Anything without a url
             # means we do not know what is on screen, so extracting would be
             # guesswork — fail loudly instead.
@@ -322,7 +367,11 @@ def fantoma_extract(
                 break
             if attempt == 0:
                 time.sleep(2.0)
+        return body
 
+    body = _with_backend(op)
+    if isinstance(body, TaskResult):   # /start never gave us a page
+        return body
     if body.get("error"):
         return TaskResult(success=False, error=str(body["error"]))
     data = body.get("data", body)
