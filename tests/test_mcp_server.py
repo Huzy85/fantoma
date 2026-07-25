@@ -90,7 +90,7 @@ class TestToolTranslation:
         _install_pool(["http://a"])
         calls = []
 
-        def fake_post(backend, path, payload, timeout, retry_transport=False):
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
             calls.append((backend, path, payload))
             return {"success": True, "data": "42", "steps_taken": 3,
                     "error": None, "escalations": 1}
@@ -108,7 +108,7 @@ class TestToolTranslation:
         _install_pool(["http://a"])
         captured = {}
 
-        def fake_post(backend, path, payload, timeout, retry_transport=False):
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
             captured.update(payload)
             return {"success": True, "data": ""}
 
@@ -140,7 +140,7 @@ class TestToolTranslation:
         _install_pool(["http://a"])
         paths = []
 
-        def fake_post(backend, path, payload, timeout, retry_transport=False):
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
             paths.append(path)
             if path == "/start":
                 return {"url": "http://x", "title": "X"}
@@ -156,7 +156,7 @@ class TestToolTranslation:
         _install_pool(["http://a"])
         paths = []
 
-        def fake_post(backend, path, payload, timeout, retry_transport=False):
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
             paths.append(path)
             if path == "/extract":
                 raise RuntimeError("extraction exploded")
@@ -172,7 +172,7 @@ class TestToolTranslation:
     def test_extract_releases_backend_after_failure(self, monkeypatch):
         pool = _install_pool(["http://a"])
 
-        def fake_post(backend, path, payload, timeout, retry_transport=False):
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
             if path == "/extract":
                 raise RuntimeError("boom")
             if path == "/start":
@@ -193,7 +193,7 @@ class TestToolTranslation:
         monkeypatch.setattr(mcp_server.time, "sleep", lambda s: None)
         paths = []
 
-        def fake_post(backend, path, payload, timeout, retry_transport=False):
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
             paths.append(path)
             if path == "/start":
                 return {"url": "http://x"}
@@ -214,7 +214,7 @@ class TestToolTranslation:
         monkeypatch.setattr(mcp_server.time, "sleep", lambda s: None)
         starts = []
 
-        def fake_post(backend, path, payload, timeout, retry_transport=False):
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
             if path == "/start":
                 starts.append(1)
                 return {"url": "http://x"}
@@ -233,7 +233,7 @@ class TestToolTranslation:
         _install_pool(["http://a"])
         paths = []
 
-        def fake_post(backend, path, payload, timeout, retry_transport=False):
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
             paths.append(path)
             if path == "/start":
                 return {"url": "http://x", "title": "X"}
@@ -254,7 +254,7 @@ class TestToolTranslation:
         _install_pool(["http://a"])
         monkeypatch.setattr(mcp_server.time, "sleep", lambda s: None)
 
-        def fake_post(backend, path, payload, timeout, retry_transport=False):
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
             if path == "/start":
                 return {"error": "session active"}   # 409 body, no url
             if path == "/extract":
@@ -342,6 +342,138 @@ class TestWorkerRestartRetry:
         body = mcp_server._post("http://a", "/run", {}, timeout=10)
         assert len(calls) == 1
         assert body["error"] == "no such element"
+
+
+class TestPoolFailover:
+    """A dead worker takes ~75 s to be reclaimed by its watchdog. With other
+    backends free, moving the work is far better than waiting."""
+
+    def test_moves_to_another_backend_when_one_is_restarting(self, monkeypatch):
+        _install_pool(["http://a", "http://b"])
+        tried = []
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False,
+                      wait_for_restart=True):
+            tried.append(backend)
+            if backend == "http://a":
+                raise mcp_server.BackendRestarting("a is restarting")
+            return {"success": True, "data": "served by b"}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        result = mcp_server.fantoma_run("do a thing")
+        assert tried == ["http://a", "http://b"]
+        assert result.data == "served by b"
+
+    def test_single_backend_waits_instead_of_failing_over(self, monkeypatch):
+        """With nowhere to go, the call must wait the restart out."""
+        _install_pool(["http://a"])
+        seen_flags = []
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False,
+                      wait_for_restart=True):
+            seen_flags.append(wait_for_restart)
+            return {"success": True, "data": "ok"}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        mcp_server.fantoma_run("t")
+        assert seen_flags == [True], "one backend means wait, never fail fast"
+
+    def test_last_attempt_waits_rather_than_giving_up(self, monkeypatch):
+        _install_pool(["http://a", "http://b"])
+        flags = []
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False,
+                      wait_for_restart=True):
+            flags.append(wait_for_restart)
+            raise mcp_server.BackendRestarting("still down")
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        with pytest.raises(mcp_server.BackendRestarting):
+            mcp_server.fantoma_run("t")
+        # First tries fail fast to move on; the final one waits it out.
+        assert flags == [False, True]
+
+    def test_failed_backend_is_returned_to_the_pool(self, monkeypatch):
+        """It must not be leaked — it will have recovered by its next turn."""
+        pool = _install_pool(["http://a", "http://b"])
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False,
+                      wait_for_restart=True):
+            if backend == "http://a":
+                raise mcp_server.BackendRestarting("down")
+            return {"success": True, "data": "ok"}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        mcp_server.fantoma_run("t")
+        assert pool._free.qsize() == 2, "both backends back in the pool"
+
+    def test_failover_caps_attempts_on_a_large_pool(self, monkeypatch):
+        """Trying every backend in a big pool would take longer than waiting."""
+        _install_pool([f"http://{n}" for n in "abcdef"])
+        tried = []
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False,
+                      wait_for_restart=True):
+            tried.append(backend)
+            raise mcp_server.BackendRestarting("down")
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        with pytest.raises(mcp_server.BackendRestarting):
+            mcp_server.fantoma_run("t")
+        assert len(tried) == 3
+
+    def test_login_also_fails_over(self, monkeypatch):
+        _install_pool(["http://a", "http://b"])
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False,
+                      wait_for_restart=True):
+            if backend == "http://a":
+                raise mcp_server.BackendRestarting("down")
+            return {"success": True, "url": "http://x/secure", "steps": 1}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        assert mcp_server.fantoma_login("http://x/login", username="u").success
+
+    def test_extract_also_fails_over(self, monkeypatch):
+        _install_pool(["http://a", "http://b"])
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False,
+                      wait_for_restart=True):
+            if backend == "http://a":
+                raise mcp_server.BackendRestarting("down")
+            if path == "/start":
+                return {"url": "http://x"}
+            return {"data": "from b"}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        result = mcp_server.fantoma_extract("http://x", "q")
+        assert result.success and result.data == "from b"
+
+
+class TestPostRestartSignal:
+    def test_raises_instead_of_waiting_when_told_not_to_wait(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp_server, "_post_once",
+            lambda *a, **k: (503, {"retryable": True}),
+        )
+        with pytest.raises(mcp_server.BackendRestarting):
+            mcp_server._post("http://a", "/run", {}, timeout=5,
+                             wait_for_restart=False)
+
+    def test_still_waits_when_asked_to(self, monkeypatch):
+        monkeypatch.setattr(mcp_server.time, "sleep", lambda s: None)
+        calls = []
+
+        def fake_post_once(backend, path, payload, timeout):
+            calls.append(1)
+            if len(calls) == 1:
+                return 503, {"retryable": True}
+            return 200, {"data": "recovered"}
+
+        monkeypatch.setattr(mcp_server, "_post_once", fake_post_once)
+        body = mcp_server._post("http://a", "/run", {}, timeout=5,
+                                wait_for_restart=True)
+        assert body["data"] == "recovered"
 
 
 class TestConfig:

@@ -2,17 +2,7 @@
 
 ## What's Next
 
-### 1. MCP server (Phase 3 — final item)
-Expose Fantoma as an MCP tool so Claude and other agents can call `/run`, `/login`, and `/extract` directly without crafting HTTP requests manually.
-
-Approach:
-- New `fantoma/mcp_server.py` using the MCP Python SDK (`mcp[cli]`)
-- Three tools: `fantoma_run(task, url, timeout)`, `fantoma_login(url, email, password, ...)`, `fantoma_extract(query, url, schema)`
-- Connects to a running Fantoma HTTP server (localhost or browser-host via LAN)
-- Claude Code MCPRC entry so you can call it from any claude session
-- Documented in README.md Docker API section
-
-### 2. Camoufox → cloverlabs-camoufox upgrade (separate task, needs timing)
+### 1. Camoufox → cloverlabs-camoufox upgrade (separate task, needs timing)
 `cloverlabs-camoufox` is a maintained fork of the original `camoufox` package. The Docker images use `camoufox` installed at build time.
 
 Steps when ready:
@@ -23,6 +13,40 @@ Steps when ready:
 - Tag new rollback images before deploying
 
 No code changes needed in Fantoma source — only the Docker dependency changes.
+
+This is now the highest-value remaining item. The driver crashes fixed in Session 25 are upstream bugs in the Camoufox/Playwright Firefox build; the maintained fork is where a real fix comes from.
+
+### 2. Token cost: the system prompt, not the element list
+
+Measured on Hacker News, the navigator prompt is ~2,066 chars: 1,436 of system prompt and 579 of page content, of which the 21 numbered element lines are 421. Shortening element references (`[3]` → `e3`) would save about 1%, not the ~90% reported elsewhere for tools that send a full nested accessibility dump — Fantoma already prunes to 20 one-line elements.
+
+If token cost is revisited, the system prompt is the target: it is 2.5x the page content and is resent every step. Prompt caching would beat shortening it.
+
+---
+
+## Session 25: 2026-07-24 — MCP server, crash-only recovery, pool failover
+
+**MCP server.** `fantoma/mcp_server.py` exposes `fantoma_run`, `fantoma_login`, `fantoma_extract` and `fantoma_health` over stdio or streamable HTTP (MCP SDK 1.26, `FastMCP`). It is a translator over the Flask API and holds no session or navigation logic. Backends are single-session (`threaded=False`), so a queue hands out one backend per call; `FANTOMA_MCP_BACKENDS` lists them.
+
+**Test suite back to green.** The 22 landmark/DOM-mode failures carried since June were a stale fixture, not a broken feature: `_make_page()` never stubbed `page.evaluate`, so once `extract_aria` gained scroll hints in April every test raised `TypeError` on `MagicMock <= int` before reaching any landmark logic. Two lines fixed all 22. The feature was fine — deleting it, as previously proposed, would have removed working code.
+
+**Four real bugs, found by testing the MCP layer:**
+
+1. `/login` and `/start` leave a session open by design; `/run` then built a second browser on the same thread. Playwright's sync API cannot hold two live instances per thread, so the second start failed and the worker stayed broken. `/run` now releases any existing session first.
+
+2. A crashed Playwright driver poisons the worker permanently. The Node driver dies on some pages (a page JS error with no location kills `coreBundle.js`), and the sync API is then bound to a dead transport. `/start` already pkilled the driver and installed a fresh event loop and still failed. Now unrecoverable states return 503 `retryable: true` and exit, so the supervisor supplies a clean worker.
+
+3. Playwright hangs as well as crashes, and a hung worker is worse — the supervisor sees RUNNING and leaves it alone while the container serves timeouts. Every request now runs under a watchdog (75s for `/start`; task endpoints longer, and always above a client-supplied `timeout`).
+
+4. **Silent wrong answers.** `/start` returns 409 when a session exists; the extract flow ignored the status and read whatever page was loaded, returning it with `success: true`. Live: a request for bbc.co.uk/news returned "Example Domain", and example.com returned a title from an earlier run. Fixed by stopping before every start and failing loudly when `/start` returns no page state.
+
+**Pool failover.** A dead worker takes up to ~75s to be reclaimed by its watchdog. With more than one backend configured, a call that meets a restarting backend now moves to another immediately; only the final attempt waits. Attempts are capped at three so a large pool cannot take longer than waiting would.
+
+This changed what the driver bug means in practice. Pages that reliably killed a single backend now succeed: a three-backend pool read BBC News, example.com and iana.org in 46.6s total, all backends healthy afterwards. The crash is intermittent, not site-specific.
+
+`/health` deliberately never starts a browser, which is why three containers could sit broken for 24 days while every monitor showed green. Use `fantoma_health` plus a real task for end-to-end assurance.
+
+575 tests pass (34 MCP), zero failing.
 
 ---
 

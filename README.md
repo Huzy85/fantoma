@@ -66,13 +66,29 @@ Four tools:
 | `fantoma_extract` | Open a page and pull out data, optionally against a JSON Schema |
 | `fantoma_health` | Which backends are reachable and how many tasks can run at once |
 
-**Concurrency.** Each browser backend serves one task at a time, so the MCP server hands out one backend per call and blocks when they are all busy. Run more containers to raise the ceiling:
+**Concurrency and failover.** Each browser backend serves one task at a time, so the MCP server hands out one backend per call and blocks when they are all busy. Run more containers to raise the ceiling:
 
 ```bash
 export FANTOMA_MCP_BACKENDS=http://127.0.0.1:7860,http://127.0.0.1:7861
 ```
 
+Backends restart themselves when their browser driver dies (see [Reliability](#reliability)). With more than one configured, a call that meets a restarting backend moves to another one immediately rather than waiting for it to come back. With a single backend it waits instead, since there is nowhere else to go.
+
 Set `FANTOMA_API_KEY` if your backends are gated, and `FANTOMA_MCP_TRANSPORT=http` to serve over streamable HTTP instead of stdio.
+
+## Reliability
+
+The Playwright Firefox driver Camoufox rides on can die outright: a page whose JavaScript throws an error with no location takes down the Node driver process. When that happens the sync API in that worker is bound to a dead transport, and every later request fails — killing the driver and installing a fresh event loop does not bring it back.
+
+Fantoma treats this as crash-only rather than trying to repair it in place:
+
+- A request that hits an unrecoverable browser state returns **503 with `retryable: true`** and the worker exits. The supervisor replaces it in about two seconds.
+- Playwright can also **hang** instead of raising, which is worse: a process supervisor sees a healthy RUNNING process and leaves it alone, so the container serves timeouts indefinitely. Every request therefore runs under a watchdog (75s for `/start`, longer for task endpoints, and always longer than a client-supplied `timeout`). A request that outlives its budget takes the worker down.
+- The MCP layer absorbs both, so callers see a slower call rather than an error. `/run` and `/login` are never retried at the transport level, because repeating them could submit a form twice.
+
+A consequence worth knowing: `/health` deliberately does not start a browser, so a green health check means the HTTP server is up, not that the browser works. Use `fantoma_health` plus a real task if you need end-to-end assurance.
+
+**In practice.** Driver crashes are intermittent rather than tied to particular sites. Pages that repeatedly killed a single backend load fine once there is somewhere to fail over to — a three-backend pool reads BBC News, example.com and iana.org in 46s total with every backend healthy afterwards. Running at least two backends is the difference between a crash being a retry and a crash being a failure. The underlying driver bug is upstream; the maintained [cloverlabs-camoufox](https://pypi.org/project/cloverlabs-camoufox/) fork is where a real fix would come from.
 
 ## What It Does
 
