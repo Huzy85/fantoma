@@ -185,25 +185,6 @@ def mark_new_elements(previous: list[dict], current: list[dict]) -> list[bool]:
     return [(el.get("role", ""), el.get("name", "")) not in prev_set for el in current]
 
 
-def dedup_elements(elements: list[dict]) -> list[dict]:
-    """Remove duplicate interactive elements by (role, name, state) tuple.
-
-    Keeps the first occurrence. Sites repeat the same link/button in nav,
-    footer, and main content — this removes the noise.
-
-    Textboxes with the same name but different state (value) are kept
-    as separate fields (e.g., two "Email" fields on different forms).
-    """
-    seen = set()
-    result = []
-    for el in elements:
-        key = (el.get("role", ""), el.get("name", ""), el.get("state", ""))
-        if key not in seen:
-            seen.add(key)
-            result.append(el)
-    return result
-
-
 def enrich_field_state(el: dict) -> str:
     """Build a state string from element attributes.
 
@@ -408,9 +389,21 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
         output.append("")
 
     if interactive:
-        interactive = dedup_elements(interactive)
+        # Deliberately NOT deduplicated. Every element here is an interactive
+        # control, and repeated controls are almost always distinct targets:
+        # a product grid has one "Add to cart" per product, a results list one
+        # "Download" per row. Collapsing them by (role, name) kept only the
+        # first, which made "add the third item to the cart" impossible to
+        # express — measured live on a six-product page, where five of the six
+        # buttons were deleted before the model ever saw them.
+        #
+        # No major framework dedupes here: Playwright MCP assigns a ref per
+        # element by DOM position, and Vercel's agent-browser documents the
+        # same case as two entries, @e2 and @e3. Repetition noise is already
+        # handled by _is_nav_noise() scoring and by prune_elements() capping
+        # the list, so dedup was redundant as well as destructive.
 
-        # Form mode: sort again after dedup to keep inputs on top
+        # Form mode: sort to keep inputs on top
         if mode == "form":
             input_roles = {"textbox", "combobox", "searchbox"}
             inputs = [el for el in interactive if el["role"] in input_roles]
