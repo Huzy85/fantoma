@@ -136,6 +136,11 @@ class AgentResult:
     tokens_used: int = 0
     escalations: int = 0
     validated: bool = None   # None = not validated, True = passed, False = failed
+    # Where the browser actually ended up. Without this a caller can only read
+    # what the agent *says* it did, never check it — which is how a run that
+    # read the wrong page still looks like a success.
+    final_url: str = ""
+    final_title: str = ""
 
 
 class Agent:
@@ -184,11 +189,30 @@ class Agent:
         env_validate = os.environ.get("FANTOMA_VALIDATE", "0").lower() in ("1", "true", "yes")
         self._validate = validate if validate is not None else env_validate
 
+    def _capture_final_state(self, result: "AgentResult") -> "AgentResult":
+        """Record where the browser ended up, before run() tears it down.
+
+        Callers otherwise have only the agent's own account of what it did.
+        Reporting the real URL lets them verify it — which is the difference
+        between "the answer sounds right" and "it was on the right page".
+        """
+        try:
+            page = self.fantoma._engine.get_page()
+            result.final_url = page.url or ""
+            try:
+                result.final_title = page.title() or ""
+            except Exception:
+                pass
+        except Exception:
+            pass  # Browser already gone; leave the fields empty.
+        return result
+
     def _apply_validator(self, task: str, result: "AgentResult") -> "AgentResult":
         """If validation is on and the run succeeded, run one LLM check.
 
         Mutates result.validated in-place and returns it. Fails open.
         """
+        self._capture_final_state(result)
         if not getattr(self, "_validate", False) or not result.success:
             return result
         passed, reason = validate_answer(task, result.data or "", self._llm)
@@ -526,9 +550,10 @@ class Agent:
                 escalations=self.escalation.total_escalations,
             ))
         except Exception as e:
-            return AgentResult(success=False, error=str(e),
-                               steps_taken=total_steps,
-                               steps_detail=all_steps)
+            return self._capture_final_state(AgentResult(
+                success=False, error=str(e),
+                steps_taken=total_steps, steps_detail=all_steps,
+            ))
         finally:
             self.fantoma.stop()
 

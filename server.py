@@ -472,6 +472,9 @@ def run_task():
             "success": result.success, "data": result.data,
             "steps_taken": result.steps_taken, "error": result.error,
             "escalations": result.escalations,
+            # Where the browser actually finished, so a caller can check the
+            # run rather than take the agent's word for it.
+            "final_url": result.final_url, "final_title": result.final_title,
         })
     except Exception as e:
         err = str(e)

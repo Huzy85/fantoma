@@ -212,6 +212,11 @@ class TaskResult(BaseModel):
     data: str = Field("", description="The agent's answer, or extracted content")
     steps_taken: int = 0
     error: str = ""
+    final_url: str = Field(
+        "", description="Where the browser finished — check this to confirm "
+                        "the agent reached the page it claims to describe"
+    )
+    final_title: str = ""
     escalations: int = Field(
         0, description="How many times the agent fell back to a stronger model"
     )
@@ -260,6 +265,8 @@ def fantoma_run(
         steps_taken=body.get("steps_taken") or 0,
         error=body.get("error") or "",
         escalations=body.get("escalations") or 0,
+        final_url=body.get("final_url") or "",
+        final_title=body.get("final_title") or "",
     )
 
 
