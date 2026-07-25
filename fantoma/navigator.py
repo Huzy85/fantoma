@@ -227,6 +227,7 @@ class Navigator:
         start_domain: str = "",
         sensitive_data: dict = None,
         deadline: float = None,
+        target: str = "",
     ) -> NavigatorResult:
         steps_detail = []
         sensitive_data = sensitive_data or {}
@@ -402,6 +403,26 @@ class Navigator:
                 # <secret:name> placeholders at this point).
                 action_desc = f"{action_type}({params})"
 
+                # The task names the item to act on, and the element list
+                # already records which item each repeated control belongs
+                # to, so the right control can be resolved here instead of
+                # relying on the model to read a hint. Weak models take the
+                # first match: asked for the Fleece Jacket, the agent added
+                # the first product on the page. Correcting in code makes
+                # that choice impossible rather than merely discouraged.
+                if target and "element_id" in params:
+                    try:
+                        better = fantoma._dom.find_index_for_target(
+                            params["element_id"], target)
+                    except Exception:
+                        better = None
+                    if better is not None:
+                        log.info(
+                            "Retargeted %s from [%s] to [%s] for %r",
+                            action_type, params["element_id"], better, target,
+                        )
+                        params["element_id"] = better
+
                 # Capture a replayable signature + masked value BEFORE secret
                 # substitution, so cached plans store the <secret:name>
                 # placeholder, never the real credential.
@@ -455,13 +476,42 @@ class Navigator:
                 # ARIA diff: snapshot after action and compare with step-start state.
                 # Produces a semantic change summary the LLM already speaks
                 # (role/name/value), replacing the raw MutationObserver output.
+                structure_changed = False
                 try:
                     snap_after = aria_snapshot(fantoma._engine.get_page())
                     diff = aria_diff(snap_before, snap_after)
                     change_line = diff if diff else "No visible changes"
+                    # Elements appearing or disappearing means the numbering the
+                    # model was given no longer describes the page. A value
+                    # changing does not — typing into a field leaves every
+                    # element where it was, which is why the whole batch is not
+                    # abandoned on any change at all.
+                    structure_changed = set(snap_after) != set(snap_before)
                     snap_before = snap_after  # track across multi-action batches
                 except Exception:
                     change_line = "No changes detected"
+
+                # Element numbers are captured once per step, so any action
+                # after a re-render acts on whatever now sits at that number.
+                # Measured live: "add the Fleece Jacket" fired two clicks on
+                # index 0; the first added the jacket, the page re-rendered,
+                # and the second added a different product. The remaining
+                # actions are dropped and the model gets a fresh page instead.
+                #
+                # This is the rule browser-use states in its prompt ("execute
+                # the actions until the page changes") but does not enforce,
+                # and the reason Stagehand and Skyvern act once per
+                # observation. Playwright MCP and agent-browser both require a
+                # re-snapshot before the next reference is used.
+                if structure_changed and action_type in _STATE_CHANGING:
+                    remaining = len(actions) - actions.index((action_type, params)) - 1
+                    if remaining > 0:
+                        log.info(
+                            "Page structure changed after %s — dropping %d "
+                            "queued action(s) rather than reusing stale numbers",
+                            action_type, remaining,
+                        )
+                    break
 
                 # Update state tracker with the POST-action DOM content, not
                 # the stale once-per-round snapshot. Using last_content here

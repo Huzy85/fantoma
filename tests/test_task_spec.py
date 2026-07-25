@@ -133,3 +133,29 @@ class TestOutcomeVerification:
         spec = TaskSpec(raw="something odd")
         ok, reason = verify_outcome(spec, "https://x", "anything")
         assert ok is True and "no target" in reason
+
+
+class TestSideEffects:
+    """Asking for one item and getting two is a failure, not a success.
+
+    Measured live: a stale element index fired a second click and added an
+    extra product. Checking only that the target is present passed it — the
+    same permissive matching WebArena Verified removed for inflating scores.
+    """
+
+    def test_extra_item_in_the_cart_fails(self):
+        spec = parse_task("Add the 'Sauce Labs Fleece Jacket' to the cart")
+        page = ('[5] link "Sauce Labs Backpack"\n'
+                '[7] button "Remove"\n'
+                '[14] link "Sauce Labs Fleece Jacket"\n'
+                '[16] button "Remove"')
+        ok, reason = verify_outcome(spec, "https://shop/inventory", page)
+        assert ok is False
+        assert "2 items" in reason
+
+    def test_exactly_the_requested_item_passes(self):
+        spec = parse_task("Add the 'Sauce Labs Fleece Jacket' to the cart")
+        page = ('[14] link "Sauce Labs Fleece Jacket"\n'
+                '[16] button "Remove"')
+        ok, _ = verify_outcome(spec, "https://shop/inventory", page)
+        assert ok is True
