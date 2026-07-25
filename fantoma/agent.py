@@ -19,6 +19,7 @@ from fantoma.resilience.escalation import EscalationChain
 from fantoma.planner import Planner, Subtask, Checkpoint
 from fantoma.navigator import Navigator, NavigatorResult
 from fantoma.state_tracker import StateTracker
+from fantoma.task_spec import parse_task, verify_outcome
 from fantoma.validator import validate_answer
 
 log = logging.getLogger("fantoma")
@@ -141,6 +142,10 @@ class AgentResult:
     # read the wrong page still looks like a success.
     final_url: str = ""
     final_title: str = ""
+    # Independent check of the finished page against the parsed task. Without
+    # it, "did it work" is answered by the agent describing its own work.
+    verified: bool = None
+    verify_reason: str = ""
 
 
 class Agent:
@@ -207,12 +212,36 @@ class Agent:
             pass  # Browser already gone; leave the fields empty.
         return result
 
+    def _verify_against_spec(self, result: "AgentResult") -> None:
+        """Check the end state against the parsed task, if one was parsed.
+
+        A failed check flips success to False. The agent reporting that it
+        added an item is not evidence the item was added — measured live, a
+        run that added the wrong product returned success=True and nothing
+        in the system could tell.
+        """
+        spec = getattr(self, "_spec", None)
+        if spec is None or not result.success:
+            return
+        try:
+            page = self.fantoma.get_state().get("aria_tree", "")
+        except Exception:
+            return  # browser already gone; cannot judge, so do not claim to
+        ok, reason = verify_outcome(spec, result.final_url, page)
+        result.verified = ok
+        result.verify_reason = reason
+        if not ok:
+            log.warning("Task verification failed: %s", reason)
+            result.success = False
+            result.error = result.error or f"Verification failed: {reason}"
+
     def _apply_validator(self, task: str, result: "AgentResult") -> "AgentResult":
         """If validation is on and the run succeeded, run one LLM check.
 
         Mutates result.validated in-place and returns it. Fails open.
         """
         self._capture_final_state(result)
+        self._verify_against_spec(result)
         if not getattr(self, "_validate", False) or not result.success:
             return result
         passed, reason = validate_answer(task, result.data or "", self._llm)
@@ -314,6 +343,14 @@ class Agent:
         even within the step budget.
         """
         log.info("Task: %s", task)
+        # Parse the sentence once into fields. Two uses: the navigator gets a
+        # target to match rather than prose to interpret, and the finished
+        # page can be checked against that target instead of taking the
+        # agent's word for what it did.
+        self._spec = parse_task(task, llm=getattr(self, "_llm", None))
+        if self._spec.target or self._spec.action:
+            log.info("Parsed task — action=%s target=%r",
+                     self._spec.action or "?", self._spec.target)
         self.fantoma._task = task
 
         # Reset escalation to tier 0 and rebuild a fresh LLM client for this run,

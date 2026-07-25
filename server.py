@@ -488,6 +488,8 @@ def run_task():
             # Where the browser actually finished, so a caller can check the
             # run rather than take the agent's word for it.
             "final_url": result.final_url, "final_title": result.final_title,
+            # Independent check of the end state against the parsed task.
+            "verified": result.verified, "verify_reason": result.verify_reason,
         })
     except Exception as e:
         err = str(e)
