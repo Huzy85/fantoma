@@ -46,16 +46,28 @@ fantoma test         # Verify it works
 
 Fantoma ships an MCP server, so any MCP client — Claude Code, Claude Desktop, Cursor, or your own agent — can drive a browser directly.
 
+**The MCP server does not contain a browser.** It is a thin client for a Fantoma backend, which runs in Docker because Camoufox needs a Linux environment it can rely on. Start the backend first, or every tool call will fail with nothing listening on port 7860.
+
+**1. Start a backend.**
+
+```bash
+git clone https://github.com/Huzy85/fantoma && cd fantoma
+docker compose -f docker-compose.fantoma.yml up -d --build
+curl localhost:7860/health          # {"status": "ok", ...}
+```
+
+First build takes a few minutes — it downloads a browser. The container exposes the API on `7860` and a noVNC desktop on `6080`, which is worth knowing about: open `http://localhost:6080/vnc.html` to watch what the browser is doing, or to log into a site by hand once and keep the session.
+
+The backend needs an LLM for `fantoma_run` and `fantoma_extract`. It defaults to `http://host.docker.internal:8081/v1`; point `LOCAL_LLM_URL` at whatever you use, or set `CLOUD_LLM_URL` and `CLOUD_LLM_KEY` for a hosted one. `fantoma_login` needs no LLM at all.
+
+**2. Install and register the MCP server.**
+
 ```bash
 pip install "fantoma[mcp]"
-python -m fantoma.mcp_server          # stdio
+claude mcp add fantoma -- python3 -m fantoma.mcp_server
 ```
 
-Register it with Claude Code:
-
-```bash
-claude mcp add fantoma -- python -m fantoma.mcp_server
-```
+It talks to `http://127.0.0.1:7860` by default, which is where step 1 put the backend.
 
 Four tools:
 
@@ -66,13 +78,15 @@ Four tools:
 | `fantoma_extract` | Open a page and pull out data, optionally against a JSON Schema |
 | `fantoma_health` | Which backends are reachable and how many tasks can run at once |
 
-**Concurrency and failover.** Each browser backend serves one task at a time, so the MCP server hands out one backend per call and blocks when they are all busy. Run more containers to raise the ceiling:
+**Call `fantoma_health` first if anything misbehaves.** An MCP client reporting the server as connected only means the process started; it says nothing about whether a browser is reachable behind it.
+
+**Concurrency and failover.** Each backend serves one task at a time, so the MCP server hands out one per call and blocks when they are all busy. Run more containers to raise the ceiling, then list them:
 
 ```bash
 export FANTOMA_MCP_BACKENDS=http://127.0.0.1:7860,http://127.0.0.1:7861
 ```
 
-Backends restart themselves when their browser driver dies (see [Reliability](#reliability)). With more than one configured, a call that meets a restarting backend moves to another one immediately rather than waiting for it to come back. With a single backend it waits instead, since there is nowhere else to go.
+Backends restart themselves when their browser driver dies (see [Reliability](#reliability)). With more than one configured, a call that meets a restarting backend moves to another immediately rather than waiting. With a single backend it waits instead, since there is nowhere else to go — running at least two is the difference between a driver crash being a retry and a driver crash being a failure.
 
 Set `FANTOMA_API_KEY` if your backends are gated, and `FANTOMA_MCP_TRANSPORT=http` to serve over streamable HTTP instead of stdio.
 
