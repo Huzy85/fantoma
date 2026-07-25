@@ -159,3 +159,14 @@ class TestTaskRelevanceUsesContext:
         buttons = [e for e in top if e["role"] == "button"]
         assert buttons, "the relevant button must survive pruning"
         assert buttons[0].get("_context") == "Sauce Labs Fleece Jacket"
+
+
+class TestElementsCarryTheirNumber:
+    def test_shown_elements_are_stamped_with_their_index(self):
+        """form_login and browser_tool resolve by el["index"]. Without it a
+        login silently fills no fields — caught live, not by the suite."""
+        from fantoma.dom.accessibility import extract_aria
+        out = []
+        extract_aria(_page(PRODUCT_GRID), max_elements=50, _shown_out=out)
+        assert out, "elements must be handed back"
+        assert [el["index"] for el in out] == list(range(len(out)))
