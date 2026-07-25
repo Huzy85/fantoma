@@ -80,3 +80,82 @@ class TestNoiseStillControlled:
         result = extract_aria(_page(snapshot), max_elements=10)
         import re
         assert len(re.findall(r'^\[\d+\] link', result, re.M)) <= 10
+
+
+class TestAmbiguousControlsGetContext:
+    """A bare repeated "Add to cart" gives the model no way to say which one.
+
+    The page should disambiguate with aria-label; a bare repeated control is
+    a WCAG 2.4.4 failure. Real pages often do not, so the label is inferred
+    from page order — and marked as inferred, because per W3C AccName a
+    neighbour does not contribute to an accessible name.
+    """
+
+    def test_repeated_buttons_are_labelled_with_their_product(self):
+        result = extract_aria(_page(PRODUCT_GRID), max_elements=50)
+        assert '(in: Sauce Labs Fleece Jacket)' in result
+        assert '(in: Sauce Labs Backpack)' in result
+
+    def test_each_button_gets_its_own_product(self):
+        result = extract_aria(_page(PRODUCT_GRID), max_elements=50)
+        import re
+        pairs = re.findall(r'button "Add to cart" \(in: ([^)]+)\)', result)
+        assert len(pairs) == 4
+        assert len(set(pairs)) == 4, "each button must name a different product"
+
+    def test_unique_controls_are_left_alone(self):
+        """Labelling something already unique is pure noise."""
+        snapshot = '- button "Checkout"\n- button "Continue Shopping"\n'
+        result = extract_aria(_page(snapshot), max_elements=50)
+        assert "(in:" not in result
+
+    def test_context_is_marked_as_inferred(self):
+        """The model must be able to tell a guess from what the page states."""
+        result = extract_aria(_page(PRODUCT_GRID), max_elements=50)
+        assert "(in: " in result, "inferred context uses the 'in:' marker"
+
+    def test_no_context_when_nothing_distinct_precedes(self):
+        """Two identical buttons alone: no label to borrow, so claim nothing."""
+        snapshot = '- button "Edit"\n- button "Edit"\n'
+        result = extract_aria(_page(snapshot), max_elements=50)
+        assert result.count('button "Edit"') == 2
+        assert "(in:" not in result
+
+    def test_context_is_never_borrowed_from_a_control(self):
+        """Measured live: product links picked up "(in: Price (high to low))"
+        from a sort dropdown and "(in: Remove)" from the button above them.
+        Only a link names a destination worth borrowing."""
+        snapshot = (
+            '- option "Price (high to low)"\n'
+            '- link "Sauce Labs Backpack"\n'
+            '- link "Sauce Labs Backpack"\n'
+            '- button "Add to cart"\n'
+            '- link "Sauce Labs Bike Light"\n'
+            '- link "Sauce Labs Bike Light"\n'
+            '- button "Add to cart"\n'
+        )
+        result = extract_aria(_page(snapshot), max_elements=50)
+        assert "(in: Price (high to low))" not in result
+        assert "(in: Remove)" not in result
+        # The useful case still works.
+        assert 'button "Add to cart" (in: Sauce Labs Backpack)' in result
+        assert 'button "Add to cart" (in: Sauce Labs Bike Light)' in result
+
+
+class TestTaskRelevanceUsesContext:
+    def test_the_button_for_the_named_product_outranks_the_others(self):
+        """A button is called "Add to cart" and matches no task keyword, so
+        scoring its name alone buries the one control the task is about."""
+        from fantoma.dom.accessibility import annotate_ambiguous, prune_elements
+        els = [
+            {"role": "link", "name": "Sauce Labs Backpack", "state": ""},
+            {"role": "button", "name": "Add to cart", "state": ""},
+            {"role": "link", "name": "Sauce Labs Fleece Jacket", "state": ""},
+            {"role": "button", "name": "Add to cart", "state": ""},
+        ]
+        annotate_ambiguous(els)
+        top = prune_elements(els, task="add the Fleece Jacket to the cart",
+                             max_elements=2)
+        buttons = [e for e in top if e["role"] == "button"]
+        assert buttons, "the relevant button must survive pruning"
+        assert buttons[0].get("_context") == "Sauce Labs Fleece Jacket"
