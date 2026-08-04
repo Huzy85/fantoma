@@ -20,6 +20,23 @@ INTERACTIVE_ROLES = {
     "menuitem", "option", "spinbutton",
 }
 
+# Form controls worth listing even with no accessible name.
+#
+# A bare `- checkbox` in the snapshot is a real, clickable control, and an
+# unlabelled one is common: it is a WCAG 4.1.2 failure on the site's part,
+# not a reason for us to pretend it is not there. Requiring a name dropped
+# BOTH checkboxes on the-internet.herokuapp.com/checkboxes, so the only
+# elements offered for "tick the first checkbox" were the GitHub ribbon and
+# a footer link — the task was unwinnable no matter which model was driving.
+#
+# Deliberately excludes link/button/menuitem/option/tab: an unnamed one of
+# those is usually an icon or decoration, and admitting them floods the list
+# on real sites without adding anything actionable.
+UNNAMED_OK_ROLES = {
+    "checkbox", "radio", "textbox", "combobox", "searchbox",
+    "switch", "spinbutton", "slider",
+}
+
 # Roles to skip (structural, not interactive)
 SKIP_ROLES = {
     "separator", "presentation", "none", "generic",
@@ -207,6 +224,12 @@ def annotate_ambiguous(elements: list[dict]) -> list[dict]:
         counts[key] = counts.get(key, 0) + 1
 
     for i, el in enumerate(elements):
+        # An unnamed control already took its label from the text node beside
+        # it, which is a far better hint than anything the look-back finds.
+        # Without this guard the two unlabelled checkboxes both got relabelled
+        # "(in: Fork me on GitHub)" from the ribbon above them.
+        if el.get("_context"):
+            continue
         key = (el.get("role", ""), el.get("name", ""))
         if counts.get(key, 0) < 2:
             continue  # unique already; naming it again only adds noise
@@ -297,32 +320,74 @@ def _parse_aria_line(line: str) -> dict | None:
     if not line:
         return None
 
-    # Match: role "name" [attributes]
-    match = re.match(r'(\w+)\s*"([^"]*)"(?:\s*\[(.+?)\])?', line)
-    if not match:
-        # Match: role [attributes] (no name)
-        match2 = re.match(r'(\w+)(?:\s*\[(.+?)\])?$', line)
-        if match2:
-            return {"role": match2.group(1), "name": "", "attrs": match2.group(2) or ""}
-        return None
+    # Match: role "name" [attributes]...
+    match = re.match(r'(\w+)\s*"([^"]*)"(.*)$', line)
+    if match:
+        result = {"role": match.group(1), "name": match.group(2)}
+        _apply_aria_attrs(result, _attr_groups(match.group(3)))
+        return result
 
-    role = match.group(1)
-    name = match.group(2)
-    attrs_str = match.group(3) or ""
+    # Match: role: "value"  — an unnamed control that HAS a value.
+    #
+    # This is what an input looks like the moment somebody types into it:
+    # `- spinbutton` becomes `- spinbutton: "42"`. Matching neither pattern,
+    # it was dropped, so a field DISAPPEARED from the element list as soon as
+    # it was filled. The model types a value and the box it just used is gone,
+    # leaving it no way to confirm the value landed or to correct a typo.
+    match = re.match(r'(\w+):\s*"(.*)"\s*((?:\[[^\]]+\]\s*)*)$', line)
+    if match:
+        result = {"role": match.group(1), "name": "", "value": match.group(2)}
+        _apply_aria_attrs(result, _attr_groups(match.group(3)))
+        return result
 
-    result = {"role": role, "name": name}
+    # Match: role [attributes] (no name), with an optional trailing colon.
+    #
+    # The snapshot appends ":" to any element that has children, so an
+    # unlabelled <select> arrives as "- combobox:". Anchoring to $ without
+    # allowing that colon meant EVERY unnamed element with children was
+    # dropped — the combobox on the dropdown page never reached the model,
+    # only its options did, so there was nothing to select ON.
+    #
+    # The attribute groups are matched explicitly rather than with a loose
+    # `.*` so that a bare text node (`- text: some words`) still fails here,
+    # which keeps page-text handling exactly as it was.
+    match = re.match(r'(\w+)((?:\s*\[[^\]]+\])*)\s*:?$', line)
+    if match:
+        # Attributes used to come back as a raw "attrs" string, so
+        # `parsed.get("checked")` was always falsey here and an unnamed
+        # control rendered without its [checked] state. That matters most for
+        # exactly the task these elements exist for: "tick it if it is not
+        # already ticked" is unanswerable without the state.
+        result = {"role": match.group(1), "name": ""}
+        _apply_aria_attrs(result, _attr_groups(match.group(2)))
+        return result
 
-    # Parse attributes: [checked], [disabled], [level=1], [value="text"]
-    if attrs_str:
-        for attr in attrs_str.split(", "):
-            attr = attr.strip()
-            if "=" in attr:
-                k, v = attr.split("=", 1)
-                result[k] = v.strip('"')
-            else:
-                result[attr] = True
+    return None
 
-    return result
+
+def _attr_groups(rest: str) -> str:
+    """Collect EVERY "[...]" group in the remainder into one attr string.
+
+    The old pattern captured a single non-greedy group, so a line carrying two
+    of them — `option "Please select an option" [disabled] [selected]` — kept
+    "disabled" and silently discarded "selected". Selection state is the whole
+    answer to "did my choice land", so losing it left the model unable to tell
+    a successful select from a no-op.
+    """
+    return ", ".join(re.findall(r'\[([^\]]+)\]', rest or ""))
+
+
+def _apply_aria_attrs(result: dict, attrs_str: str) -> None:
+    """Parse attributes: [checked], [disabled], [level=1], [value="text"]."""
+    if not attrs_str:
+        return
+    for attr in attrs_str.split(", "):
+        attr = attr.strip()
+        if "=" in attr:
+            k, v = attr.split("=", 1)
+            result[k] = v.strip('"')
+        else:
+            result[attr] = True
 
 
 def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate", _shown_out: list = None) -> str:
@@ -363,7 +428,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
     current_landmark = None       # e.g. "form: Login"
     landmark_indent = -1          # indent level of current landmark line
 
-    for line in lines:
+    for idx, line in enumerate(lines):
         # Measure indent before parsing — needed for landmark scope tracking
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
@@ -405,7 +470,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
                 headings.append(f"  {name}")
             continue
 
-        if role in INTERACTIVE_ROLES and name:
+        if role in INTERACTIVE_ROLES and (name or role in UNNAMED_OK_ROLES):
             state = ""
             if parsed.get("checked"):
                 state = " [checked]"
@@ -413,6 +478,35 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
                 state = " [disabled]"
             elif parsed.get("value"):
                 state = f' (value: "{parsed["value"]}")'
+            # Appended rather than folded into the chain above: an option can
+            # be disabled AND selected, and "which one is selected" is the only
+            # feedback the model gets that a select actually took effect. With
+            # it missing, a successful selection looked identical to a failed
+            # one, so the agent kept re-trying a choice it had already made.
+            if parsed.get("selected"):
+                state += " [selected]"
+
+            # An unnamed control carries no clue about which one it is, and
+            # these pages put the label in the text node immediately after
+            # it ("- checkbox" then "- text: checkbox 1"). Borrow that as a
+            # hint only: per W3C AccName a neighbour does not contribute to
+            # the accessible name, so it renders as "(in: ...)" and never as
+            # the name itself.
+            # Matched here rather than via _parse_aria_line because the
+            # snapshot writes bare text as `- text: checkbox 1`, which fits
+            # neither of that parser's shapes. Widening it globally would
+            # start feeding every stray text node into page text and change
+            # read output on every site, which is not a trade worth making
+            # for a label.
+            inferred = ""
+            if not name:
+                for look in lines[idx + 1:idx + 3]:
+                    m = re.match(r'^\s*-\s+text:\s*(.+?)\s*$', look)
+                    if m:
+                        inferred = m.group(1)[:60]
+                        break
+                    if look.strip().startswith("- "):
+                        break
 
             interactive.append({
                 "role": role,
@@ -420,6 +514,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
                 "state": state,
                 "raw": parsed,
                 "_landmark": current_landmark,
+                **({"_context": inferred} if inferred else {}),
             })
 
     # Form mode: override caps and sort inputs to the top

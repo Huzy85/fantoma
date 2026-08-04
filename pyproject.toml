@@ -26,7 +26,11 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "camoufox>=0.4",
+    # Pinned, not floating. `camoufox>=0.4` meant any rebuild silently changed
+    # the one dependency the whole anti-detection story rests on — a routine
+    # image rebuild moved 0.4.11 to 0.5.4 with nobody choosing it. Bump this
+    # deliberately, and re-run the protected-site checks when you do.
+    "camoufox==0.5.4",
     "playwright>=1.40",
     "httpx>=0.25",
 ]

@@ -2,7 +2,9 @@
 
 Browser automation for AI agents that reads pages the way a screen reader does — through the accessibility tree, not screenshots.
 
-No vision model, no pixel coordinates, no mouse telemetry. Pages arrive as structured text, which costs roughly 500 tokens a step instead of the 1,000-5,000 a screenshot costs. That is what makes it practical to drive a browser with a small local model instead of a frontier API.
+No vision model, no pixel coordinates, no mouse telemetry. Pages arrive as structured text, which costs roughly 500 tokens a step instead of the 1,000-5,000 a screenshot costs.
+
+**What that buys you, and what it does not.** Reading pages works on a small local model: in a 31-site run across 9 models, a 35B local MoE scored 30/31, matching the best cheap API models and beating most of them, and that includes sites that block conventional scrapers. Multi-step *interaction* is a different story — the same local model completed 1 of 6 login and form flows, while a frontier API model completed all of them. So: extraction on your own hardware is real, and driving a checkout on a 7B model is not. Pick the model to match the job.
 
 Two classes. Use whichever fits:
 
@@ -276,7 +278,7 @@ print(result.data)          # {"fields_filled": [...], "url": "...", "steps": 1}
 
 - **CAPTCHAs:** Proof-of-work types (ALTCHA) are solved automatically for free. reCAPTCHA and hCaptcha need a paid solver like CapSolver. How often you see one varies by site and by IP reputation.
 - **Context window:** Local LLMs need at least 8K tokens. Set `--ctx-size 8192` in llama.cpp or `num_ctx: 8192` in Ollama.
-- **Small models:** A 3.8B model handles browsing, extraction, and simple forms. Complex multi-step signups work better with a larger model. The escalation chain handles this — your local model tries first, and after 3 failed planner replans on the current tier, Fantoma automatically switches to the next model in the chain and re-decomposes the task fresh.
+- **Small models — read yes, act no.** Measured across 31 real sites and 9 models: small local and cheap API models read and extract about as well as expensive ones (30/31 for a 35B local MoE, and for the cheapest OpenAI model). Multi-step interaction is where they fall away. On six login/form/checkout flows graded on the browser's end state rather than the agent's own report, cheap models finished 1-3 and a frontier model finished all 6. Worse, a weak model routinely reports success on a flow it did not complete, so trust `AgentResult.verified` over `success`. Use the escalation chain for anything that writes: your local model tries first, and after 3 failed planner replans Fantoma switches to the next model in the chain and re-decomposes the task.
 - **IP rate limiting:** Reddit detects repeated visits from the same IP after 2+ hours. Use proxy rotation for heavy scraping.
 
 ## Examples

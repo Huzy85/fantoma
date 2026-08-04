@@ -91,16 +91,26 @@ FLOWS = [
         "url": "https://the-internet.herokuapp.com/dropdown",
         "task": "Select 'Option 2' from the dropdown on this page.",
         "checkpoints": [
-            ("still on dropdown page", "url", "dropdown"),
-            ("option 2 selected", "text", "option 2"),
+            ("option 2 actually selected", "state", 'option "Option 2" [selected]'),
         ],
     },
     {
         "name": "herokuapp-checkboxes",
         "url": "https://the-internet.herokuapp.com/checkboxes",
         "task": "Tick the first checkbox on this page if it is not already ticked.",
+        # The page ships with the SECOND box already ticked, so "a checked box
+        # exists" proves nothing. Both ticked is the only end state that means
+        # the agent ticked the first one.
         "checkpoints": [
-            ("still on checkboxes page", "url", "checkboxes"),
+            ("both checkboxes now ticked", "state_count", ("[checked]", 2)),
+        ],
+    },
+    {
+        "name": "herokuapp-inputs",
+        "url": "https://the-internet.herokuapp.com/inputs",
+        "task": "Type the number 42 into the input box on this page.",
+        "checkpoints": [
+            ("input actually contains 42", "state", '[value="42"]'),
         ],
     },
     {
@@ -116,22 +126,43 @@ FLOWS = [
 ]
 
 
-def _verify(body, checkpoints):
-    """Score checkpoints against what the run reports, not against its prose.
+def _verify(body, state, checkpoints):
+    """Score checkpoints against the live page, not against the agent's prose.
 
-    /run tears down its own browser, so there is no session left to inspect.
-    final_url and final_title come from the browser itself at the moment the
-    run ended, which is the part the agent cannot embellish. Text checkpoints
-    still fall back to the answer, so keep those loose and put the load-bearing
-    assertions on url.
+    A checkpoint has to be FALSE before the agent acts, or it measures nothing.
+    Three of these used to assert "the URL still contains /checkboxes" while
+    the flow STARTED on that URL, so an agent that did nothing at all scored
+    them as passes — a model that errored on every call and never issued a
+    single action scored 4 of 6 here. Anything that asserts a state change now
+    reads the live ARIA tree via keep_session, where the control itself reports
+    [checked], [selected] or its value.
+
+    Kinds:
+      url         final URL contains needle
+      text        title/answer contains needle (loose; never load-bearing)
+      state       live ARIA tree contains needle
+      state_count live ARIA tree contains needle at least N times
     """
     url = (body.get("final_url") or "").lower()
     title = (body.get("final_title") or "").lower()
     answer = (body.get("data") or "").lower()
+    tree = (state or {}).get("aria_tree") or ""
     hits = []
     for label, kind, needle in checkpoints:
-        target = url if kind == "url" else f"{title} {answer}"
-        hits.append((label, needle.lower() in target))
+        if kind == "state":
+            ok = needle.lower() in tree.lower()
+        elif kind == "state_count":
+            token, want = needle
+            ok = tree.lower().count(token.lower()) >= want
+        elif kind == "url":
+            ok = needle.lower() in url
+        else:
+            ok = needle.lower() in f"{title} {answer}"
+        hits.append((label, ok))
+
+    needs_live = any(k in ("state", "state_count") for _, k, _ in checkpoints)
+    if needs_live and not tree:
+        return hits, "no live page state — cannot verify, treat as failure"
     return hits, ("" if url else "run reported no final_url")
 
 
@@ -148,11 +179,18 @@ def run_flow(flow, timeout):
                 m._post(backend, "/stop", {}, timeout=60.0, retry_transport=True)
             except Exception:
                 pass
+            # keep_session hands the live browser back so the end state can be
+            # read off the page itself. Without it /run tears the browser down
+            # and all that survives is the agent's own account of what it did.
             body = m._post(backend, "/run",
                            {"task": flow["task"], "url": flow["url"],
-                            "timeout": timeout},
+                            "timeout": timeout, "keep_session": True},
                            timeout=timeout + 30)
-            hits, verr = _verify(body, flow["checkpoints"])
+            try:
+                state = m._get(backend, "/state", timeout=60.0)
+            except Exception:
+                state = {}
+            hits, verr = _verify(body, state, flow["checkpoints"])
             try:
                 m._post(backend, "/stop", {}, timeout=60.0, retry_transport=True)
             except Exception:
