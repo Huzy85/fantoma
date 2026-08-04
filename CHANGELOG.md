@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Unnamed form controls never reached the model.** The element list required a non-empty accessible name, so a bare `- checkbox` in the ARIA snapshot was discarded. On a page whose only task was "tick the first checkbox", the two elements offered were a GitHub ribbon and a footer link: the task was not hard, it was impossible, on every model. Form-control roles (checkbox, radio, textbox, combobox, searchbox, switch, spinbutton, slider) are now listed when unnamed and labelled from the adjacent text node, rendered as `(in: ...)` because per W3C AccName a neighbour does not contribute to an accessible name. Link, button, menuitem, option and tab are deliberately still excluded when unnamed — an unnamed one of those is usually an icon and admitting them floods the list.
+- **Unnamed elements with children were dropped entirely.** The snapshot appends `:` to any element that has children, and the no-name pattern anchored to end-of-string, so `- combobox:` matched nothing. Every unlabelled `<select>` on the web was invisible; on the dropdown page the model was shown the three options but never the control to select on.
+- **A field disappeared the moment it was filled.** Once a value is present the snapshot writes `- spinbutton: "42"`, which matched neither pattern. The model typed a value and the box it had just used vanished from the next observation, leaving it unable to confirm the value landed or to correct a mistake.
+- **Only the first `[...]` group on a line was kept.** `option "Please select an option" [disabled] [selected]` retained `disabled` and silently discarded `selected`. Selection state is the entire feedback signal for "did my choice take effect", so a successful select was indistinguishable from a no-op and agents re-tried choices they had already made. All attribute groups are now collected, and `[selected]` is rendered.
+- **Unnamed elements lost their state.** Attributes on a no-name line were returned as a raw string rather than parsed, so `parsed.get("checked")` was always falsey and an unnamed checkbox rendered without `[checked]` — which is the one fact "tick it if it is not already ticked" depends on.
+
+### Changed
+
+- **`camoufox` is pinned to an exact version.** It was `>=0.4`, so a routine image rebuild moved 0.4.11 to 0.5.4 with nobody choosing it. The one dependency the anti-detection behaviour rests on should not change silently; bump it deliberately and re-run the protected-site checks when you do.
+- **README claims now match measurement.** Reading pages works on a small local model — 30/31 real sites for a 35B local MoE, matching the best cheap API model and beating most. Multi-step interaction does not: the same model completed 1 of 6 login and form flows where a frontier model completed all 6. The distinction is now stated up front rather than implied away.
+- **Flow test checkpoints verify the live page.** Three of them asserted that the URL still contained the path the flow *started* on, so they were true before the agent acted: a model that errored on every call and issued no actions at all scored 4 of 6. They now read `[checked]`, `[selected]` and the field value off the live ARIA tree via `keep_session`. A `herokuapp-inputs` flow was added.
+
 ## 0.9.0 — 2026-07-25
 
 ### Added
