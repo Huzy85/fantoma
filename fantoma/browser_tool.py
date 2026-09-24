@@ -4,6 +4,7 @@ Accessibility-first: interacts through the ARIA tree, same channel as screen rea
 No mouse movements, no pixel coordinates, no visual layer signals for anti-bot to detect.
 """
 import logging
+import os
 import time
 from typing import Any
 
@@ -67,8 +68,19 @@ class Fantoma:
         self.config.browser.browser_engine = browser
         self.config.browser.timeout = timeout
         self.config.browser.trace = trace
+        # Arguments win; otherwise the environment, so a key set once (in
+        # .env for Docker, or the shell for the library and MCP server)
+        # works everywhere. CAPTCHA_API / CAPTCHA_KEY are the names the HTTP
+        # server has always read.
+        captcha_api = (captcha_api or os.environ.get("FANTOMA_CAPTCHA_API")
+                       or os.environ.get("CAPTCHA_API") or "")
+        captcha_key = (captcha_key or os.environ.get("FANTOMA_CAPTCHA_KEY")
+                       or os.environ.get("CAPTCHA_KEY") or "")
+        if captcha_key and not captcha_api:
+            captcha_api = "capsolver"
         if captcha_api:
-            self.config.captcha.api = captcha_api
+            from fantoma.captcha.api_solver import normalise_provider
+            self.config.captcha.api = normalise_provider(captcha_api)
         if captcha_key:
             self.config.captcha.key = captcha_key
         if email_imap:

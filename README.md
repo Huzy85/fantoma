@@ -161,7 +161,7 @@ pool.report_failure("429")   # too many strikes and it moves to a fresh IP
 
 Rotating on every request is the wrong default for residential proxies: you throw away cookies, logins, and any anti-bot clearance tied to that IP. `ProxyPool` is sticky and rotates on failure.
 
-**CAPTCHA solvers.** `APICaptchaSolver` reads from a `PROVIDERS` table, so adding one is a dict entry with its two endpoints. CapSolver and 2Captcha ship configured. There are also proof-of-work solvers (ALTCHA, Friendly Captcha — free, no service needed), a human-in-the-loop solver, and a Telegram solver.
+**CAPTCHA solvers.** CapSolver, 2Captcha, Anti-Captcha and CapMonster ship configured for reCAPTCHA v2/v3, hCaptcha and Cloudflare Turnstile. Pass `captcha_api="capmonster", captcha_key="..."`, or set `FANTOMA_CAPTCHA_API` and `FANTOMA_CAPTCHA_KEY` once and every entry point (library, MCP, HTTP server) uses them. `APICaptchaSolver` reads from a `PROVIDERS` table; adding a service is one entry with its two endpoints and its task-type names, which differ between services. There are also proof-of-work solvers (ALTCHA, Friendly Captcha — free, no service needed), a human-in-the-loop solver, and a Telegram solver.
 
 **The coupling worth knowing about.** A CAPTCHA solution is bound to the exit IP it was solved through — clearance obtained on one IP is worthless from another. So a solver and a proxy pool are not independent plugins. Solve through the same proxy you then browse through, and treat "rotate the IP" and "discard the clearance" as a single action. `ProxyPool(on_rotate=...)` exists for that: register a callback that clears whatever was bound to the retired IP.
 
@@ -731,6 +731,8 @@ print(result.validated)                      # True/False/None (None = not valid
 | `FANTOMA_DOMAIN_STRICT` | everywhere | `0` keeps the browser's own networking (no redirect checks) |
 | `FANTOMA_LLM_SELF_HOSTED` | LLM client | `1`/`0` overrides self-hosted detection |
 | `FANTOMA_ACTION_CACHE` | Agent | `0` disables replay of known task plans |
+| `FANTOMA_FAST_PATH` | Agent | `0` makes the model do every step (log in, select, type, search are otherwise done in code) |
+| `FANTOMA_CAPTCHA_API`, `FANTOMA_CAPTCHA_KEY` | everywhere | Paid CAPTCHA service (`capsolver`, `2captcha`, `anticaptcha`, `capmonster`) and your key. A key alone means CapSolver |
 | `FANTOMA_VALIDATE` | Agent | `1` turns on the post-run answer check |
 | `FANTOMA_IGNORE_HTTPS_ERRORS` | browser | `1` accepts bad certificates |
 | `FANTOMA_BLOCK_WEBRTC`, `FANTOMA_DISABLE_WEBGL` | Chromium | Opt-in WebRTC / WebGL kill switches |
