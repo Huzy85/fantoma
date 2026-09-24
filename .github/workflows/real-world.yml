@@ -61,12 +61,15 @@ jobs:
           tasks = ["herokuapp-checkboxes", "herokuapp-dropdown", "herokuapp-inputs",
                    "herokuapp-login", "saucedemo-login", "saucedemo-add-to-cart",
                    "books-read-price", "books-navigate-category", "wikipedia-read"]
-          m = re.search(r"\[agent-check([^\]]*)\]", os.environ.get("MSG") or "")
-          if m:
-              for key, val in re.findall(r"(models|tasks)=(\S+)", m.group(1)):
-                  picked = [v for v in val.split(",") if v]
+          # The last tag wins, so a message that first describes the syntax
+          # still runs what its final tag asks for. Placeholders like "..."
+          # are ignored.
+          found = re.findall(r"\[agent-check([^\]]*)\]", os.environ.get("MSG") or "")
+          if found:
+              for key, val in re.findall(r"(models|tasks)=(\S+)", found[-1]):
+                  picked = [v for v in val.split(",") if re.fullmatch(r"[\w][\w.:/-]*", v)]
                   if key == "models":
-                      models = picked
+                      models = picked or models
                   else:
                       tasks = [t for t in picked if t in tasks] or tasks
           print("models=" + json.dumps(models))
