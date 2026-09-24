@@ -168,8 +168,8 @@ def main() -> int:
             flag = "PASS" if res.get("ok") else "FAIL"
             said = "" if res.get("ok") == res.get("agent_said_success") else \
                 "  (agent claimed success)" if res.get("agent_said_success") else ""
-            print(f"{flag}  {name:<26} run {run + 1}  {res.get('steps', '?'):>2} steps "
-                  f"({res.get('model_steps', '?')} by the model) "
+            print(f"{flag}  {name:<26} run {run + 1}  {res.get('steps', '?'):>2} rounds "
+                  f"({res.get('model_steps', '?')} actions by the model) "
                   f"{res.get('secs', '?'):>6}s  {res.get('detail', '')}{said}"
                   + (f"  error: {res['error']}" if res.get("error") and not res.get("ok") else ""),
                   flush=True)

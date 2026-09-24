@@ -359,3 +359,25 @@ class TestLatePage:
         r = run_fast_path("Search for 'wooden spoon'", browser)
         assert r.complete, r
         assert "q=wooden+spoon" in page.url
+
+
+class TestQuestionsOpenTheNamedItem:
+    GRID = """<html><body><ol>
+      <li><a href="/book/1"><img alt="A Light in the Attic" src="x.png"></a>
+          <h3><a href="/book/1" title="A Light in the Attic">A Light in the ...</a></h3><p>£51.77</p></li>
+      <li><a href="/book/2"><img alt="Tipping the Velvet" src="y.png"></a>
+          <h3><a href="/book/2">Tipping the Velvet</a></h3><p>£53.74</p></li></ol></body></html>"""
+
+    def test_the_named_book_is_opened_and_the_question_left(self, browser, site):
+        PAGES["/grid"] = self.GRID
+        page = _open(browser, site + "/grid")
+        r = run_fast_path("What is the price of the book 'A Light in the Attic'?", browser)
+        assert page.url.endswith("/book/1")
+        assert r.done == ["opened the page for 'A Light in the Attic'"]
+        assert r.remainder == "What is the price of the book 'A Light in the Attic'?"
+
+    def test_a_question_naming_nothing_on_the_page_stays_put(self, browser, site):
+        PAGES["/grid"] = self.GRID
+        page = _open(browser, site + "/grid")
+        r = run_fast_path("What is the price of 'Sapiens'?", browser)
+        assert page.url.endswith("/grid") and not r.done

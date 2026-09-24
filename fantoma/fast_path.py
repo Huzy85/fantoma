@@ -85,6 +85,11 @@ def run_fast_path(task: str, fantoma, secrets: dict = None) -> FastResult:
             log.info("Fast path stopped on %r: %s", clause, e)
             handled = False
         if not handled:
+            if not out.failed:
+                try:
+                    _open_for_question(clause, fantoma, out)
+                except Exception as e:
+                    log.info("Could not open the item for %r: %s", clause, e)
             out.remainder = ", then ".join(clauses[i:])
             break
     if out.done:
@@ -412,6 +417,37 @@ class _Revealing:
 
     def login(self, url, **creds):
         return self._f.login(url, **{k: self.reveal(v) for k, v in creds.items()})
+
+
+_QUESTION = re.compile(r"^(?:what|what's|how|when|who|which|where|tell|give|show|list|find out|report)\b", re.I)
+
+
+def _open_for_question(clause, fantoma, out: FastResult) -> None:
+    """Open the item a question names, then leave the question to the model.
+
+    Measured live: asked for the price of 'A Light in the Attic' on a shop
+    whose home page links to it, a 7B model spent fifteen actions searching
+    a site with no search box before reaching the book's page. When the
+    question quotes a name and exactly one destination on the page carries
+    that name, going there is not a judgement call.
+    """
+    if not _QUESTION.match(clause):
+        return
+    names = [q.strip().lower() for q, _ in _quoted_spans(clause)]
+    if len(names) != 1:
+        return
+    els = _elements(fantoma)
+    hits = [i for i, e in enumerate(els) if e.get("role") == "link"
+            and (e.get("name") or "").strip().lower() == names[0]]
+    # The same item is often linked twice (its picture and its title).
+    if not hits or len({els[i].get("_url") or i for i in hits}) != 1:
+        return
+    before = _url(fantoma)
+    r = fantoma.click(hits[0])
+    if r.get("success") and _url(fantoma) != before:
+        out.steps.append({"step": len(out.steps) + 1, "action": f"fast:open({names[0]!r})",
+                          "success": True, "url": _url(fantoma)})
+        out.done.append(f"opened the page for {els[hits[0]]['name']!r}")
 
 
 def _elements(fantoma) -> list:
