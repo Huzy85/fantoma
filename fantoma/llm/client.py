@@ -53,11 +53,18 @@ class LLMClient:
         base_url: str,
         api_key: str = "",
         model: str = "auto",
-        timeout: float = 180.0,
+        timeout: float = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        # A 14B model on a CPU, or a small GPU under load, can take minutes
+        # per answer. FANTOMA_LLM_TIMEOUT raises the per-call limit (seconds).
+        if timeout is None:
+            try:
+                timeout = float(os.environ.get("FANTOMA_LLM_TIMEOUT", "180"))
+            except ValueError:
+                timeout = 180.0
         self.timeout = timeout
         self._resolved_model: str | None = None
         self._temperature_override: float | None = None

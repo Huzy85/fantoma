@@ -10,13 +10,6 @@ name: Real-world check
 
 on:
   workflow_dispatch:
-    inputs:
-      model:
-        description: "Ollama model"
-        default: "qwen2.5:3b"
-      runs:
-        description: "Runs per task"
-        default: "1"
   schedule:
     - cron: "0 7 * * 1"
   push:
@@ -49,11 +42,27 @@ jobs:
           path: protected-${{ matrix.browser }}.json
 
   small-model-agent:
+    # One machine per (model, task) so every run finishes at about the same
+    # time. GitHub's free machines have no GPU, so this is far slower than a
+    # 12GB card at home; timeouts are sized for CPU inference.
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ["qwen2.5:7b", "qwen2.5:14b"]
+        task:
+          - herokuapp-checkboxes
+          - herokuapp-dropdown
+          - herokuapp-inputs
+          - herokuapp-login
+          - saucedemo-login
+          - saucedemo-add-to-cart
+          - books-read-price
+          - books-navigate-category
+          - wikipedia-read
     env:
-      MODEL: ${{ github.event.inputs.model || 'qwen2.5:3b' }}
-      RUNS: ${{ github.event.inputs.runs || '1' }}
+      FANTOMA_LLM_TIMEOUT: "900"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -68,13 +77,19 @@ jobs:
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           sudo systemctl stop ollama 2>/dev/null || true
-          OLLAMA_CONTEXT_LENGTH=8192 nohup ollama serve > ollama.log 2>&1 &
+          OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > ollama.log 2>&1 &
           for i in $(seq 1 30); do curl -sf localhost:11434/api/version && break; sleep 1; done
-          ollama pull "$MODEL"
+          ollama pull "${{ matrix.model }}"
       - name: Small model drives Fantoma
-        run: python tools/live_agent_check.py --llm http://localhost:11434/v1 --model "$MODEL" --runs "$RUNS" --json agent.json
+        run: >
+          python tools/live_agent_check.py --llm http://localhost:11434/v1
+          --model "${{ matrix.model }}" --only "${{ matrix.task }}"
+          --max-steps 12 --timeout 14400 --json agent.json
+      - name: Name the result file
+        if: always()
+        run: echo "ARTIFACT=agent-$(echo '${{ matrix.model }}' | tr ':.' '--')-${{ matrix.task }}" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: small-model-agent
+          name: ${{ env.ARTIFACT }}
           path: agent.json
