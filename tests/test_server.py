@@ -156,3 +156,38 @@ class TestEvaluateGate:
             assert r.status_code == 200
             assert r.json["result"] == 2
         server._fantoma = None
+
+
+def test_read_requires_a_session(client):
+    c, _ = client
+    r = c.post("/read", json={})
+    assert r.status_code in (400, 404, 409)
+
+
+def test_read_returns_markdown(client):
+    c, mock_f = client
+    mock_f.read.return_value = {"title": "X", "url": "https://example.com", "markdown": "# X",
+                                "links": [], "blocked": "", "injection_warnings": [],
+                                "hidden_removed": 0, "truncated": False, "description": ""}
+    c.post("/start", json={"url": "https://example.com"})
+    r = c.post("/read", json={"main_only": False, "max_chars": 500})
+    assert r.status_code == 200 and r.json["markdown"] == "# X"
+    mock_f.read.assert_called_once_with(url=None, main_only=False, include_links=True,
+                                        selector="", max_chars=500)
+
+
+def test_extract_passes_json_schema_through_unchanged(client):
+    c, mock_f = client
+    mock_f.extract.return_value = {"price": "$10"}
+    c.post("/start", json={"url": "https://example.com"})
+    schema = {"type": "object", "properties": {"price": {"type": "string"}}}
+    r = c.post("/extract", json={"query": "price", "schema": schema})
+    assert r.status_code == 200 and r.json["data"] == {"price": "$10"}
+    mock_f.extract.assert_called_once_with("price", schema=schema)
+
+
+def test_extract_rejects_a_non_object_schema(client):
+    c, _ = client
+    c.post("/start", json={"url": "https://example.com"})
+    r = c.post("/extract", json={"query": "price", "schema": ["nope"]})
+    assert r.status_code == 400

@@ -5,6 +5,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
+
 log = logging.getLogger("fantoma.planner")
 
 
@@ -50,7 +52,8 @@ Navigation policy (choose one of these for step 1, never scroll a landing page):
   or a search.
 
 - Return a numbered list, one step per line, in this format:
-  1. instruction: ... | mode: ... | done_when: ..."""
+  1. instruction: ... | mode: ... | done_when: ...
+- """ + UNTRUSTED_NOTE
 
 REPLAN_ADDITION = """\
 The previous approach failed on this step: {failed_instruction}
@@ -161,7 +164,7 @@ class Planner:
     def decompose(self, task: str, page_summary: str) -> list[Subtask]:
         messages = [
             {"role": "system", "content": DECOMPOSE_SYSTEM},
-            {"role": "user", "content": f"Task: {task}\n\nCurrent page:\n{page_summary}"},
+            {"role": "user", "content": f"Task: {task}\n\nCurrent page:\n{wrap_untrusted(page_summary)}"},
         ]
         raw = self._llm.chat(messages, max_tokens=500)
         subtasks = _parse_subtasks(raw)
@@ -189,14 +192,14 @@ class Planner:
             last_actions=actions_str,
             completed_summary=completed_summary,
             visited_urls=urls_str,
-            page_summary=page_summary,
+            page_summary=wrap_untrusted(page_summary),
             failure_guidance=guidance,
             failed_strategies="; ".join(self._failed_strategies),
         )
 
         messages = [
             {"role": "system", "content": DECOMPOSE_SYSTEM + "\n\n" + addition},
-            {"role": "user", "content": f"Task: {task}\n\nCurrent page:\n{page_summary}"},
+            {"role": "user", "content": f"Task: {task}\n\nCurrent page:\n{wrap_untrusted(page_summary)}"},
         ]
         raw = self._llm.chat(messages, max_tokens=500)
         subtasks = _parse_subtasks(raw)

@@ -1,7 +1,7 @@
 """Fantoma HTTP API — runs inside the Docker container.
 
 Tool API: /start, /stop, /state, /click, /type, /navigate, etc.
-Convenience: /run (uses Agent wrapper), /login, /extract.
+Convenience: /run (uses Agent wrapper), /login, /extract, /read.
 Single session at a time.
 """
 import hmac
@@ -65,7 +65,7 @@ _WATCHDOG_DEFAULT = 120
 # A cold Camoufox start is ~15 s, so 75 s means "hung", not "slow". Keeping
 # this tight matters: the worker cannot be reused until the watchdog fires,
 # so this figure is the real recovery time a client waits through.
-_WATCHDOG_BY_PATH = {"/run": 420, "/login": 240, "/extract": 240, "/start": 75}
+_WATCHDOG_BY_PATH = {"/run": 420, "/login": 240, "/extract": 240, "/read": 120, "/start": 75}
 # /health must never arm a watchdog — it is how callers check liveness.
 _WATCHDOG_EXEMPT = {"/health", "/manual/status"}
 
@@ -411,15 +411,41 @@ def extract():
     if not query:
         return jsonify({"error": "Missing 'query'"}), 400
 
+    # Passed through as given: extract() understands both a real JSON Schema
+    # and the older flat {field: "type"} map. Converting here flattened a JSON
+    # Schema into {"type": str, "properties": str}, so the documented MCP form
+    # never worked.
     schema = data.get("schema")
-    if schema:
-        type_map = {"str": str, "int": int, "float": float, "bool": bool,
-                     "string": str, "integer": int, "number": float, "boolean": bool}
-        schema = {k: type_map.get(v, str) for k, v in schema.items()}
+    if schema is not None and not isinstance(schema, dict):
+        return jsonify({"error": "'schema' must be a JSON object"}), 400
 
     try:
-        result = _fantoma.extract(query, schema=schema)
+        result = _fantoma.extract(query, schema=schema or None)
         return jsonify({"success": True, "data": result})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/read", methods=["POST"])
+def read_page():
+    """Current page as clean Markdown, plus its links. No LLM involved.
+
+    Body (all optional): url, main_only (default true), include_links
+    (default true), selector, max_chars.
+    """
+    err = _require_session()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    try:
+        result = _fantoma.read(
+            url=data.get("url") or None,
+            main_only=bool(data.get("main_only", True)),
+            include_links=bool(data.get("include_links", True)),
+            selector=str(data.get("selector") or ""),
+            max_chars=int(data.get("max_chars") or 0),
+        )
+        return jsonify({"success": True, **result})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

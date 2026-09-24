@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly: the web changes even when the code does not
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          pip install -e ".[mcp,server,sessions,dev]"
+          python -m playwright install --with-deps chromium
+      - name: Unit tests (real-browser cases run against Playwright's Chromium)
+        run: python -m pytest -q
+
+  live:
+    # Real public websites, no LLM. Proves the reader and element handling
+    # still work on the live web with the real stealth browsers.
+    runs-on: ubuntu-latest
+    needs: unit
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [camoufox, chromium]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -e ".[chromium]"
+          python -m playwright install-deps firefox chromium
+          if [ "${{ matrix.browser }}" = "camoufox" ]; then python -m camoufox fetch; else python -m patchright install chromium; fi
+      - name: Live check
+        run: python tools/live_read_check.py --browser ${{ matrix.browser }} --json live-${{ matrix.browser }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-${{ matrix.browser }}
+          path: live-${{ matrix.browser }}.json

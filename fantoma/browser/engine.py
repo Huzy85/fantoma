@@ -17,13 +17,16 @@ _log = logging.getLogger("fantoma.browser")
 _IGNORE_HTTPS_ERRORS = os.environ.get("FANTOMA_IGNORE_HTTPS_ERRORS", "").lower() in ("1", "true", "yes")
 
 
+from fantoma.browser.domains import DomainBlocked, DomainPolicy
+
 class BrowserEngine:
     """Manages a Camoufox browser session with anti-detection and human-like behaviour."""
 
     DEFAULT_TRACE_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "fantoma", "traces")
 
     def __init__(self, headless=True, profile_dir=None, humanize=True, accessibility=True, proxy=None,
-                 trace=False, trace_dir=None, browser_engine="camoufox"):
+                 trace=False, trace_dir=None, browser_engine="camoufox",
+                 allowed_domains=None, blocked_domains=None):
         self.headless = headless
         self.profile_dir = profile_dir
         self.accessibility = accessibility
@@ -34,6 +37,7 @@ class BrowserEngine:
         self._trace_dir = trace_dir or self.DEFAULT_TRACE_DIR
         self._trace_active = False
         self._browser_engine = browser_engine
+        self.domain_policy = DomainPolicy.from_env(allowed_domains, blocked_domains)
         self._browser = None
         self._context = None
         self._page = None
@@ -52,6 +56,10 @@ class BrowserEngine:
             self._start_chromium()
         else:
             self._start_camoufox()
+        if self.domain_policy.active:
+            self.domain_policy.install(self._context)
+            _log.info("Domain policy on: allowed=%s blocked=%s",
+                      self.domain_policy.allowed or "any", self.domain_policy.blocked or "none")
 
     def _start_camoufox(self):
         """Launch Camoufox browser. Uses persistent profile if profile_dir is set."""
@@ -347,6 +355,7 @@ class BrowserEngine:
 
     def navigate(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 30000):
         """Navigate to URL with human-like delay after."""
+        self.domain_policy.check(url)
         try:
             self._page.goto(url, wait_until=wait_until, timeout=timeout)
         except Exception as e:
@@ -366,6 +375,16 @@ class BrowserEngine:
                     pass
                 self._page = old_page
                 raise
+        # A redirect can land on a host the policy forbids (always possible
+        # with strict=False). Leave at once so the page is never read.
+        if self.domain_policy.active and not self.domain_policy.permits(self._page.url):
+            landed = self._page.url
+            try:
+                self._page.goto("about:blank")
+            except Exception:
+                pass
+            raise DomainBlocked(f"{url} redirected to {landed}, which the domain policy "
+                                "does not permit")
         if self.humanizer:
             self.humanizer.reading_pause()
 
@@ -379,6 +398,8 @@ class BrowserEngine:
         The new tab shares cookies, sessions, and fingerprint with existing tabs.
         Use switch_tab() to move between them.
         """
+        if url:
+            self.domain_policy.check(url)
         ctx = self._context if self._context else self._page.context
         new_page = ctx.new_page()
         if url:

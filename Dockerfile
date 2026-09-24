@@ -28,8 +28,11 @@ RUN pip3 install --no-cache-dir --upgrade pip packaging
 
 # Install Python deps first (layer cache)
 COPY pyproject.toml /app/
+# camoufox must match the pin in pyproject.toml. A floating ">=0.4" here
+# fetched the browser for the newest release, and the later editable install
+# then downgraded the package underneath it.
 RUN pip3 install --no-cache-dir \
-    "camoufox>=0.4" \
+    "camoufox==0.5.4" \
     "playwright>=1.40" \
     "httpx>=0.25" \
     "capsolver" \

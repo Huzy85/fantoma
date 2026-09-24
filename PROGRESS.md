@@ -2,27 +2,53 @@
 
 ## What's Next
 
-### 1. Camoufox → cloverlabs-camoufox upgrade (separate task, needs timing)
-`cloverlabs-camoufox` is a maintained fork of the original `camoufox` package. The Docker images use `camoufox` installed at build time.
+Ordered by what lowers the capability floor, because the point of Fantoma is doing useful work on the smallest model that can run locally. Reading already works on small models and now also works with no model at all (`read`). Acting is where small models still fail, and every item below either removes a step a small model can get wrong or moves a decision from the model into code.
 
-Steps when ready:
-- `pip install cloverlabs-camoufox` in Dockerfile, `pip uninstall camoufox`
-- Check import paths — package API is API-compatible but verify `CamoufoxManager` references
-- Rebuild browser-host images with `--no-cache`, test live on all 3 containers
-- Re-run fingerprint self-test: `fantoma test fingerprint`
-- Tag new rollback images before deploying
+### 1. Measure 0.10.0 on the live flows, three runs per model
 
-No code changes needed in Fantoma source — only the Docker dependency changes.
+The dropdown, ranking, occlusion and exact-name fixes in 0.10.0 were verified against local copies of the test pages in Chromium, and the dropdown flow end to end through a stand-in model. They have not been measured on the live flow suite (`tools/live_flow_test.py --workers 1`) or with Camoufox. Before claiming a new interaction score, run it with a small local model and a frontier control, three runs per flow (single runs of a weak model measure noise), `action_cache` off.
 
-This is now the highest-value remaining item. The driver crashes fixed in Session 25 are upstream bugs in the Camoufox/Playwright Firefox build; the maintained fork is where a real fix comes from.
+### 2. Try a dense local model
 
-### 2. Token cost: the system prompt, not the element list
+Every interaction measurement so far used mixture-of-experts models. A 2026 tool-calling benchmark (one source, unverified) found dense 4B-27B models beat larger MoE models on multi-turn tool use. No code change: point `llm_url` at a dense model and re-run item 1.
 
-Measured on Hacker News, the navigator prompt is ~2,066 chars: 1,436 of system prompt and 579 of page content, of which the 21 numbered element lines are 421. Shortening element references (`[3]` → `e3`) would save about 1%, not the ~90% reported elsewhere for tools that send a full nested accessibility dump — Fantoma already prunes to 20 one-line elements.
+### 3. A fresh-context step checker
 
-If token cost is revisited, the system prompt is the target: it is 2.5x the page content and is resent every step. Prompt caching would beat shortening it.
+After each state-changing action, a second call with no run history answers one question from the before/after pages: did this action do what the step intended. Generator-plus-clean-checker is the pattern with the best reported gains for weak models, and the clean context is the part that matters. `validator.py` today runs once at the end and sees the history.
+
+### 4. Element classes still invisible
+
+- Unnamed `link`/`button`/`menuitem`/`option`/`tab` are excluded, so icon-only controls (hamburger, close X, search glyph) cannot be used. Admitting them all floods the list; needs a measurement of how many real pages carry them and whether a `title` or `aria-describedby` can name them.
+- `cell`, `gridcell` and `row` are still in neither role set, so spreadsheet-style grids cannot be acted on.
+- The element cap (20) has never been tested on a rich page. Wikipedia presents about 1,600 interactive elements; which 20 the model sees is decided entirely by `prune_elements()`. Prune4Web (AAAI 2026, arXiv 2511.21398) has the model write a filter instead; verify its reported gain against this codebase before building it.
+
+### 5. Camoufox → cloverlabs-camoufox
+
+`cloverlabs-camoufox` is the maintained fork. The driver crashes handled by crash-only recovery are upstream bugs in the Firefox driver; the maintained fork is where a real fix comes from. Swap the dependency in `pyproject.toml` and the Dockerfile together (they must pin the same version), rebuild, run `fantoma test fingerprint` and the protected-site checks.
+
+### 6. Token cost: the system prompt, not the element list
+
+Measured on Hacker News, the navigator prompt is ~2,066 chars: 1,436 of system prompt and 579 of page content. Shortening element references would save about 1%. The system prompt is 2.5x the page content and is resent every step, so prompt caching (or a shorter prompt for small models) is the lever.
+
+### 7. WebMCP
+
+Sites can declare their own tools to agents (W3C draft, Chrome origin trial). Chromium-only for now, so it applies to the `chromium` engine only. Cheap to surface as extra tools once Chrome ships it; low priority until then.
 
 ---
+
+## Session 27: 2026-09-24 — Read without a model, MCP without Docker, injection defences
+
+Driven by one question: what stops a small local model, or a user with no model, from getting value out of Fantoma?
+
+- **`read` needs no model.** Any page as Markdown plus links, from the CLI, the Python API, `/read` and the `fantoma_read` MCP tool. The content-mode ARIA extractor turned out to drop every paragraph, list item and table row (unquoted snapshot lines matched no pattern), which is why read tasks leaned on raw `inner_text`.
+- **`fantoma-mcp` runs its own browser** when no backends are configured. One dedicated thread owns the browser because the sync Playwright API is thread-bound and the MCP server is an asyncio app.
+- **Dropdowns.** The dropdown flow was 0/3. Small models click the option; in Firefox that is a no-op inside a native select. Clicks on options now select. The change line also said "No visible changes" after a successful select, which tells a small model its action failed.
+- **Wrong-element clicks.** Occlusion filtering ran after numbering (the latent index-divergence bug from the July plan), and name lookup was a substring match.
+- **Ranking.** Off-site links and header/footer/nav controls lose a point unless they match the task.
+- **Safety.** Hidden-text stripping, fenced page text, an injection tripwire, domain allow/block lists enforced on every request, block-page detection.
+- **Install.** `fantoma[mcp]` pulled MCP SDK 2.x, which the server cannot import; pinned below 2. The Dockerfile fetched a browser for a different Camoufox version than the package pins.
+
+Verification: 758 unit tests, including real-Chromium tests of hidden-text stripping and Markdown output that skip where no browser is installed. End to end over MCP stdio against local pages: read, login-wall detection, code-only login followed by a logged-in read, schema extraction and a dropdown task through a stand-in model. Not verified in this session: Camoufox, and live third-party sites.
 
 ## Session 26: 2026-07-25 — Why the agent acted on the wrong thing
 

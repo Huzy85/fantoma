@@ -8,6 +8,7 @@ and sequential reliability (the main bug from v0.6).
 """
 
 import json
+import os
 import time
 import sys
 import httpx
@@ -186,7 +187,7 @@ def main():
     print(f"{'='*60}")
 
     # Save results
-    with open("/home/workspace/workbench/fantoma/tests/container_test_results.json", "w") as f:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "container_test_results.json"), "w") as f:
         json.dump({"round_1": r1, "round_2": r2, "summary": {
             "total": len(all_results), "passed": total_pass, "failed": total_fail,
             "time_s": round(total_time, 1),

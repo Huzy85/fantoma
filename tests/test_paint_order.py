@@ -136,7 +136,8 @@ class TestFilterOccludedRemovesHidden:
         # "Submit" is on top; "Cancel" is behind the modal
         responses = {"Submit": True, "Cancel": False}
 
-        def evaluate_fn(js, role, name):
+        def evaluate_fn(js, arg):
+            role, name, ordinal = arg
             return responses.get(name, True)
 
         page = _make_page_with_evaluate(evaluate_fn)
@@ -150,7 +151,8 @@ class TestFilterOccludedRemovesHidden:
         extractor = AccessibilityExtractor()
         visibility = {"Open": True, "Hidden1": False, "Close": True, "Hidden2": False}
 
-        def evaluate_fn(js, role, name):
+        def evaluate_fn(js, arg):
+            role, name, ordinal = arg
             return visibility.get(name, True)
 
         page = _make_page_with_evaluate(evaluate_fn)
@@ -167,6 +169,21 @@ class TestFilterOccludedRemovesHidden:
         result = extractor._filter_occluded(page, elements)
         assert result == []
 
+    def test_evaluate_gets_one_argument(self):
+        """page.evaluate takes a single argument. Passing role and name as two
+        raised TypeError on every call, so the filter never ran at all."""
+        extractor = AccessibilityExtractor()
+        page = _make_page_with_evaluate(lambda js, *args: True)
+        extractor._filter_occluded(page, [{"role": "button", "name": "Buy", "_ordinal": 2}])
+        assert page.evaluate.call_args[0][1:] == (["button", "Buy", 2],)
+
+    def test_unnamed_elements_are_kept_without_a_check(self):
+        extractor = AccessibilityExtractor()
+        page = _make_page_with_evaluate(lambda js, *args: False)
+        result = extractor._filter_occluded(page, [{"role": "checkbox", "name": ""}])
+        assert len(result) == 1
+        page.evaluate.assert_not_called()
+
     def test_evaluate_called_once_per_element(self):
         """evaluate() is called exactly once for each element."""
         extractor = AccessibilityExtractor()
@@ -182,28 +199,29 @@ class TestFilterOccludedRemovesHidden:
 
 class TestExtractCallsFilter:
 
-    def test_extract_applies_filter(self):
-        """extract() must call _filter_occluded and use its result."""
+    def test_extract_applies_filter_before_numbering(self):
+        """Occluded elements are dropped BEFORE numbering, so [N] still maps to
+        the element shown as [N]. Filtering afterwards shifted every later
+        element down a slot and a click on [1] hit what was rendered as [2]."""
         extractor = AccessibilityExtractor()
-
-        aria_output = (
-            'Page: Test\nURL: https://example.com\n\n'
-            'Elements (2 of 2):\n'
-            '[0] button "Visible"\n'
-            '[1] button "Hidden"\n'
-        )
 
         page = MagicMock()
         page.title.return_value = "Test"
         page.url = "https://example.com"
         page.locator.return_value.aria_snapshot.return_value = (
-            '- button "Visible"\n- button "Hidden"'
+            '- button "Hidden"\n- button "Visible"\n- button "Also visible"'
         )
 
-        filtered = [{"index": 0, "role": "button", "name": "Visible"}]
+        def fake_filter(_page, els):
+            return [el for el in els if el["name"] != "Hidden"]
 
-        with patch.object(extractor, "_filter_occluded", return_value=filtered) as mock_filter:
-            with patch("fantoma.dom.accessibility.extract_aria", return_value=aria_output):
-                extractor.extract(page)
+        with patch.object(extractor, "_filter_occluded", side_effect=fake_filter) as mock_filter:
+            with patch("fantoma.dom.accessibility.get_scroll_info", return_value=None), \
+                 patch("fantoma.dom.frames.collect_all_frame_elements", return_value=[]):
+                out = extractor.extract(page)
             mock_filter.assert_called_once()
-            assert extractor._last_interactive == filtered
+
+        assert "Hidden" not in out
+        assert '[0] button "Visible"' in out
+        assert '[1] button "Also visible"' in out
+        assert [el["name"] for el in extractor._last_interactive] == ["Visible", "Also visible"]

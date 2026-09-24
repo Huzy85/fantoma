@@ -97,3 +97,32 @@ class TestAriaDiff:
 
     def test_empty_dicts(self):
         assert aria_diff({}, {}) == ""
+
+
+class TestStateChangesAreVisible:
+    def _snap(self, text):
+        from unittest.mock import MagicMock
+        from fantoma.dom.aria_diff import aria_snapshot
+        page = MagicMock()
+        page.locator.return_value.aria_snapshot.return_value = text
+        return aria_snapshot(page)
+
+    def test_a_select_is_reported(self):
+        from fantoma.dom.aria_diff import aria_diff
+        before = self._snap('- combobox:\n  - option "Pick" [disabled] [selected]\n  - option "Option 2"')
+        after = self._snap('- combobox:\n  - option "Pick" [disabled]\n  - option "Option 2" [selected]')
+        diff = aria_diff(before, after)
+        assert '"Option 2": "" → "selected"' in diff
+        assert '"Pick": "selected disabled" → "disabled"' in diff
+
+    def test_second_of_two_unnamed_checkboxes_is_reported(self):
+        from fantoma.dom.aria_diff import aria_diff
+        before = self._snap("- checkbox\n- checkbox [checked]")
+        after = self._snap("- checkbox\n- checkbox")
+        assert "#2" in aria_diff(before, after)
+
+    def test_filled_unnamed_field_is_reported(self):
+        from fantoma.dom.aria_diff import aria_diff
+        before = self._snap("- spinbutton")
+        after = self._snap('- spinbutton: "42"')
+        assert '"42"' in aria_diff(before, after)

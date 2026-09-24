@@ -7,7 +7,9 @@ import logging
 import time
 from typing import Any
 
-from fantoma.browser.actions import click_element, type_into, scroll_page
+from fantoma.browser.actions import (
+    click_element, type_into, scroll_page, native_option_target, select_dropdown_option,
+)
 from fantoma.browser.engine import BrowserEngine
 from fantoma.browser.consent import dismiss_consent
 from fantoma.browser.form_login import login as form_login, _looks_logged_in
@@ -15,6 +17,10 @@ from fantoma.browser.form_memory import FormMemory
 from fantoma.browser.observer import inject_observer, collect_mutations, wait_for_dom_stable
 from fantoma.browser.page_state import verify_action, detect_errors
 from fantoma.dom.accessibility import AccessibilityExtractor
+from fantoma.dom.markdown import page_to_markdown, aria_text_fallback
+from fantoma.browser.blocks import detect_block_page
+from fantoma.browser.domains import DomainBlocked
+from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted, scan_for_injection
 from fantoma.config import FantomaConfig
 from fantoma.session import SessionManager
 
@@ -48,8 +54,14 @@ class Fantoma:
         timeout: int = 300,
         trace: bool = False,
         profile_dir: str = None,
+        allowed_domains: list[str] | str = None,
+        blocked_domains: list[str] | str = None,
     ):
         self.config = FantomaConfig()
+        # Hostnames the browser may / may not contact. None falls back to
+        # FANTOMA_ALLOWED_DOMAINS / FANTOMA_BLOCKED_DOMAINS. See browser.domains.
+        self._allowed_domains = allowed_domains
+        self._blocked_domains = blocked_domains
         self._profile_dir = profile_dir
         self.config.browser.headless = headless
         self.config.browser.browser_engine = browser
@@ -98,6 +110,8 @@ class Fantoma:
             trace=self.config.browser.trace,
             browser_engine=self.config.browser.browser_engine,
             profile_dir=self._profile_dir,
+            allowed_domains=self._allowed_domains,
+            blocked_domains=self._blocked_domains,
         )
         self._engine.start()
         if url:
@@ -217,7 +231,14 @@ class Fantoma:
             return self._action_result(False, pre_url)
         try:
             inject_observer(page)
-            click_element(self._engine, element)
+            option = native_option_target(element)
+            if option is not None:
+                # A click on an option in a native dropdown is a no-op; the
+                # intent is plainly "choose this one", so do that instead.
+                if not select_dropdown_option(element, option["label"] or option["value"]):
+                    return self._action_result(False, pre_url)
+            else:
+                click_element(self._engine, element)
             wait_for_dom_stable(page)
         except Exception as e:
             log.warning("Click [%d] failed: %s", element_id, e)
@@ -251,12 +272,77 @@ class Fantoma:
             return self._action_result(False, pre_url)
         try:
             inject_observer(page)
-            element.select_option(label=value)
+            if not select_dropdown_option(element, value) \
+                    and not self._select_custom_dropdown(page, element, value):
+                log.warning("Select [%d]: no option matching %r", element_id, value)
+                return self._action_result(False, pre_url)
             wait_for_dom_stable(page)
         except Exception as e:
             log.warning("Select [%d] failed: %s", element_id, e)
             return self._action_result(False, pre_url)
         return self._action_result(True, pre_url)
+
+    def _select_custom_dropdown(self, page, element, value: str) -> bool:
+        """Open a scripted (non-<select>) dropdown and pick an option by name.
+
+        Many sites build dropdowns from ARIA combobox/listbox markup, where
+        select_option() cannot work. Opening it and activating the matching
+        option is what a keyboard user does.
+
+        Options are looked for in the popup this control owns (aria-controls
+        / aria-owns), else in any visible listbox, and never inside a native
+        <select>: a page-wide search found a same-named <option> in an
+        unrelated native dropdown earlier on the page and clicked that.
+        Returns True only if the choice is visible afterwards.
+        """
+        try:
+            # Only something that opens a list of options. Clicking whatever
+            # was passed would follow a link the model mis-numbered.
+            info = element.evaluate("""el => {
+                const r = (el.getAttribute('role') || '').toLowerCase();
+                return {
+                    dropdown: r === 'combobox' || r === 'listbox'
+                        || el.hasAttribute('aria-haspopup') || el.hasAttribute('aria-expanded'),
+                    popup: (el.getAttribute('aria-controls') || el.getAttribute('aria-owns') || '')
+                        .split(/\\s+/)[0],
+                };
+            }""")
+            if not info or not info.get("dropdown"):
+                return False
+            if (element.evaluate("el => (el.getAttribute('role') || '').toLowerCase()") != "listbox"):
+                click_element(self._engine, element)
+                wait_for_dom_stable(page)
+
+            scope = page.locator(f"[id='{info['popup']}']") if info.get("popup") else page
+            want = value.strip().lower()
+            options = scope.locator("[role=option]:visible")
+            target = None
+            for i in range(min(options.count(), 200)):
+                opt = options.nth(i)
+                label = (opt.get_attribute("aria-label") or opt.inner_text() or "").strip().lower()
+                if label == want:
+                    target = opt
+                    break
+                if target is None and want and want in label:
+                    target = opt
+            if target is None:
+                return False
+            chosen = target.element_handle()
+            click_element(self._engine, chosen)
+            wait_for_dom_stable(page)
+
+            # Confirm it took: the control now shows the value (its own text,
+            # not its label), or the option is marked selected.
+            shown = element.evaluate("el => (el.value || el.textContent || '')")
+            if want in (shown or "").lower():
+                return True
+            try:
+                return chosen.get_attribute("aria-selected") == "true"
+            except Exception:
+                return False
+        except Exception as e:
+            log.debug("custom dropdown select failed: %s", e)
+        return False
 
     def scroll(self, direction: str = "down") -> dict:
         """Scroll the page. Direction: 'up', 'down', 'left', 'right'."""
@@ -300,9 +386,16 @@ class Fantoma:
             time.sleep(2)
             dismiss_consent(self._engine.get_page())
             wait_for_dom_stable(self._engine.get_page())
+        except DomainBlocked as e:
+            log.warning("Navigate refused: %s", e)
+            result = self._action_result(False, pre_url)
+            result["error"] = str(e)
+            return result
         except Exception as e:
             log.warning("Navigate failed: %s", e)
-            return self._action_result(False, pre_url)
+            result = self._action_result(False, pre_url)
+            result["error"] = str(e)
+            return result
         return self._action_result(True, pre_url)
 
     # ── Tabs ─────────────────────────────────────────────────
@@ -435,48 +528,88 @@ class Fantoma:
         memory.close()
         return result
 
+    def read(self, url: str = None, main_only: bool = True, include_links: bool = True,
+             selector: str = "", max_chars: int = 0, scroll: bool = True) -> dict:
+        """Return the current page (or `url`) as clean Markdown. No LLM needed.
+
+        Result keys: title, url, description, markdown, links, hidden_removed,
+        truncated, blocked (a reason string when the page looks like a bot
+        wall, error page or login wall, else ""), injection_warnings (excerpts
+        of text that reads like instructions aimed at an AI).
+
+        scroll (default on) walks the page first so content that only renders
+        once scrolled into view is included. Raises RuntimeError when the page
+        cannot be opened or read (for example an invalid selector).
+        """
+        if url:
+            nav = self.navigate(url)
+            # Reading on after a failed navigation would describe whatever
+            # page was already open as if it were `url`.
+            if not nav.get("success"):
+                raise RuntimeError(nav.get("error") or f"Could not open {url}")
+        page = self._engine.get_page()
+        result = page_to_markdown(page, main_only=main_only, include_links=include_links,
+                                  selector=selector, max_chars=max_chars, scroll=scroll)
+        error = result.pop("error", "")
+        if error:
+            raise RuntimeError(f"Could not read {result.get('url') or 'the page'}: {error}")
+        result["blocked"] = detect_block_page(result["title"], result["markdown"])
+        result["injection_warnings"] = scan_for_injection(result["markdown"])
+        return result
+
     def extract(self, query: str, schema: dict = None) -> dict | list | str:
         """Extract data from the current page.
 
-        With LLM: sends page text + query to LLM, returns structured data.
+        With LLM: sends the page (as Markdown, hidden text removed, fenced as
+        untrusted) plus the query to the LLM.
         Without LLM: returns raw ARIA tree text.
+
+        `schema` may be a JSON Schema ({"type": "object", "properties": ...}
+        or {"type": "array", "items": ...}) or a flat {field: type} map where
+        type is a Python type or a type name. A JSON Schema of type object
+        returns a dict; anything else returns a list of items.
         """
         if not self._llm:
             return self._dom.extract(self._engine.get_page())
 
-        import json as _json
         page = self._engine.get_page()
-        main = page.locator("main, [role=main]")
-        if main.count() > 0:
-            full_text = main.first.inner_text()[:6000]
-        else:
-            full_text = page.inner_text("body")[:6000]
+        rendered = page_to_markdown(page, main_only=False, include_links=True,
+                                    max_chars=self.config.extraction.max_page_text)
+        content = rendered["markdown"]
+        if not content.strip():
+            # The Markdown walk failed. The accessibility tree still drops
+            # display:none and aria-hidden text, unlike raw innerText.
+            content = aria_text_fallback(page)[: self.config.extraction.max_page_text]
 
-        if schema:
-            type_map = {str: "string", int: "integer", float: "number", bool: "boolean"}
-            schema_desc = ", ".join(f'"{k}": {type_map.get(v, "string")}' for k, v in schema.items())
-            system = (f"Extract data as a JSON array. Each item must have these fields: {{{schema_desc}}}.\n"
-                      "Return ONLY a valid JSON array. No explanation. No markdown.")
+        shape = _schema_shape(schema) if schema else None
+        if shape:
+            system = (f"Extract data from the page as JSON matching this schema:\n{shape['text']}\n"
+                      f"Return ONLY valid JSON ({shape['kind']}). No explanation. No markdown. "
+                      "Use null for a field the page does not state; never invent values.\n"
+                      + UNTRUSTED_NOTE)
         else:
-            system = "Extract the requested information. Return only the data, no explanation."
+            system = ("Extract the requested information. Return only the data, no explanation. "
+                      "Only report what the page states.\n" + UNTRUSTED_NOTE)
 
         response = self._llm.chat(
             [{"role": "system", "content": system},
-             {"role": "user", "content": f"Extract: {query}\n\nPage content:\n{full_text}"}],
+             {"role": "user", "content": f"Extract: {query}\n\nPage content:\n"
+                                         f"{wrap_untrusted(content, page.url if isinstance(page.url, str) else '')}"}],
             max_tokens=2000,
         )
         if not response:
-            return [] if schema else ""
+            return ([] if shape["kind"] == "array" else {}) if shape else ""
         response = response.strip()
-        if schema:
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1].rsplit("```", 1)[0]
-            try:
-                data = _json.loads(response)
-                return data if isinstance(data, list) else [data]
-            except _json.JSONDecodeError:
-                return []
-        return response
+        if not shape:
+            return response
+        data = _parse_json_loose(response, shape["kind"])
+        if shape["kind"] == "object":
+            if isinstance(data, list):
+                return data[0] if data and isinstance(data[0], dict) else {}
+            return data if isinstance(data, dict) else {}
+        if data is None:
+            return []
+        return data if isinstance(data, list) else [data]
 
     # ── Utilities ────────────────────────────────────────────
 
@@ -537,3 +670,60 @@ class Fantoma:
                     return
             except Exception:
                 continue
+
+
+# ── Schema helpers ────────────────────────────────────────────
+
+_TYPE_NAMES = {str: "string", int: "integer", float: "number", bool: "boolean",
+               list: "array", dict: "object"}
+
+
+def _schema_shape(schema: dict) -> dict | None:
+    """Describe a schema for the prompt. Returns {"text", "kind"} or None.
+
+    Accepts a real JSON Schema, or the older flat {field: type} map, which
+    always meant "a list of items with these fields".
+    """
+    import json as _json
+    if not isinstance(schema, dict) or not schema:
+        return None
+    if "properties" in schema or schema.get("type") in ("object", "array"):
+        kind = "array" if schema.get("type") == "array" else "object"
+        return {"text": _json.dumps(schema, indent=1, default=str)[:4000], "kind": kind}
+    fields = {k: (_TYPE_NAMES.get(v, v) if not isinstance(v, str) else v)
+              for k, v in schema.items()}
+    item = {"type": "object",
+            "properties": {k: {"type": str(t)} for k, t in fields.items()}}
+    return {"text": _json.dumps({"type": "array", "items": item}, indent=1),
+            "kind": "array"}
+
+
+def _parse_json_loose(text: str, kind: str = ""):
+    """Parse JSON from a model reply that may wrap it in fences or prose.
+
+    Decodes the first complete JSON value, starting at the first "{" or
+    "[" (or at the bracket `kind` asks for, "object" or "array"). Searching
+    for "[" first returned the inner list of {"tags": ["a", "b"]}.
+    """
+    import json as _json
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else t[3:]
+        t = t.rsplit("```", 1)[0]
+    try:
+        return _json.loads(t)
+    except (ValueError, TypeError):
+        pass
+    decoder = _json.JSONDecoder()
+    order = {"object": "{[", "array": "[{"}.get(kind, "")
+    starts = sorted(i for i in (t.find("{"), t.find("[")) if i >= 0)
+    if order:
+        preferred = t.find(order[0])
+        starts = ([preferred] if preferred >= 0 else []) + [i for i in starts if i != preferred]
+    for i in starts:
+        try:
+            value, _ = decoder.raw_decode(t[i:])
+            return value
+        except ValueError:
+            continue
+    return None

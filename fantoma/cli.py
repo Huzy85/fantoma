@@ -5,6 +5,7 @@ Usage:
     fantoma setup          # Guided first-time setup
     fantoma test           # Quick test to verify everything works
     fantoma run "task"     # Run a browser task
+    fantoma read URL       # Print a page as clean Markdown (no LLM needed)
     fantoma monitor        # Run the weekly monitor suite
 """
 import argparse
@@ -294,6 +295,8 @@ Config saved to: {CONFIG_FILE}
 {_bold('Next steps:')}
   fantoma test     — verify your setup works
   fantoma run "Go to github.com/trending and tell me the top repo"
+  fantoma read https://example.com
+  fantoma read https://example.com --json --full
 
 {_dim('Run fantoma setup again any time to change your settings.')}
 """)
@@ -1008,6 +1011,40 @@ def cmd_logs_trace():
 
 # ── Main ─────────────────────────────────────────────────────────
 
+def cmd_read(url, full=False, as_json=False, selector="", browser="camoufox",
+             max_chars=0, no_links=False):
+    """Print a page as Markdown. Needs no LLM and no setup."""
+    from fantoma.browser_tool import Fantoma
+
+    if "://" not in url:
+        url = "https://" + url
+    f = Fantoma(headless=True, browser=browser)
+    try:
+        f.start()
+        result = f.read(url, main_only=not full, include_links=not no_links,
+                        selector=selector, max_chars=max_chars)
+    except Exception as e:
+        print(_red(f"Could not read {url}: {e}"), file=sys.stderr)
+        sys.exit(1)
+    finally:
+        f.stop()
+
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return
+    if result.get("blocked"):
+        print(_yellow(f"Warning: page looks like '{result['blocked']}', not real content."),
+              file=sys.stderr)
+    if result.get("injection_warnings"):
+        print(_yellow("Warning: text that reads like instructions to an AI was found:"),
+              file=sys.stderr)
+        for w in result["injection_warnings"]:
+            print(f"  {w}", file=sys.stderr)
+    if result.get("title"):
+        print(f"# {result['title']}\n")
+    print(result.get("markdown", ""))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fantoma — the AI browser agent",
@@ -1019,6 +1056,7 @@ Commands:
   test full       Test against 10 real bot-protected sites
   test fingerprint  Validate Camoufox anti-detection fingerprint
   run "task"      Run a browser task
+  read URL        Print a page as clean Markdown (no LLM needed)
   (no args)       Interactive mode with /commands
 
 Examples:
@@ -1027,16 +1065,30 @@ Examples:
   fantoma test full
   fantoma test fingerprint
   fantoma run "Go to github.com/trending and tell me the top repo"
+  fantoma read https://example.com
+  fantoma read https://example.com --json --full
   fantoma             (starts interactive mode)
 """,
     )
     parser.add_argument("command", nargs="?", default=None,
-                       choices=["setup", "test", "run", "monitor", "logs"],
+                       choices=["setup", "test", "run", "read", "monitor", "logs"],
                        help="Command to run (or omit for interactive mode)")
     parser.add_argument("task", nargs="?", default=None,
                        help="Task description (for 'run'), or 'full' (for 'test')")
     parser.add_argument("--start-url", default=None,
                        help="Starting URL (for 'run' command)")
+    parser.add_argument("--full", action="store_true",
+                       help="read: keep navigation, header and footer")
+    parser.add_argument("--json", action="store_true",
+                       help="read: print the full result as JSON (links, warnings)")
+    parser.add_argument("--selector", default="",
+                       help="read: only this CSS selector")
+    parser.add_argument("--no-links", action="store_true",
+                       help="read: plain text instead of Markdown links")
+    parser.add_argument("--max-chars", type=int, default=0,
+                       help="read: cut the output to this many characters")
+    parser.add_argument("--browser", default="camoufox", choices=["camoufox", "chromium"],
+                       help="read: browser engine (default camoufox)")
 
     args = parser.parse_args()
 
@@ -1057,6 +1109,12 @@ Examples:
             print(_red("Usage: fantoma run \"task description\""))
             sys.exit(1)
         cmd_run(args.task, args.start_url)
+    elif args.command == "read":
+        if not args.task:
+            print(_red("Usage: fantoma read URL"))
+            sys.exit(1)
+        cmd_read(args.task, full=args.full, as_json=args.json, selector=args.selector,
+                 browser=args.browser, max_chars=args.max_chars, no_links=args.no_links)
     elif args.command == "logs":
         if args.task == "trace" or args.task == "--trace":
             cmd_logs_trace()

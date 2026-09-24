@@ -18,6 +18,10 @@ INTERACTIVE_ROLES = {
     "button", "link", "textbox", "combobox", "searchbox",
     "checkbox", "radio", "slider", "switch", "tab",
     "menuitem", "option", "spinbutton",
+    # These were in neither this set nor SKIP_ROLES, so they were silently
+    # dropped and could never be acted on: file trees, checkable menu items
+    # and radio-style menu items all rendered as if they did not exist.
+    "treeitem", "menuitemcheckbox", "menuitemradio",
 }
 
 # Form controls worth listing even with no accessible name.
@@ -55,7 +59,17 @@ LANDMARK_ROLES = {
 # Defaults — overridden by ExtractionConfig when available
 MAX_ELEMENTS = 20
 MAX_HEADINGS = 25
-MAX_CONTENT_ELEMENTS = 60
+MAX_CONTENT_ELEMENTS = 120
+
+# Matches only an empty accessible name (see get_element_by_index).
+_EMPTY_NAME = re.compile(r"^$")
+
+# `- role: words` lines in the snapshot — the unquoted text form.
+_TEXT_LINE = re.compile(
+    r'^\s*-\s+(text|paragraph|listitem|strong|emphasis|code|blockquote|caption|'
+    r'term|definition|contentinfo|note|status|alert|time|mark|superscript|'
+    r'subscript|deletion|insertion):\s+(.+?)\s*$'
+)
 
 # Navigation/UI noise — names that indicate chrome, not content
 NAV_NOISE = {
@@ -63,7 +77,24 @@ NAV_NOISE = {
     "show", "hide", "previous", "next", "back", "forward",
     "notifications", "settings", "preferences", "manage",
     "create a new", "add folder", "add label",
+    # Page furniture that sits at the top of the DOM on a lot of sites and so
+    # wins every tie. A "Fork me on GitHub" ribbon held slot [0] on a page
+    # whose only task was ticking a checkbox; a cheap model clicked it and left.
+    "fork me", "skip to", "skip navigation", "back to top",
+    "cookie", "privacy policy", "terms of service", "terms of use",
 }
+
+
+# Landmarks that hold site furniture rather than page content.
+_CHROME_LANDMARKS = {"navigation", "banner", "contentinfo"}
+
+
+def _host(url: str) -> str:
+    """Hostname of an absolute URL, without a leading www. Empty if relative."""
+    if not url or "://" not in url:
+        return ""
+    host = url.split("://", 1)[1].split("/", 1)[0].split(":", 1)[0].lower()
+    return host[4:] if host.startswith("www.") else host
 
 
 def _is_nav_noise(name: str) -> bool:
@@ -136,7 +167,8 @@ def format_scroll_hints(info: dict | None) -> tuple[str, str]:
     return above, below
 
 
-def prune_elements(elements: list[dict], task: str = "", max_elements: int = 20) -> list[dict]:
+def prune_elements(elements: list[dict], task: str = "", max_elements: int = 20,
+                   page_url: str = "") -> list[dict]:
     """Score and rank elements by relevance to the task. Returns top N.
 
     Scoring:
@@ -146,8 +178,15 @@ def prune_elements(elements: list[dict], task: str = "", max_elements: int = 20)
       +2  name matches a submit pattern
       +1  checkbox or radio
       -2  name matches navigation noise
+      -2  link to another site whose name matches no task keyword
+      -1  sits in the site header, footer or nav and matches no keyword
        0  baseline
+
+    Ties keep DOM order, so without the last two signals page furniture at
+    the top of the document (a repository ribbon, a logo link) outranked the
+    one control the task was about.
     """
+    page_host = _host(page_url)
     task_lower = task.lower()
     words = task_lower.split()
     keywords = [w for w in words if w not in _STOP_WORDS and len(w) > 1]
@@ -188,6 +227,15 @@ def prune_elements(elements: list[dict], task: str = "", max_elements: int = 20)
 
         if _is_nav_noise(name_lower):
             score -= 2
+
+        matched = any(kw in name_lower or (context_lower and kw in context_lower)
+                      for kw in keywords)
+        if not matched:
+            href_host = _host(el.get("_url", ""))
+            if role == "link" and page_host and href_host and href_host != page_host:
+                score -= 2
+            if landmark.split(":")[0] in _CHROME_LANDMARKS:
+                score -= 1
 
         scored.append((score, el))
 
@@ -255,6 +303,30 @@ def annotate_ambiguous(elements: list[dict]) -> list[dict]:
     return elements
 
 
+def _group_options(elements: list[dict]) -> list[dict]:
+    """Place each dropdown's options directly after the dropdown itself.
+
+    Ranking scores options on their own, so "select Option 2" floated the
+    options above the dropdown they belong to and the model saw a loose list
+    of choices with nothing to choose them in. Options whose dropdown was not
+    shown keep their place.
+    """
+    shown_ids = {el["_select_id"] for el in elements if "_select_id" in el}
+    if not shown_ids:
+        return elements
+    children: dict = {}
+    for el in elements:
+        if el.get("_in_select") in shown_ids:
+            children.setdefault(el["_in_select"], []).append(el)
+    out = []
+    for el in elements:
+        if el.get("_in_select") in shown_ids:
+            continue
+        out.append(el)
+        out.extend(children.get(el.get("_select_id"), []))
+    return out
+
+
 def mark_new_elements(previous: list[dict], current: list[dict]) -> list[bool]:
     """Compare current elements with previous by (role, name) tuple.
 
@@ -295,6 +367,12 @@ def enrich_field_state(el: dict) -> str:
 
     if raw.get("disabled"):
         parts.append("disabled")
+
+    # Returned in place of the basic state string, so anything missing here
+    # is lost: "[disabled] [selected]" used to render as just "[disabled]",
+    # hiding which option a dropdown currently holds.
+    if raw.get("selected"):
+        parts.append("selected")
 
     if raw.get("value"):
         val = raw["value"]
@@ -390,7 +468,7 @@ def _apply_aria_attrs(result: dict, attrs_str: str) -> None:
             result[attr] = True
 
 
-def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate", _shown_out: list = None) -> str:
+def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate", _shown_out: list = None, element_filter=None) -> str:
     """Extract page content via ARIA accessibility tree.
 
     Returns a numbered element map similar to DOMExtractor but using
@@ -400,6 +478,10 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
       "navigate" — default, current behaviour unchanged.
       "form" — inputs sorted first, max_elements=20, max_headings=5.
       "content" — delegates to extract_aria_content() (text only, no numbered elements).
+
+    element_filter, if given, receives the chosen elements before they are
+    numbered and returns the ones to keep. Filtering after numbering shifted
+    every later element down one slot, so [5] resolved to what was shown as [6].
 
     This is what a screen reader sees — clean, structured, legally protected.
     """
@@ -428,6 +510,11 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
     current_landmark = None       # e.g. "form: Login"
     landmark_indent = -1          # indent level of current landmark line
 
+    # The dropdown whose options are being read, so the dropdown can report
+    # which option it holds and each option knows it belongs to one.
+    current_select = None
+    select_indent = -1
+
     for idx, line in enumerate(lines):
         # Measure indent before parsing — needed for landmark scope tracking
         stripped = line.lstrip()
@@ -449,6 +536,18 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
                 landmark_indent = indent
                 continue  # Don't parse this line as an interactive element
 
+        if current_select is not None and indent <= select_indent:
+            current_select = None
+
+        # A link's destination arrives as a child line. It is the one signal
+        # that tells a "Fork me on GitHub" ribbon (another site) apart from a
+        # link the task is about, so keep it on the link it belongs to.
+        url_match = re.match(r'^-\s+/url:\s*(\S+)', stripped)
+        if url_match:
+            if interactive and interactive[-1]["role"] == "link" and "_url" not in interactive[-1]:
+                interactive[-1]["_url"] = url_match.group(1)
+            continue
+
         parsed = _parse_aria_line(line)
         if not parsed:
             continue
@@ -458,6 +557,11 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
 
         if role in SKIP_ROLES:
             continue
+
+        if role == "option" and current_select is not None:
+            current_select.setdefault("_options", []).append(name)
+            if parsed.get("selected"):
+                current_select["_selected"] = name
 
         if role == "heading" and name:
             level = parsed.get("level", "")
@@ -508,14 +612,21 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
                     if look.strip().startswith("- "):
                         break
 
-            interactive.append({
+            el = {
                 "role": role,
                 "name": name,
                 "state": state,
                 "raw": parsed,
                 "_landmark": current_landmark,
                 **({"_context": inferred} if inferred else {}),
-            })
+            }
+            if role == "option" and current_select is not None:
+                el["_in_select"] = current_select["_select_id"]
+            interactive.append(el)
+            if role in ("combobox", "listbox") and stripped.rstrip().endswith(":"):
+                el["_select_id"] = len(interactive)
+                current_select = el
+                select_indent = indent
 
     # Form mode: override caps and sort inputs to the top
     if mode == "form":
@@ -580,10 +691,16 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
             el["_ordinal"] = seen_sig.get(sig, 0)
             seen_sig[sig] = el["_ordinal"] + 1
 
-        if task and mode != "form":
-            shown = prune_elements(interactive, task, _max_el)
+        # A little headroom so the filter below can drop a few and still
+        # leave a full list.
+        _pool = _max_el + 5 if element_filter else _max_el
+        if mode != "form" and (task or len(interactive) > _max_el):
+            shown = prune_elements(interactive, task, _pool, page_url=url)
         else:
-            shown = interactive[:_max_el]
+            shown = interactive[:_pool]
+        if element_filter:
+            shown = element_filter(shown)
+        shown = _group_options(shown[:_max_el])
 
         new_flags = mark_new_elements(previous_elements or [], shown)
 
@@ -632,6 +749,12 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
                 # "in:" marks this as inferred from page order, not an
                 # accessible name the page actually provides.
                 hint = f' (in: {ctx})' if ctx else ""
+                # A dropdown's own name says nothing about its value. Without
+                # this the model cannot tell whether its choice already took.
+                if el.get("_selected"):
+                    hint += f' (selected: "{el["_selected"]}")'
+                elif el.get("_options") and el["role"] == "combobox":
+                    hint += f' ({len(el["_options"])} options)'
                 output.append(
                     f'{prefix}[{idx}] {el["role"]} "{el["name"]}"{state}{hint}'
                 )
@@ -680,6 +803,20 @@ def extract_aria_content(page) -> str:
     current_region = None
 
     for line in lines:
+        # Text-bearing roles arrive as `- paragraph: some words`, unquoted.
+        # _parse_aria_line matches neither that nor the named form, so every
+        # paragraph, list item and footer on the page was dropped and read
+        # mode returned headings and links only. The words ARE the content.
+        text_match = _TEXT_LINE.match(line)
+        if text_match:
+            text = text_match.group(2).strip()
+            if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+                text = text[1:-1]
+            if text:
+                content_items.append(f"  [{current_region}] {text}" if current_region
+                                     else f"  {text}")
+            continue
+
         parsed = _parse_aria_line(line)
         if not parsed:
             # Check for raw region markers in the ARIA snapshot
@@ -714,8 +851,17 @@ def extract_aria_content(page) -> str:
                 content_items.append(f"  {prefix}{name}")
             continue
 
+        # A table row's name is its cells joined ("Basic $10"), which is the
+        # compact form of the row. The cells beneath repeat it piece by piece.
+        if role == "row":
+            content_items.append(f"  {name}")
+            continue
+        if role in ("cell", "gridcell", "columnheader", "rowheader"):
+            continue
+
         # Include text nodes (the actual content)
-        if role == "text":
+        if role in ("text", "paragraph", "listitem", "blockquote", "caption",
+                    "term", "definition", "note", "status", "alert"):
             if current_region:
                 content_items.append(f"  [{current_region}] {name}")
             else:
@@ -765,7 +911,8 @@ class AccessibilityExtractor:
         shown: list = []
         result = extract_aria(page, self._max_elements, self._max_headings,
                               task=task, previous_elements=previous, mode=mode,
-                              _shown_out=shown)
+                              _shown_out=shown,
+                              element_filter=lambda els: self._filter_occluded(page, els))
         if not result or "Elements: none found" in result:
             log.debug("ARIA tree empty — falling back to DOM extraction")
             self._last_interactive = []
@@ -776,9 +923,9 @@ class AccessibilityExtractor:
         # Cache the elements exactly as numbered, so index N resolves to the
         # element the model saw as [N]. Falls back to re-parsing the text if
         # nothing came back, which keeps older callers working.
+        # Occluded elements were filtered out BEFORE numbering (see
+        # element_filter), so position N here is exactly what was shown as [N].
         self._last_interactive = shown or self._parse_interactive_from_output(result)
-        if self._last_interactive:
-            self._last_interactive = self._filter_occluded(page, self._last_interactive)
 
         # Merge iframe elements
         from fantoma.dom.frames import collect_all_frame_elements
@@ -804,39 +951,62 @@ class AccessibilityExtractor:
         cannot be located are assumed visible and kept. On any JS error the full
         list is returned unchanged.
         """
+        # Takes ONE argument: page.evaluate passes a single value, so the old
+        # (role, name) signature raised TypeError on every call and the filter
+        # silently kept everything.
+        #
+        # "Covered" means covered by an overlay: the element on top at its
+        # centre sits inside a fixed/sticky layer or a modal dialog that does
+        # not also contain the control. A label drawn over a styled checkbox,
+        # or a zero-size native input behind a custom widget, is NOT hidden
+        # from a keyboard user, and dropping it would remove the only control.
         _JS = """
-        (function(role, name) {
-            // Find the element by role + accessible name
-            var candidates = [];
-            var all = document.querySelectorAll('*');
-            for (var i = 0; i < all.length; i++) {
-                var el = all[i];
-                var elRole = el.getAttribute('role') || el.tagName.toLowerCase();
-                var elLabel = el.getAttribute('aria-label') || el.textContent.trim().slice(0, 80);
-                if (elRole === role && elLabel === name) {
-                    candidates.push(el);
-                }
+        ([role, name, ordinal]) => {
+            const IMPLICIT = {A: 'link', BUTTON: 'button', SELECT: 'combobox',
+                              TEXTAREA: 'textbox', SUMMARY: 'button'};
+            const INPUT = {checkbox: 'checkbox', radio: 'radio', button: 'button',
+                           submit: 'button', reset: 'button', search: 'searchbox',
+                           range: 'slider', number: 'spinbutton'};
+            const roleOf = (el) => el.getAttribute('role') || (el.tagName === 'INPUT'
+                ? (INPUT[(el.type || '').toLowerCase()] || 'textbox') : IMPLICIT[el.tagName] || '');
+            const nameOf = (el) => (el.getAttribute('aria-label') ||
+                (el.labels && el.labels[0] ? el.labels[0].textContent : '') ||
+                el.textContent || el.value || '').replace(/\\s+/g, ' ').trim();
+            const matches = [];
+            for (const el of document.querySelectorAll('*')) {
+                if (roleOf(el) === role && nameOf(el) === name) matches.push(el);
             }
-            if (candidates.length === 0) return true;  // not found → assume visible
-            var el = candidates[0];
-            var rect = el.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) return false;  // zero-size → hidden
-            var vw = window.innerWidth || document.documentElement.clientWidth;
-            var vh = window.innerHeight || document.documentElement.clientHeight;
-            var cx = rect.left + rect.width / 2;
-            var cy = rect.top + rect.height / 2;
-            if (cx < 0 || cy < 0 || cx > vw || cy > vh) return true;  // off-screen → keep
-            var top = document.elementFromPoint(cx, cy);
-            if (!top) return true;  // can't determine → keep
-            return el.contains(top) || top.contains(el) || el === top;
-        })(arguments[0], arguments[1])
+            const el = matches[ordinal] || null;
+            if (!el) return true;
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return true;
+            const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+            if (cx < 0 || cy < 0 || cx > innerWidth || cy > innerHeight) return true;
+            const top = document.elementFromPoint(cx, cy);
+            if (!top || el === top || el.contains(top) || top.contains(el)) return true;
+            for (let n = top; n && n !== document.body; n = n.parentElement) {
+                const cs = getComputedStyle(n);
+                const layer = cs.position === 'fixed' || cs.position === 'sticky'
+                    || n.getAttribute('aria-modal') === 'true' || n.tagName === 'DIALOG';
+                if (layer) return n.contains(el);
+            }
+            return true;
+        }
         """
         try:
             visible = []
             for el in elements:
                 try:
-                    is_on_top = page.evaluate(_JS, el["role"], el["name"])
-                    if is_on_top:
+                    if not el.get("name"):
+                        # Unnamed controls cannot be found by name; keep them.
+                        visible.append(el)
+                        continue
+                    is_on_top = page.evaluate(
+                        _JS, [el["role"], el["name"], el.get("_ordinal", 0)])
+                    # Only an explicit "covered" hides an element. Anything
+                    # else (no answer, an odd return) means we do not know,
+                    # and hiding a real control is worse than showing one.
+                    if is_on_top is not False:
                         visible.append(el)
                     else:
                         log.debug(
@@ -1102,15 +1272,25 @@ class AccessibilityExtractor:
         # model's choice of index was discarded and the wrong item was
         # actioned no matter what it picked.
         ordinal = el.get("_ordinal", 0)
-        try:
-            locator = page.get_by_role(role, name=name)
-            count = locator.count()
-            if count > 0:
-                if ordinal and ordinal < count:
-                    return locator.nth(ordinal).element_handle()
-                return locator.first.element_handle()
-        except Exception:
-            pass
+        # Exact match first. Playwright's name match is a case-insensitive
+        # substring by default, so "Add" also matched "Add to cart" and the
+        # ordinal counted the wrong set of elements. Substring stays as the
+        # fallback for names the snapshot normalised differently.
+        # An unnamed control must be counted among unnamed controls only.
+        # Matching every element of the role put named ones in the count, so
+        # on a page with "Agree to terms" and two bare checkboxes the second
+        # bare box resolved to "Agree to terms".
+        for exact in ((True, False) if name else (False,)):
+            try:
+                locator = page.get_by_role(role, name=name, exact=exact) if name \
+                    else page.get_by_role(role, name=_EMPTY_NAME)
+                count = locator.count()
+                if count > 0:
+                    if ordinal and ordinal < count:
+                        return locator.nth(ordinal).element_handle()
+                    return locator.first.element_handle()
+            except Exception:
+                pass
 
         # Fallback: try aria-label
         try:

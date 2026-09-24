@@ -70,6 +70,63 @@ def click_element(engine, element_or_selector):
     return True
 
 
+def native_option_target(element) -> dict | None:
+    """If `element` is an <option> inside a native <select>, describe it.
+
+    Returns {"label": ..., "value": ...} for such an option, else None.
+    Clicking an option inside a closed native dropdown does nothing in
+    Firefox, and weak models almost always click the option they want rather
+    than issuing a select on the dropdown. Dropdown flows scored 0/3 because
+    of it, so callers use this to turn that click into the select it meant.
+    """
+    try:
+        return element.evaluate("""el => {
+            if (!el || el.tagName !== 'OPTION' || !el.closest('select')) return null;
+            return {label: (el.label || el.textContent || '').trim(), value: el.value};
+        }""")
+    except Exception:
+        return None
+
+
+def select_dropdown_option(element, value: str) -> bool:
+    """Choose `value` in a native <select>, given the select or one of its options.
+
+    Tries, in order: exact label, exact value, then a case-insensitive
+    label match. Models paraphrase ("option 2" for "Option 2"), and a strict
+    label match turned a correct intent into a failed action.
+    """
+    try:
+        select = element.evaluate_handle(
+            "el => el.tagName === 'SELECT' ? el : el.closest('select')"
+        ).as_element()
+    except Exception:
+        select = None
+    if select is None:
+        return False
+
+    for kwargs in ({"label": value}, {"value": value}):
+        try:
+            select.select_option(**kwargs, timeout=2000)
+            return True
+        except Exception:
+            pass
+
+    try:
+        match = select.evaluate("""(sel, want) => {
+            want = want.trim().toLowerCase();
+            const opts = Array.from(sel.options);
+            const hit = opts.find(o => (o.label || o.textContent).trim().toLowerCase() === want)
+                     || opts.find(o => (o.label || o.textContent).trim().toLowerCase().includes(want));
+            return hit ? hit.index : -1;
+        }""", value)
+        if match is not None and match >= 0:
+            select.select_option(index=match, timeout=2000)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _focus_element(page, element):
     """Focus an input element — no mouse events."""
     try:
