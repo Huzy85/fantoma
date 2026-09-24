@@ -5,6 +5,10 @@ the HTTP server already implements; no session state or navigation logic
 lives here. If you find yourself adding a state machine, it belongs in
 server.py instead.
 
+With FANTOMA_MCP_BACKENDS unset, the browser runs inside this process
+(see mcp_local) and nothing else needs to be running. Setting it switches
+to one or more HTTP backends (server.py, usually in Docker):
+
 Backends are single-session and single-threaded (server.py runs Flask with
 threaded=False), so a backend can serve exactly one task at a time. The pool
 below hands out one backend per call and blocks when all are busy, which is
@@ -88,6 +92,17 @@ def _load_pool() -> BackendPool:
 
 _pool: BackendPool | None = None
 _pool_lock = threading.Lock()
+
+
+def _use_local() -> bool:
+    """True when no HTTP backend is configured: run the browser in-process.
+
+    An installed pool (tests, or a caller that set one up) always wins.
+    """
+    if _pool is not None:
+        return False
+    raw = os.environ.get("FANTOMA_MCP_BACKENDS", "").strip().lower()
+    return raw in ("", "local")
 
 
 def _pool_instance() -> BackendPool:
@@ -251,15 +266,19 @@ def fantoma_run(
     max_steps: int = 50,
     timeout: int = 300,
 ) -> TaskResult:
-    payload: dict = {"task": task, "max_steps": max_steps, "timeout": timeout}
-    if url:
-        payload["url"] = url
+    if _use_local():
+        from fantoma import mcp_local
+        body = mcp_local.run_task(task, url, max_steps, timeout)
+    else:
+        payload: dict = {"task": task, "max_steps": max_steps, "timeout": timeout}
+        if url:
+            payload["url"] = url
 
-    def op(backend, is_final):
-        return _post(backend, "/run", payload, timeout=timeout + 30,
-                     wait_for_restart=is_final)
+        def op(backend, is_final):
+            return _post(backend, "/run", payload, timeout=timeout + 30,
+                         wait_for_restart=is_final)
 
-    body = _with_backend(op)
+        body = _with_backend(op)
     return TaskResult(
         success=bool(body.get("success")),
         data=body.get("data") or "",
@@ -278,9 +297,10 @@ def fantoma_run(
         "tokens, typically one step. Reads the accessibility tree, matches "
         "fields by label and submits. Handles multi-step flows where email "
         "and password are on separate pages. Prefer this over fantoma_run "
-        "for logging in: it is faster and far more reliable. The session "
-        "stays open afterwards so a following fantoma_extract sees the "
-        "logged-in page."
+        "for logging in: it is faster and far more reliable. With the "
+        "built-in browser (no FANTOMA_MCP_BACKENDS) the session stays open, "
+        "so a following fantoma_read or fantoma_extract sees the logged-in "
+        "page. HTTP backends start each read or extract in a clean session."
     ),
 )
 def fantoma_login(
@@ -295,11 +315,15 @@ def fantoma_login(
         "url": url, "email": email, "username": username, "password": password,
         "first_name": first_name, "last_name": last_name,
     }
-    def op(backend, is_final):
-        return _post(backend, "/login", payload, timeout=TASK_TIMEOUT,
-                     wait_for_restart=is_final)
+    if _use_local():
+        from fantoma import mcp_local
+        body = mcp_local.login(**payload)
+    else:
+        def op(backend, is_final):
+            return _post(backend, "/login", payload, timeout=TASK_TIMEOUT,
+                         wait_for_restart=is_final)
 
-    body = _with_backend(op)
+        body = _with_backend(op)
     return LoginResult(
         success=bool(body.get("success")),
         url=body.get("url") or "",
@@ -384,7 +408,11 @@ def fantoma_extract(
     if schema:
         payload["schema"] = schema
 
-    body = _on_fresh_page(url, "/extract", payload)
+    if _use_local():
+        from fantoma import mcp_local
+        body = mcp_local.extract(url, query, schema)
+    else:
+        body = _on_fresh_page(url, "/extract", payload)
     if body.get("error"):
         return TaskResult(success=False, error=str(body["error"]))
     data = body.get("data", body)
@@ -437,7 +465,11 @@ def fantoma_read(
 ) -> ReadResult:
     payload = {"main_only": main_only, "include_links": include_links,
                "selector": selector, "max_chars": max_chars}
-    body = _on_fresh_page(url, "/read", payload, timeout=180.0)
+    if _use_local():
+        from fantoma import mcp_local
+        body = mcp_local.read(url, **payload)
+    else:
+        body = _on_fresh_page(url, "/read", payload, timeout=180.0)
     if body.get("error") or not body.get("success", False):
         return ReadResult(success=False, url=url,
                           error=str(body.get("error") or "read failed"))
@@ -461,6 +493,9 @@ def fantoma_read(
     ),
 )
 def fantoma_health() -> dict:
+    if _use_local():
+        from fantoma import mcp_local
+        return mcp_local.health()
     pool = _pool_instance()
     backends = []
     for url in pool._urls:

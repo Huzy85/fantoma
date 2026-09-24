@@ -37,7 +37,7 @@ _JS = r"""
 (opts) => {
   const SKIP_TAGS = new Set(['SCRIPT','STYLE','NOSCRIPT','TEMPLATE','SVG','CANVAS',
     'HEAD','META','LINK','OBJECT','EMBED','IFRAME','FRAME','AUDIO','VIDEO','MAP',
-    'DIALOG','SELECT','OPTION','BUTTON','INPUT','TEXTAREA']);
+    'DIALOG','OPTION','BUTTON','INPUT','TEXTAREA']);
   const CHROME_TAGS = new Set(['NAV','HEADER','FOOTER','ASIDE']);
   const CHROME_ROLES = new Set(['navigation','banner','contentinfo','complementary',
     'search','menubar','menu','toolbar','dialog','alertdialog']);
@@ -108,6 +108,13 @@ _JS = r"""
     if (isHidden(el)) { hidden++; return ''; }
     const t = el.tagName;
     if (t === 'BR') return '\n';
+    if (t === 'SELECT') {
+      // A dropdown's current choice is page state a reader needs ("which
+      // plan is selected"); its unchosen options are not.
+      const o = el.selectedOptions && el.selectedOptions[0];
+      const label = o ? (o.label || o.textContent || '').trim() : '';
+      return label ? ` [${label}] ` : '';
+    }
     if (t === 'IMG') {
       const alt = (el.getAttribute('alt') || '').trim();
       return (opts.images && alt) ? `![${alt}](${abs(el.getAttribute('src') || '')})` : (alt ? alt : '');
@@ -205,16 +212,19 @@ _JS = r"""
     }
   }
 
+  // Runs of inline text only; blocks such as code keep their spacing.
+  const tidy = (t) => t.replace(/[ \t]{2,}/g, ' ').replace(/ *\n */g, '\n').trim();
+
   function render(items) {
     const parts = [];
     let buf = '';
     for (const it of items) {
       if (it.inline !== undefined) { buf += it.inline; continue; }
-      if (buf.trim()) parts.push(buf.trim());
+      if (buf.trim()) parts.push(tidy(buf));
       buf = '';
       if (it.block && it.block.trim()) parts.push(it.block.trim());
     }
-    if (buf.trim()) parts.push(buf.trim());
+    if (buf.trim()) parts.push(tidy(buf));
     return parts.join('\n\n');
   }
 

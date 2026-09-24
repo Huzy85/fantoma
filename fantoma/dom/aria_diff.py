@@ -50,16 +50,14 @@ def _parse_line(line: str) -> tuple[str, str, str] | None:
     name = m.group(2) or ""
     rest = m.group(3).strip()
 
-    # Extract value from [value="..."] or [checked] / [disabled]
-    vm = re.search(r'value="([^"]*)"', rest)
-    if vm:
-        value = vm.group(1)
-    elif "[checked]" in rest:
-        value = "checked"
-    elif "[disabled]" in rest:
-        value = "disabled"
-    else:
-        value = ""
+    # Value, then every state flag. Taking only the first flag meant an
+    # option going from "[disabled] [selected]" to "[disabled]" looked
+    # unchanged, and a selected option reported nothing at all, so a
+    # successful select was announced to the model as "No visible changes".
+    vm = re.search(r'value="([^"]*)"', rest) or re.match(r'^:\s*"(.*)"', rest)
+    flags = [f for f in ("checked", "selected", "pressed", "expanded", "disabled")
+             if f"[{f}]" in rest]
+    value = " ".join(([vm.group(1)] if vm else []) + flags)
 
     return role, name, value
 
@@ -80,9 +78,14 @@ def aria_snapshot(page) -> dict[tuple[str, str], str]:
         if parsed:
             role, name, value = parsed
             key = (role, name)
-            # Keep first occurrence (topmost in tree)
-            if key not in result:
-                result[key] = value
+            # Repeated controls (two unnamed checkboxes, six "Add to cart"
+            # buttons) are told apart by position. Keeping only the first
+            # made a change to any later one invisible.
+            n = 2
+            while key in result:
+                key = (role, f"{name} #{n}".strip())
+                n += 1
+            result[key] = value
     return result
 
 
