@@ -61,6 +61,9 @@ MAX_ELEMENTS = 20
 MAX_HEADINGS = 25
 MAX_CONTENT_ELEMENTS = 120
 
+# Matches only an empty accessible name (see get_element_by_index).
+_EMPTY_NAME = re.compile(r"^$")
+
 # `- role: words` lines in the snapshot — the unquoted text form.
 _TEXT_LINE = re.compile(
     r'^\s*-\s+(text|paragraph|listitem|strong|emphasis|code|blockquote|caption|'
@@ -1253,10 +1256,14 @@ class AccessibilityExtractor:
         # substring by default, so "Add" also matched "Add to cart" and the
         # ordinal counted the wrong set of elements. Substring stays as the
         # fallback for names the snapshot normalised differently.
+        # An unnamed control must be counted among unnamed controls only.
+        # Matching every element of the role put named ones in the count, so
+        # on a page with "Agree to terms" and two bare checkboxes the second
+        # bare box resolved to "Agree to terms".
         for exact in ((True, False) if name else (False,)):
             try:
                 locator = page.get_by_role(role, name=name, exact=exact) if name \
-                    else page.get_by_role(role)
+                    else page.get_by_role(role, name=_EMPTY_NAME)
                 count = locator.count()
                 if count > 0:
                     if ordinal and ordinal < count:

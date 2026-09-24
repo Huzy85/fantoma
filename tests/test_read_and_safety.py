@@ -325,3 +325,38 @@ class TestInRealBrowser:
         out = page_to_markdown(browser_page)
         assert out["title"] == "Widget Co - Pricing"
         assert out["description"] == "Plans and prices"
+
+
+class TestResolutionInRealBrowser:
+    """Numbers the model sees must resolve to the element it saw."""
+
+    def _extract(self, browser_page, html, task):
+        from fantoma.dom.accessibility import AccessibilityExtractor
+        page = browser_page.context.browser.new_page()
+        page.set_content(html)
+        ex = AccessibilityExtractor()
+        ex.extract(page, task=task)
+        return page, ex
+
+    def test_unnamed_controls_never_resolve_to_a_named_one(self, browser_page):
+        page, ex = self._extract(browser_page, (
+            '<label><input type="checkbox" id="agree"> Agree to terms</label><br>'
+            '<input type="checkbox" id="u1"> first<br>'
+            '<input type="checkbox" id="u2"> second'), "tick the second box")
+        try:
+            for i, el in enumerate(ex._last_interactive):
+                got = ex.get_element_by_index(page, i).get_attribute("id")
+                want = {"Agree to terms": "agree"}.get(el["name"]) or \
+                    {"first": "u1", "second": "u2"}[el["_context"]]
+                assert got == want, (i, el, got)
+        finally:
+            page.close()
+
+    def test_same_prefix_names_resolve_exactly(self, browser_page):
+        page, ex = self._extract(browser_page, (
+            '<button id="b1">Add to cart</button><button id="b2">Add</button>'), "click Add")
+        try:
+            idx = next(i for i, el in enumerate(ex._last_interactive) if el["name"] == "Add")
+            assert ex.get_element_by_index(page, idx).get_attribute("id") == "b2"
+        finally:
+            page.close()
