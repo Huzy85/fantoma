@@ -22,7 +22,10 @@ _CHALLENGE = re.compile(
     r"|attention required!?\s*\|\s*cloudflare|enable javascript and cookies to continue"
     r"|please complete the security check|request unsuccessful\. incapsula"
     r"|access to this page has been denied|why have i been blocked"
-    r"|performance (&|and) security by cloudflare",
+    r"|performance (&|and) security by cloudflare"
+    r"|you('ve| have) been blocked|blocked by network security|request (was )?blocked"
+    r"|click the button below to continue shopping|to discuss automated access"
+    r"|sorry, we just need to make sure you'?re not a robot|unusual traffic from your",
     re.IGNORECASE,
 )
 _CAPTCHA = re.compile(r"captcha|i'?m not a robot|are you a robot", re.IGNORECASE)
@@ -50,6 +53,14 @@ _HTTP_ERROR_TITLE = re.compile(
     r"|^\s*(bad gateway|service unavailable|internal server error|gateway time-?out)\b",
     re.IGNORECASE,
 )
+# Titles that name a block or an error outright: "Blocked", "Blocked - Site",
+# "Error Page | Site". Seen live on sites that answer a data-centre address
+# with a plain page rather than a challenge.
+_BLOCK_TITLE = re.compile(
+    r"^\s*(access )?blocked\b|^\s*(request|access) (blocked|denied)\b|\berror page\b"
+    r"|^\s*(robot|bot) check\b|^\s*security check\b",
+    re.IGNORECASE,
+)
 _LOGIN = re.compile(
     r"(sign|log)\s*in\s+(to continue|to view|is required)|you (must|need to) (sign|log)\s*in"
     r"|(login|log\s*in) required", re.IGNORECASE,
@@ -72,6 +83,8 @@ def detect_block_page(title: str, text: str) -> str:
 
     if _CHALLENGE.search(title) or (short and _CHALLENGE.search(text)):
         return "bot_challenge"
+    if short and _BLOCK_TITLE.search(title):
+        return "access_denied"
     if short and _CAPTCHA.search(_CAPTCHA_NOTICE.sub("", both)):
         return "captcha"
     if short and _RATE.search(both):
