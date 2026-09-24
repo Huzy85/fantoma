@@ -41,10 +41,42 @@ jobs:
           name: protected-${{ matrix.browser }}
           path: protected-${{ matrix.browser }}.json
 
+  plan:
+    # Which models and tasks to run. Everything by default; a push whose
+    # message contains e.g. "[agent-check models=qwen2.5:14b tasks=herokuapp-inputs]"
+    # runs just that subset.
+    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[agent-check')
+    runs-on: ubuntu-latest
+    outputs:
+      models: ${{ steps.p.outputs.models }}
+      tasks: ${{ steps.p.outputs.tasks }}
+    steps:
+      - id: p
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, re
+          models = ["qwen2.5:7b", "qwen2.5:14b"]
+          tasks = ["herokuapp-checkboxes", "herokuapp-dropdown", "herokuapp-inputs",
+                   "herokuapp-login", "saucedemo-login", "saucedemo-add-to-cart",
+                   "books-read-price", "books-navigate-category", "wikipedia-read"]
+          m = re.search(r"\[agent-check([^\]]*)\]", os.environ.get("MSG") or "")
+          if m:
+              for key, val in re.findall(r"(models|tasks)=(\S+)", m.group(1)):
+                  picked = [v for v in val.split(",") if v]
+                  if key == "models":
+                      models = picked
+                  else:
+                      tasks = [t for t in picked if t in tasks] or tasks
+          print("models=" + json.dumps(models))
+          print("tasks=" + json.dumps(tasks))
+          PY
+
   small-model-agent:
     # Slow (CPU inference, up to hours), so it runs on demand and weekly,
     # not on every push.
-    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[agent-check]')
+    needs: plan
     # One machine per (model, task) so every run finishes at about the same
     # time. GitHub's free machines have no GPU, so this is far slower than a
     # 12GB card at home; timeouts are sized for CPU inference.
@@ -53,17 +85,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ["qwen2.5:7b", "qwen2.5:14b"]
-        task:
-          - herokuapp-checkboxes
-          - herokuapp-dropdown
-          - herokuapp-inputs
-          - herokuapp-login
-          - saucedemo-login
-          - saucedemo-add-to-cart
-          - books-read-price
-          - books-navigate-category
-          - wikipedia-read
+        model: ${{ fromJSON(needs.plan.outputs.models) }}
+        task: ${{ fromJSON(needs.plan.outputs.tasks) }}
     env:
       FANTOMA_LLM_TIMEOUT: "900"
     steps:

@@ -303,6 +303,29 @@ def annotate_ambiguous(elements: list[dict]) -> list[dict]:
     return elements
 
 
+# Where an unlabelled control's visible label usually sits: a checkbox or
+# radio has its words after it ("[x] Remember me"); a text field has them
+# before it ("Number: [    ]"). Looking the wrong way picked up the footer
+# after a number box and labelled it "(in: Powered by)".
+_LABEL_AFTER = {"checkbox", "radio", "switch"}
+_LABEL_LINE = re.compile(r'^(\s*)-\s+(?:text|paragraph|strong|emphasis):\s*(.+?)\s*$')
+
+
+def _neighbour_label(lines: list[str], idx: int, indent: int, role: str) -> str:
+    """Text beside an unnamed control, on the side its label normally sits."""
+    if role in _LABEL_AFTER:
+        window = lines[idx + 1:idx + 3]
+    else:
+        window = list(reversed(lines[max(0, idx - 2):idx]))
+    for look in window:
+        m = _LABEL_LINE.match(look)
+        if m and len(m.group(1)) == indent:
+            return m.group(2).strip('"')[:60]
+        if look.strip().startswith("- "):
+            break
+    return ""
+
+
 def _group_options(elements: list[dict]) -> list[dict]:
     """Place each dropdown's options directly after the dropdown itself.
 
@@ -604,13 +627,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
             # for a label.
             inferred = ""
             if not name:
-                for look in lines[idx + 1:idx + 3]:
-                    m = re.match(r'^\s*-\s+text:\s*(.+?)\s*$', look)
-                    if m:
-                        inferred = m.group(1)[:60]
-                        break
-                    if look.strip().startswith("- "):
-                        break
+                inferred = _neighbour_label(lines, idx, indent, role)
 
             el = {
                 "role": role,

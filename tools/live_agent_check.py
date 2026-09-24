@@ -32,13 +32,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TASKS = [
     ("herokuapp-checkboxes", "https://the-internet.herokuapp.com/checkboxes",
      "Tick the first checkbox on this page if it is not already ticked.",
-     "js", "() => [...document.querySelectorAll('input[type=checkbox]')].every(c => c.checked)"),
+     "js", "() => { const b = [...document.querySelectorAll('input[type=checkbox]')];"
+           " return b.length === 2 && b.every(c => c.checked); }"),
     ("herokuapp-dropdown", "https://the-internet.herokuapp.com/dropdown",
      "Select 'Option 2' from the dropdown on this page.",
-     "js", "() => document.querySelector('#dropdown').value === '2'"),
+     "js", "() => !!document.querySelector('#dropdown') && document.querySelector('#dropdown').value === '2'"),
     ("herokuapp-inputs", "https://the-internet.herokuapp.com/inputs",
      "Type the number 42 into the input box on this page.",
-     "js", "() => document.querySelector('input[type=number]').value === '42'"),
+     "js", "() => !!document.querySelector('input[type=number]') && document.querySelector('input[type=number]').value === '42'"),
     ("herokuapp-login", "https://the-internet.herokuapp.com/login",
      "Log in with username 'tomsmith' and password 'SuperSecretPassword!'.",
      "url", "/secure"),
@@ -77,7 +78,11 @@ def run_one(name: str, llm: str, model: str, browser: str, max_steps: int, timeo
             ok = check in final_url
             detail = f"ended at {final_url}"
         elif kind == "js":
-            ok = bool(page and page.evaluate(check))
+            # The check must run on the task's own site: an agent that wandered
+            # off to a search engine must not pass because a check about
+            # "every checkbox" is vacuously true on a page with none.
+            same_site = url.split("/")[2] in final_url
+            ok = bool(page and same_site and page.evaluate(check))
             detail = f"page check {'true' if ok else 'false'} at {final_url}"
         else:
             answer = str(result.data or "")
@@ -90,8 +95,11 @@ def run_one(name: str, llm: str, model: str, browser: str, max_steps: int, timeo
             agent.fantoma.stop()
         except Exception:
             pass
+    steps = [f"{s.get('action', '')} -> {'ok' if s.get('success') else 'failed'}"
+             for s in (result.steps_detail or [])]
     return {
         "task": name, "ok": ok, "agent_said_success": bool(result.success),
+        "actions": steps[:30],
         "steps": result.steps_taken, "secs": round(time.time() - started, 1),
         "detail": detail, "error": (result.error or "")[:200],
     }
@@ -142,6 +150,8 @@ def main() -> int:
                   f"{res.get('secs', '?'):>6}s  {res.get('detail', '')}{said}"
                   + (f"  error: {res['error']}" if res.get("error") and not res.get("ok") else ""),
                   flush=True)
+            for a in res.get("actions") or []:
+                print(f"        {a}", flush=True)
 
     passed = sum(1 for r in results if r.get("ok"))
     print(f"\n{passed}/{len(results)} passed ({args.model}, {args.browser})")
