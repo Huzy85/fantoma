@@ -143,6 +143,18 @@ def parse_task(task: str, llm=None) -> TaskSpec:
         elif not spec.target:
             spec.target = quote
 
+    # Typing is recognised only as the opening verb: "type" anywhere else
+    # is usually a noun ("what type of licence ...").
+    if not spec.action and re.match(r"\s*(?:please\s+)?(?:type|fill in|write)\b", task, re.IGNORECASE):
+        spec.action = "type"
+
+    # "Type the number 42 into the box" names its text without quotes.
+    if spec.action == "type" and not spec.target:
+        m = re.search(r"\b(?:type|fill in|write)\s+(?:the\s+(?:number|text|value|word)\s+)?(\S+)",
+                      task, re.IGNORECASE)
+        if m and not re.match(r"(?:the|a|an|in|into)$", m.group(1), re.IGNORECASE):
+            spec.values["text"] = m.group(1).strip(".,;")
+
     if spec.target or spec.values:
         spec.confident = True
 
@@ -204,6 +216,12 @@ def verify_outcome(spec: TaskSpec, end_url: str, end_page: str) -> tuple[bool, s
     target = (spec.target or "").lower()
 
     if spec.action in ("login", "register"):
+        # A password box still on screen means the form was not accepted,
+        # whatever the URL says. Measured live: a failed saucedemo login
+        # stays on "/", which contains neither "login" nor "signin", and the
+        # URL rule below read that as having left the sign-in page.
+        if re.search(r'textbox "[^"]*pass(word|code)?[^"]*"', end_page or "", re.IGNORECASE):
+            return False, "the login form is still showing"
         # Judged by where it landed, so this works with no target at all.
         if any(w in url for w in
                ("secure", "inventory", "account", "dashboard", "profile")):
@@ -212,8 +230,26 @@ def verify_outcome(spec: TaskSpec, end_url: str, end_page: str) -> tuple[bool, s
             return False, "still on the sign-in page"
         return True, "left the sign-in page"
 
+    if spec.action == "type":
+        text = spec.target or spec.values.get("text", "")
+        if text:
+            shown = re.findall(r'(?:value="|value: ")([^"]*)"', end_page or "")
+            if any(v == text or (len(text) > 27 and v.startswith(text[:27])) for v in shown):
+                return True, f"a field holds {text!r}"
+            return False, f"no field holds {text!r}"
+
     if not spec.confident or not target:
         return True, "no target to verify"
+
+    if spec.action == "select":
+        # "Option 2" is listed in the dropdown whether or not it is chosen,
+        # so finding the name on the page proves nothing. The dropdown line
+        # carries what it currently holds.
+        held = re.findall(r'combobox[^\n]*\(selected: "([^"]*)"\)', end_page or "")
+        if held:
+            if any(h.lower() == target for h in held):
+                return True, f"{spec.target} is selected"
+            return False, f"the dropdown holds {held[0]!r}, not {spec.target!r}"
 
     if spec.action == "add_to_cart":
         # A control still offering to ADD the target proves it is not in the
@@ -248,6 +284,11 @@ def verify_outcome(spec: TaskSpec, end_url: str, end_page: str) -> tuple[bool, s
                 f"{removals} items were added, expected only {spec.target}"
             )
         return True, f"{spec.target} sits with a remove control"
+
+    # A click or a submission usually takes the named control away (the
+    # next page has no "Sign up" button), so its absence proves nothing.
+    if spec.action in ("click", "submit", "checkout", "subscribe", "register"):
+        return True, "cannot be judged from the final page"
 
     if target in page_low:
         return True, f"{spec.target} present on the final page"

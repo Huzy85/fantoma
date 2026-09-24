@@ -231,6 +231,7 @@ class Navigator:
         sensitive_data: dict = None,
         deadline: float = None,
         target: str = "",
+        spec=None,
     ) -> NavigatorResult:
         steps_detail = []
         sensitive_data = sensitive_data or {}
@@ -372,6 +373,20 @@ class Navigator:
                             "Only say DONE once the page reflects the change."
                         )
                         break  # abandon the rest of this batch, re-prompt
+
+                    # The model saying DONE is a claim; the page is the
+                    # evidence. Both 7B and 14B models reported success on
+                    # an untouched dropdown, an empty box and a rejected
+                    # login. Tell the model what the page actually shows.
+                    if (spec is not None and spec.is_state_changing
+                            and done_rejections < _MAX_DONE_REJECTIONS):
+                        verdict = self._check_done(spec, fantoma)
+                        if verdict:
+                            done_rejections += 1
+                            log.info("Rejected DONE: %s", verdict)
+                            nudge = (f"NOT DONE: {verdict}. Look at the page "
+                                     "again and fix it before saying DONE.")
+                            break
 
                     data = self._extract_answer(subtask, fantoma, llm)
                     return NavigatorResult(
@@ -608,6 +623,17 @@ class Navigator:
             failure_reason="max_steps", last_actions=tail,
             is_placeholder=not bool(data),
         )
+
+    @staticmethod
+    def _check_done(spec, fantoma) -> str:
+        """Why the page says the task is not done yet, or "" if it looks done."""
+        from fantoma.task_spec import verify_outcome
+        try:
+            page = fantoma._engine.get_page()
+            ok, reason = verify_outcome(spec, page.url, fantoma.get_state().get("aria_tree", ""))
+        except Exception:
+            return ""
+        return "" if ok else reason
 
     def _extract_answer(self, subtask: Subtask, fantoma, llm) -> str:
         """Extract answer from current page when a subtask reaches a stop state.

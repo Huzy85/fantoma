@@ -148,6 +148,11 @@ class Fantoma:
     def get_state(self, mode: str = "navigate", task: str = "") -> dict:
         """Get current page state: URL, title, ARIA tree, errors, tab count."""
         page = self._engine.get_page()
+        # Rank against the running task when none is given, so the state
+        # returned after an action numbers elements the way the model's own
+        # view did. Ranked without it, the same box was [0] in one view and
+        # [1] in the next.
+        task = task or getattr(self, "_task", "") or ""
         aria_tree = self._dom.extract(page, task=task, mode=mode)
         errors = detect_errors(page)
         ctx = getattr(self._engine, '_context', None)

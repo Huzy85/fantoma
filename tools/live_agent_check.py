@@ -10,7 +10,10 @@ are graded on the answer, since the answer is the product there.
     python tools/live_agent_check.py --llm http://localhost:11434/v1 --model qwen2.5:3b
     python tools/live_agent_check.py ... --only herokuapp-dropdown --runs 3
 
-The action cache is off, so every run is the model's own work. Single runs
+The action cache is off. Steps Fantoma can do without a model (log in,
+pick an option, type into the one field, search) run first, as they do for
+users; --no-fast-path makes the model do everything, which measures the
+model rather than the product. Single runs
 of a small model are noisy; use --runs 3 before drawing conclusions.
 """
 
@@ -59,15 +62,27 @@ TASKS = [
     ("wikipedia-read", "https://en.wikipedia.org/wiki/Python_(programming_language)",
      "Who designed the Python programming language?",
      "answer", "rossum"),
+    # Behind bot protection: a pass needs the stealth AND the action to work.
+    # Practice pages above prove the agent; these prove it on sites that
+    # refuse automated browsers. Results depend on the network the check
+    # runs from, which for CI is a data-centre address.
+    ("duckduckgo-search", "https://duckduckgo.com/",
+     "Search for 'fantoma browser agent'",
+     "url", "q=fantoma"),
+    ("etsy-search", "https://www.etsy.com/",
+     "Search for 'wooden spoon'",
+     "url", "q=wooden"),
 ]
 
 
-def run_one(name: str, llm: str, model: str, browser: str, max_steps: int, timeout: int) -> dict:
+def run_one(name: str, llm: str, model: str, browser: str, max_steps: int, timeout: int,
+            fast_path: bool = True) -> dict:
     from fantoma import Agent
 
     _, url, task, kind, check = next(t for t in TASKS if t[0] == name)
     agent = Agent(llm_url=llm, model=model, browser=browser, headless=True,
-                  max_steps=max_steps, action_cache=False, validate=False)
+                  max_steps=max_steps, action_cache=False, validate=False,
+                  fast_path=fast_path)
     started = time.time()
     result = agent.run(task, start_url=url, deadline_s=timeout, keep_open=True)
     ok, detail = False, ""
@@ -97,9 +112,12 @@ def run_one(name: str, llm: str, model: str, browser: str, max_steps: int, timeo
             pass
     steps = [f"{s.get('action', '')} -> {'ok' if s.get('success') else 'failed'}"
              for s in (result.steps_detail or [])]
+    # Steps Fantoma did itself are prefixed "fast:"; anything else was the model.
+    model_steps = sum(1 for s in (result.steps_detail or [])
+                      if not str(s.get("action", "")).startswith("fast:"))
     return {
         "task": name, "ok": ok, "agent_said_success": bool(result.success),
-        "actions": steps[:30],
+        "actions": steps[:30], "model_steps": model_steps,
         "steps": result.steps_taken, "secs": round(time.time() - started, 1),
         "detail": detail, "error": (result.error or "")[:200],
     }
@@ -114,13 +132,15 @@ def main() -> int:
     p.add_argument("--runs", type=int, default=1)
     p.add_argument("--max-steps", type=int, default=15)
     p.add_argument("--timeout", type=int, default=420, help="seconds per task")
+    p.add_argument("--no-fast-path", action="store_true",
+                   help="make the model do every step (measures the model, not the product)")
     p.add_argument("--json", help="write results here")
     p.add_argument("--child", help=argparse.SUPPRESS)
     args = p.parse_args()
 
     if args.child:
         print(json.dumps(run_one(args.child, args.llm, args.model, args.browser,
-                                 args.max_steps, args.timeout)))
+                                 args.max_steps, args.timeout, not args.no_fast_path)))
         return 0
 
     names = [t[0] for t in TASKS]
@@ -132,6 +152,8 @@ def main() -> int:
             cmd = [sys.executable, __file__, "--child", name, "--llm", args.llm,
                    "--model", args.model, "--browser", args.browser,
                    "--max-steps", str(args.max_steps), "--timeout", str(args.timeout)]
+            if args.no_fast_path:
+                cmd.append("--no-fast-path")
             try:
                 out = subprocess.run(cmd, capture_output=True, text=True,
                                      timeout=args.timeout + 120)
@@ -147,6 +169,7 @@ def main() -> int:
             said = "" if res.get("ok") == res.get("agent_said_success") else \
                 "  (agent claimed success)" if res.get("agent_said_success") else ""
             print(f"{flag}  {name:<26} run {run + 1}  {res.get('steps', '?'):>2} steps "
+                  f"({res.get('model_steps', '?')} by the model) "
                   f"{res.get('secs', '?'):>6}s  {res.get('detail', '')}{said}"
                   + (f"  error: {res['error']}" if res.get("error") and not res.get("ok") else ""),
                   flush=True)

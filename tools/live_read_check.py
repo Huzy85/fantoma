@@ -61,6 +61,11 @@ PROTECTED = [
     "https://www.walmart.com/",
 ]
 
+PROTECTED_SEARCHES = [
+    ("https://duckduckgo.com/", "fantoma browser agent", "q=fantoma"),
+    ("https://www.etsy.com/", "wooden spoon", "q=wooden"),
+]
+
 CHECKBOXES = "https://the-internet.herokuapp.com/checkboxes"
 DROPDOWN = "https://the-internet.herokuapp.com/dropdown"
 INPUTS = "https://the-internet.herokuapp.com/inputs"
@@ -107,6 +112,24 @@ def check_protected(browser) -> list[dict]:
         except Exception as e:
             ok, why = False, f"error: {str(e)[:120]}"
         results.append({"check": f"protected {url}", "ok": ok, "why": why,
+                        "secs": round(time.time() - started, 1)})
+
+    # Acting, not just reading: search on protected sites with no model, the
+    # way the agent's fast path does for a user's "Search for '...'".
+    from fantoma.fast_path import run_fast_path
+    for url, query, expect in PROTECTED_SEARCHES:
+        started = time.time()
+        try:
+            nav = browser.navigate(url)
+            if not nav.get("success"):
+                raise RuntimeError(nav.get("error") or "could not open")
+            r = run_fast_path(f"Search for '{query}'", browser)
+            where = browser._engine.get_page().url
+            ok = r.complete and expect in where
+            why = f"at {where[:90]}" if ok else (r.failed or f"not handled; at {where[:90]}")
+        except Exception as e:
+            ok, why = False, f"error: {str(e)[:120]}"
+        results.append({"check": f"search {url}", "ok": ok, "why": why,
                         "secs": round(time.time() - started, 1)})
     return results
 

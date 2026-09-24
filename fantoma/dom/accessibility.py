@@ -399,6 +399,10 @@ def enrich_field_state(el: dict) -> str:
 
     if raw.get("value"):
         val = raw["value"]
+        # The snapshot reports a password box's real contents. Never pass
+        # them to a model; say only that the box is filled.
+        if _SECRET_NAME.search(el.get("name") or raw.get("name") or ""):
+            val = "•" * min(len(val), 8)
         if len(val) > 30:
             val = val[:27] + "..."
         parts.append(f'value="{val}"')
@@ -406,6 +410,11 @@ def enrich_field_state(el: dict) -> str:
     if not parts:
         return ""
     return " [" + ", ".join(parts) + "]"
+
+
+# Roles whose text after the colon is what the user typed, not a label.
+_VALUE_ROLES = {"textbox", "searchbox", "spinbutton", "combobox"}
+_SECRET_NAME = re.compile(r"pass(word|code|phrase)?|pin\b|secret|otp|one[- ]time", re.I)
 
 
 def _parse_aria_line(line: str) -> dict | None:
@@ -425,7 +434,16 @@ def _parse_aria_line(line: str) -> dict | None:
     match = re.match(r'(\w+)\s*"([^"]*)"(.*)$', line)
     if match:
         result = {"role": match.group(1), "name": match.group(2)}
-        _apply_aria_attrs(result, _attr_groups(match.group(3)))
+        rest = match.group(3)
+        _apply_aria_attrs(result, _attr_groups(rest))
+        # A labelled field that holds text reads `textbox "Username": bob`.
+        # The part after the colon was dropped, so a model that typed into a
+        # named field could not see its text had landed, and on saucedemo it
+        # typed, saw an empty box, and gave up or retyped.
+        if result["role"] in _VALUE_ROLES and "value" not in result:
+            typed = re.match(r'(?:\s*\[[^\]]+\])*\s*:\s*(.+?)\s*$', rest)
+            if typed:
+                result["value"] = typed.group(1).strip('"')
         return result
 
     # Match: role: "value"  — an unnamed control that HAS a value.
@@ -604,7 +622,10 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
             elif parsed.get("disabled"):
                 state = " [disabled]"
             elif parsed.get("value"):
-                state = f' (value: "{parsed["value"]}")'
+                shown = parsed["value"]
+                if _SECRET_NAME.search(name or ""):
+                    shown = "•" * min(len(shown), 8)
+                state = f' (value: "{shown}")'
             # Appended rather than folded into the chain above: an option can
             # be disabled AND selected, and "which one is selected" is the only
             # feedback the model gets that a select actually took effect. With
