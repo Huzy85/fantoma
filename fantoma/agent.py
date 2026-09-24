@@ -673,11 +673,14 @@ class _Session:
     def act(self, instruction: str) -> dict:
         """Execute one instruction. Sends to LLM, executes result via Fantoma."""
         from fantoma.navigator import _parse_actions, NAVIGATOR_SYSTEM
+        from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
         state = self.agent.fantoma.get_state()
         messages = [
             {"role": "system", "content": NAVIGATOR_SYSTEM.format(
-                instruction=instruction, done_when="Task complete")},
-            {"role": "user", "content": f"Page ({state['url']}):\n{state['aria_tree']}"},
+                instruction=instruction, done_when="Task complete",
+                untrusted_note=UNTRUSTED_NOTE)},
+            {"role": "user", "content": f"Page ({state['url']}):\n"
+                                        f"{wrap_untrusted(state['aria_tree'], state['url'])}"},
         ]
         raw = self.agent._llm.chat(messages, max_tokens=200)
         actions = _parse_actions(raw or "")

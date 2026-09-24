@@ -492,3 +492,55 @@ class TestConfig:
     def test_api_key_header_sent_when_set(self, monkeypatch):
         monkeypatch.setenv("FANTOMA_API_KEY", "secret")
         assert mcp_server._api_key_headers() == {"X-API-Key": "secret"}
+
+
+class TestReadTool:
+    def test_read_opens_reads_and_closes(self, monkeypatch):
+        _install_pool(["http://a"])
+        calls = []
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
+            calls.append((path, payload))
+            if path == "/start":
+                return {"url": "http://x", "title": "X"}
+            if path == "/read":
+                return {"success": True, "url": "http://x/final", "title": "X",
+                        "markdown": "# X", "links": [{"text": "a", "url": "http://x/a"}],
+                        "blocked": "", "injection_warnings": [], "truncated": False}
+            return {}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        result = mcp_server.fantoma_read("http://x", main_only=False, selector="main")
+        assert [p for p, _ in calls] == ["/stop", "/start", "/read", "/stop"]
+        read_payload = dict(calls)["/read"]
+        assert read_payload["main_only"] is False and read_payload["selector"] == "main"
+        assert result.success and result.markdown == "# X" and result.url == "http://x/final"
+        assert result.links == [{"text": "a", "url": "http://x/a"}]
+
+    def test_read_reports_a_page_that_never_opened(self, monkeypatch):
+        _install_pool(["http://a"])
+        monkeypatch.setattr(mcp_server.time, "sleep", lambda s: None)
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
+            return {"error": "net::ERR_NAME_NOT_RESOLVED"} if path == "/start" else {}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        result = mcp_server.fantoma_read("http://nope")
+        assert not result.success and "ERR_NAME_NOT_RESOLVED" in result.error
+
+    def test_extract_returns_structured_data_as_json(self, monkeypatch):
+        _install_pool(["http://a"])
+
+        def fake_post(backend, path, payload, timeout, retry_transport=False, wait_for_restart=True):
+            if path == "/start":
+                return {"url": "http://x"}
+            if path == "/extract":
+                assert payload["schema"]["type"] == "object"
+                return {"success": True, "data": {"price": "$10"}}
+            return {}
+
+        monkeypatch.setattr(mcp_server, "_post", fake_post)
+        result = mcp_server.fantoma_extract(
+            "http://x", "price", schema={"type": "object", "properties": {"price": {"type": "string"}}})
+        import json as _json
+        assert _json.loads(result.data) == {"price": "$10"}

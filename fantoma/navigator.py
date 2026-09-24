@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from fantoma.dom.markdown import page_to_markdown
+from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
 from fantoma.dom.aria_diff import aria_diff, aria_snapshot
 from fantoma.browser.page_state import classify_blocker
 from fantoma.planner import Planner, Subtask
@@ -92,6 +94,7 @@ Rules:
 - NAVIGATE, BACK, and DONE end the sequence.
 - Read the Content section first -- if it contains the answer, say DONE immediately.
 - Reply with ONLY action lines, nothing else.
+- {untrusted_note}
 
 Before saying DONE, verify:
 - The user's asked-for values have evidence in the current page or in prior data.
@@ -116,8 +119,8 @@ Rules:
 - Address every criterion in the task explicitly.
 - If information is not on the page, say exactly what is missing.
 - Report every relevant value that appears in the page content below. Titles, prices, dates, specs, pronunciations, descriptions — extract and state them, paraphrasing naturally where that reads better than a raw quote.
-- Do not invent values from general knowledge that are not in the page content. If a specific asked-for value is genuinely absent from the page, note which value is missing — never default to "not on page" when the page actually contains the answer.\
-"""
+- Do not invent values from general knowledge that are not in the page content. If a specific asked-for value is genuinely absent from the page, note which value is missing — never default to "not on page" when the page actually contains the answer.
+- """ + UNTRUSTED_NOTE
 
 
 def _norm_url(url: str) -> str:
@@ -310,10 +313,12 @@ class Navigator:
             system = NAVIGATOR_SYSTEM.format(
                 instruction=subtask.instruction,
                 done_when=subtask.done_when,
+                untrusted_note=UNTRUSTED_NOTE,
             )
             prefix = f"{nudge}\n\n" if nudge else ""
             nudge = ""  # shown once; the model gets a fresh look at the page
-            user_msg = f"{prefix}Change: {change_line}\n\nPage ({current_url}):\n{aria}"
+            user_msg = (f"{prefix}Change: {change_line}\n\nPage ({current_url}):\n"
+                        f"{wrap_untrusted(aria, current_url)}")
 
             messages = [
                 {"role": "system", "content": system},
@@ -615,20 +620,15 @@ class Navigator:
         """
         try:
             page = fantoma._engine.get_page()
-            # Raw text first — this is what the answer-extraction LLM needs.
-            try:
-                body = page.inner_text("body") or ""
-            except Exception:
-                body = ""
-            title = ""
-            try:
-                title = page.title() or ""
-            except Exception:
-                pass
-            # Cap at ~12k chars to stay within LLM context while preserving
-            # enough of the page for real answer extraction.
-            body = body[:12000]
-            content = f"Page title: {title}\nURL: {page.url}\n\n{body}"
+            # The whole page as Markdown, without text a person cannot see
+            # (where planted instructions hide). Whole page rather than main
+            # content only: answers live in sidebars and infoboxes too. Capped
+            # at ~12k chars to fit a small model's context.
+            rendered = page_to_markdown(page, main_only=False, include_links=False,
+                                        max_chars=12000)
+            body = rendered["markdown"]
+            title = rendered["title"]
+            content = wrap_untrusted(f"Page title: {title}\nURL: {page.url}\n\n{body}", page.url)
             log.info(
                 "Extract: body=%d chars title=%r url=%s",
                 len(body), title[:80], page.url,

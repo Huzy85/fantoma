@@ -17,6 +17,9 @@ from fantoma.browser.form_memory import FormMemory
 from fantoma.browser.observer import inject_observer, collect_mutations, wait_for_dom_stable
 from fantoma.browser.page_state import verify_action, detect_errors
 from fantoma.dom.accessibility import AccessibilityExtractor
+from fantoma.dom.markdown import page_to_markdown
+from fantoma.browser.blocks import detect_block_page
+from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted, scan_for_injection
 from fantoma.config import FantomaConfig
 from fantoma.session import SessionManager
 
@@ -475,48 +478,82 @@ class Fantoma:
         memory.close()
         return result
 
+    def read(self, url: str = None, main_only: bool = True, include_links: bool = True,
+             selector: str = "", max_chars: int = 0) -> dict:
+        """Return the current page (or `url`) as clean Markdown. No LLM needed.
+
+        Result keys: title, url, description, markdown, links, hidden_removed,
+        truncated, blocked (a reason string when the page looks like a bot
+        wall, error page or login wall, else ""), injection_warnings (excerpts
+        of text that reads like instructions aimed at an AI).
+        """
+        if url:
+            self.navigate(url)
+        page = self._engine.get_page()
+        result = page_to_markdown(page, main_only=main_only, include_links=include_links,
+                                  selector=selector, max_chars=max_chars)
+        result["blocked"] = detect_block_page(result["title"], result["markdown"])
+        result["injection_warnings"] = scan_for_injection(result["markdown"])
+        return result
+
     def extract(self, query: str, schema: dict = None) -> dict | list | str:
         """Extract data from the current page.
 
-        With LLM: sends page text + query to LLM, returns structured data.
+        With LLM: sends the page (as Markdown, hidden text removed, fenced as
+        untrusted) plus the query to the LLM.
         Without LLM: returns raw ARIA tree text.
+
+        `schema` may be a JSON Schema ({"type": "object", "properties": ...}
+        or {"type": "array", "items": ...}) or a flat {field: type} map where
+        type is a Python type or a type name. A JSON Schema of type object
+        returns a dict; anything else returns a list of items.
         """
         if not self._llm:
             return self._dom.extract(self._engine.get_page())
 
-        import json as _json
         page = self._engine.get_page()
-        main = page.locator("main, [role=main]")
-        if main.count() > 0:
-            full_text = main.first.inner_text()[:6000]
-        else:
-            full_text = page.inner_text("body")[:6000]
+        rendered = page_to_markdown(page, main_only=False, include_links=True,
+                                    max_chars=self.config.extraction.max_page_text)
+        content = rendered["markdown"]
+        if not content.strip():
+            # A page the Markdown walk could not read still has visible text.
+            try:
+                main = page.locator("main, [role=main]")
+                content = (main.first.inner_text() if main.count() > 0
+                           else page.inner_text("body"))
+            except Exception:
+                content = ""
+            content = (content or "")[: self.config.extraction.max_page_text]
 
-        if schema:
-            type_map = {str: "string", int: "integer", float: "number", bool: "boolean"}
-            schema_desc = ", ".join(f'"{k}": {type_map.get(v, "string")}' for k, v in schema.items())
-            system = (f"Extract data as a JSON array. Each item must have these fields: {{{schema_desc}}}.\n"
-                      "Return ONLY a valid JSON array. No explanation. No markdown.")
+        shape = _schema_shape(schema) if schema else None
+        if shape:
+            system = (f"Extract data from the page as JSON matching this schema:\n{shape['text']}\n"
+                      f"Return ONLY valid JSON ({shape['kind']}). No explanation. No markdown. "
+                      "Use null for a field the page does not state; never invent values.\n"
+                      + UNTRUSTED_NOTE)
         else:
-            system = "Extract the requested information. Return only the data, no explanation."
+            system = ("Extract the requested information. Return only the data, no explanation. "
+                      "Only report what the page states.\n" + UNTRUSTED_NOTE)
 
         response = self._llm.chat(
             [{"role": "system", "content": system},
-             {"role": "user", "content": f"Extract: {query}\n\nPage content:\n{full_text}"}],
+             {"role": "user", "content": f"Extract: {query}\n\nPage content:\n"
+                                         f"{wrap_untrusted(content, page.url if isinstance(page.url, str) else '')}"}],
             max_tokens=2000,
         )
         if not response:
-            return [] if schema else ""
+            return ([] if shape["kind"] == "array" else {}) if shape else ""
         response = response.strip()
-        if schema:
-            if response.startswith("```"):
-                response = response.split("\n", 1)[1].rsplit("```", 1)[0]
-            try:
-                data = _json.loads(response)
-                return data if isinstance(data, list) else [data]
-            except _json.JSONDecodeError:
-                return []
-        return response
+        if not shape:
+            return response
+        data = _parse_json_loose(response)
+        if shape["kind"] == "object":
+            if isinstance(data, list):
+                return data[0] if data and isinstance(data[0], dict) else {}
+            return data if isinstance(data, dict) else {}
+        if data is None:
+            return []
+        return data if isinstance(data, list) else [data]
 
     # ── Utilities ────────────────────────────────────────────
 
@@ -577,3 +614,50 @@ class Fantoma:
                     return
             except Exception:
                 continue
+
+
+# ── Schema helpers ────────────────────────────────────────────
+
+_TYPE_NAMES = {str: "string", int: "integer", float: "number", bool: "boolean",
+               list: "array", dict: "object"}
+
+
+def _schema_shape(schema: dict) -> dict | None:
+    """Describe a schema for the prompt. Returns {"text", "kind"} or None.
+
+    Accepts a real JSON Schema, or the older flat {field: type} map, which
+    always meant "a list of items with these fields".
+    """
+    import json as _json
+    if not isinstance(schema, dict) or not schema:
+        return None
+    if "properties" in schema or schema.get("type") in ("object", "array"):
+        kind = "array" if schema.get("type") == "array" else "object"
+        return {"text": _json.dumps(schema, indent=1, default=str)[:4000], "kind": kind}
+    fields = {k: (_TYPE_NAMES.get(v, v) if not isinstance(v, str) else v)
+              for k, v in schema.items()}
+    item = {"type": "object",
+            "properties": {k: {"type": str(t)} for k, t in fields.items()}}
+    return {"text": _json.dumps({"type": "array", "items": item}, indent=1),
+            "kind": "array"}
+
+
+def _parse_json_loose(text: str):
+    """Parse JSON from a model reply that may wrap it in fences or prose."""
+    import json as _json
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else t[3:]
+        t = t.rsplit("```", 1)[0]
+    try:
+        return _json.loads(t)
+    except (ValueError, TypeError):
+        pass
+    for open_ch, close_ch in (("[", "]"), ("{", "}")):
+        i, j = t.find(open_ch), t.rfind(close_ch)
+        if 0 <= i < j:
+            try:
+                return _json.loads(t[i:j + 1])
+            except (ValueError, TypeError):
+                continue
+    return None
