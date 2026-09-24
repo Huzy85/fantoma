@@ -5,7 +5,7 @@
 # Usage: run via systemd timer or at/cron. Not interactive.
 
 # Log first, before anything can fail
-LOG="/home/workspace/workbench/fantoma/benchmark/overnight-run.log"
+LOG="$(cd "$(dirname "$0")" && pwd)/overnight-run.log"
 exec >> "$LOG" 2>&1
 
 set -eo pipefail
@@ -40,7 +40,7 @@ fi
 MODEL=$(curl -s http://localhost:8081/v1/models | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])" 2>/dev/null || echo "unknown")
 echo "LLM model: $MODEL"
 
-cd /home/workspace/workbench/fantoma
+cd "$(dirname "$0")/.."
 
 # Copy latest code to container
 docker cp benchmark/. fantoma-browser:/app/benchmark/
