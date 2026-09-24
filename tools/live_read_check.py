@@ -11,9 +11,9 @@ Two kinds of check:
 * read   — open a page, read it as Markdown, and require text that only the
            correct page contains. Also require the page not be reported as
            blocked.
-* action — tick a checkbox and choose a dropdown option on public test
-           pages made for automation practice, then read the state back
-           from the live page.
+* action — tick a checkbox, choose a dropdown option, type into a number
+           field and log in, on public test pages made for automation
+           practice, then read the state back from the live page.
 
     python tools/live_read_check.py                 # Camoufox
     python tools/live_read_check.py --browser chromium
@@ -63,6 +63,8 @@ PROTECTED = [
 
 CHECKBOXES = "https://the-internet.herokuapp.com/checkboxes"
 DROPDOWN = "https://the-internet.herokuapp.com/dropdown"
+INPUTS = "https://the-internet.herokuapp.com/inputs"
+SAUCE = "https://www.saucedemo.com/"
 
 
 def _index_of(browser, predicate):
@@ -148,6 +150,46 @@ def check_actions(browser) -> list[dict]:
     except Exception as e:
         ok, why = False, f"error: {e}"
     results.append({"check": "choose a dropdown option by clicking it", "ok": ok, "why": why,
+                    "secs": round(time.time() - started, 1)})
+
+    # Typing into a number field, through the element list.
+    started = time.time()
+    try:
+        browser.navigate(INPUTS)
+        page = browser._engine.get_page()
+        idx = _index_of(browser, lambda el: el["role"] in ("spinbutton", "textbox"))
+        if idx is None:
+            raise RuntimeError("no input offered to the model")
+        browser.type_text(idx, "42")
+        value = page.evaluate("() => document.querySelector('input[type=number]').value")
+        ok = value == "42"
+        why = "" if ok else f"input value={value!r}"
+    except Exception as e:
+        ok, why = False, f"error: {e}"
+    results.append({"check": "type into a number field", "ok": ok, "why": why,
+                    "secs": round(time.time() - started, 1)})
+
+    # A React login form: the fields only count if the app sees the input.
+    started = time.time()
+    try:
+        browser.navigate(SAUCE)
+        page = browser._engine.get_page()
+        for field, value in (("user", "standard_user"), ("pass", "secret_sauce")):
+            idx = _index_of(browser, lambda el, f=field: el["role"] == "textbox"
+                            and f in el["name"].lower())
+            if idx is None:
+                raise RuntimeError(f"no {field} field offered to the model")
+            browser.type_text(idx, value)
+        idx = _index_of(browser, lambda el: "login" in el["name"].lower().replace(" ", ""))
+        if idx is None:
+            raise RuntimeError("no login button offered to the model")
+        browser.click(idx)
+        page.wait_for_timeout(1500)
+        ok = "inventory" in page.url
+        why = "" if ok else f"still at {page.url}"
+    except Exception as e:
+        ok, why = False, f"error: {e}"
+    results.append({"check": "log in on a React form", "ok": ok, "why": why,
                     "secs": round(time.time() - started, 1)})
     return results
 
