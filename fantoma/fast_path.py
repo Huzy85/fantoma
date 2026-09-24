@@ -96,20 +96,46 @@ def run_fast_path(task: str, fantoma, secrets: dict = None) -> FastResult:
 # ── clause handlers ─────────────────────────────────────────────
 
 
+# A handler returns None when the clause is not its kind, and _UNSURE when
+# it is but the page does not settle which control to use: nothing matched
+# yet (a search box that renders late) or several did.
+_UNSURE = "unsure"
+_SETTLE_S = 2.0
+
+
 def _do_clause(clause: str, fantoma, out: FastResult) -> bool:
+    for attempt in range(2):
+        result = _match(clause, fantoma)
+        if result != _UNSURE:
+            break
+        if attempt == 0:
+            # Measured live: Etsy's search box was not in the page yet when
+            # the check ran straight after navigating. One short wait, then
+            # the page gets one more look before the model is asked.
+            time.sleep(_SETTLE_S)
+    if result is None or result == _UNSURE:
+        return False
+    ok, desc, action = result
+    out.steps.append({"step": len(out.steps) + 1, "action": f"fast:{action}",
+                      "success": ok, "url": _url(fantoma)})
+    if ok:
+        out.done.append(desc)
+        return True
+    out.failed = desc
+    return False
+
+
+def _match(clause: str, fantoma):
+    unsure = False
     for handler in (_login, _search, _select, _type, _checkbox, _add_to_cart, _click):
         result = handler(clause, fantoma)
+        if result == _UNSURE:
+            unsure = True
+            continue
         if result is None:
             continue           # not this kind of clause
-        ok, desc, action = result
-        out.steps.append({"step": len(out.steps) + 1, "action": f"fast:{action}",
-                          "success": ok, "url": _url(fantoma)})
-        if ok:
-            out.done.append(desc)
-            return True
-        out.failed = desc
-        return False
-    return False
+        return result
+    return _UNSURE if unsure else None
 
 
 def _login(clause, fantoma):
@@ -157,7 +183,7 @@ def _search(clause, fantoma):
                   if e.get("role") in ("textbox", "combobox") and not e.get("_options")
                   and "search" in f"{e.get('name', '')} {e.get('_context', '')}".lower()]
     if len(fields) != 1:
-        return None
+        return _UNSURE
     before = _url(fantoma)
     fantoma.type_text(fields[0], query)
     fantoma.press_key("Enter")
@@ -182,7 +208,7 @@ def _select(clause, fantoma):
     boxes = [i for i, e in enumerate(els) if e.get("role") == "combobox"
              and any((o or "").strip().lower() == want for o in e.get("_options") or [])]
     if len(boxes) != 1:
-        return None            # none or several dropdowns offer it: the model decides
+        return _UNSURE            # none or several dropdowns offer it: the model decides
     option = next(o for o in els[boxes[0]]["_options"] if o.strip().lower() == want)
     fantoma.select(boxes[0], option)
     after = [e for e in _elements(fantoma) if e.get("role") == "combobox"
@@ -212,7 +238,7 @@ def _type(clause, fantoma):
         if len(named) == 1:
             fields = named
     if len(fields) != 1:
-        return None
+        return _UNSURE
     idx = fields[0]
     label = els[idx].get("name") or els[idx].get("_context") or els[idx].get("role")
     fantoma.type_text(idx, text)
@@ -245,23 +271,23 @@ def _checkbox(clause, fantoma):
         boxes = [i for i in boxes
                  if label in f"{els[i].get('name', '')} {els[i].get('_context', '')}".lower()]
         if len(boxes) != 1:
-            return None
+            return _UNSURE
         pick = boxes[0]
     elif ordinal:
         # Positions only mean something among boxes that look alike; the
         # element list is ranked, so _ordinal (page order within one name)
         # is what "first" refers to.
         if len({els[i].get("name", "") for i in boxes}) != 1:
-            return None
+            return _UNSURE
         ordered = sorted(boxes, key=lambda i: els[i].get("_ordinal", 0))
         pos = _ORDINALS[ordinal]
         if pos >= len(ordered):
-            return None
+            return _UNSURE
         pick = ordered[pos]
     elif len(boxes) == 1:
         pick = boxes[0]
     else:
-        return None
+        return _UNSURE
     key = (els[pick].get("role"), els[pick].get("name", ""), els[pick].get("_ordinal", 0))
     what = "ticked" if want_on else "cleared"
     if _is_checked(els[pick]) != want_on:
@@ -291,7 +317,7 @@ def _add_to_cart(clause, fantoma):
     if len(found) != 1:
         found = _add_button_in_card(fantoma, els, want)
     if len(found) != 1:
-        return None
+        return _UNSURE
     fantoma.click(found[0])
     time.sleep(0.5)
     els, still = buttons()
@@ -353,7 +379,7 @@ def _click(clause, fantoma):
     hits = [i for i, e in enumerate(els) if e.get("role") in _CLICKABLE
             and (e.get("name") or "").strip().lower() == want]
     if len(hits) != 1:
-        return None
+        return _UNSURE
     before = _url(fantoma)
     r = fantoma.click(hits[0])
     if r.get("success"):

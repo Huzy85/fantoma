@@ -344,3 +344,18 @@ class TestSecrets:
     def test_a_click_task_is_not_failed_because_the_button_went_away(self):
         spec = parse_task("Click 'Sign up'")
         assert verify_outcome(spec, "https://x/welcome", "Welcome aboard")[0]
+
+
+class TestLatePage:
+    def test_a_search_box_that_renders_late_is_found(self, browser, site, monkeypatch):
+        import types
+        PAGES["/late-search"] = """<html><body><div id="app"></div><script>
+            setTimeout(() => app.innerHTML = '<form action="/results"><input type="search" name="q" '
+              + 'aria-label="Search for anything"></form>', 800);</script></body></html>"""
+        page = _open(browser, site + "/late-search")
+        # time.sleep is stubbed for the login tests; let the settle wait really wait.
+        monkeypatch.setattr("fantoma.fast_path.time",
+                            types.SimpleNamespace(sleep=lambda s: page.wait_for_timeout(s * 1000)))
+        r = run_fast_path("Search for 'wooden spoon'", browser)
+        assert r.complete, r
+        assert "q=wooden+spoon" in page.url
