@@ -3,6 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/fantoma)](https://pypi.org/project/fantoma/)
 [![Python](https://img.shields.io/pypi/pyversions/fantoma)](https://pypi.org/project/fantoma/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Tests](https://github.com/Huzy85/fantoma/actions/workflows/tests.yml/badge.svg)](https://github.com/Huzy85/fantoma/actions/workflows/tests.yml)
 
 **A stealth browser for AI agents that runs on small, local models.** Fantoma reads pages the way a screen reader does, through the accessibility tree rather than screenshots, so the model gets structured text instead of pixels.
 
@@ -42,6 +43,20 @@ result = agent.run("Go to github.com/trending and tell me the top repo")
 
 ![Fantoma Demo](fantoma_demo.gif)
 
+**At a glance**
+
+| | |
+|---|---|
+| Reads any page as clean Markdown | `fantoma read URL`, no LLM, hidden text removed, bot walls reported as `blocked` |
+| Works with any model | Any OpenAI-compatible endpoint: Ollama, llama.cpp, vLLM, or a cloud API |
+| Stealth browsers | [Camoufox](https://github.com/daijro/camoufox) (Firefox) by default, [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) (Chromium) optional |
+| Any AI app can use it | MCP server, one command, no Docker |
+| Logs in without a model | Form fields matched by code; sessions saved encrypted |
+| Built for small models | ~500 tokens a step, repeated tasks replayed with no model calls |
+| Guarded against page-borne instructions | Hidden-text removal, fenced page text, domain allow/block lists |
+
+**Contents:** [Getting Started](#getting-started) · [MCP](#use-it-from-any-llm-mcp) · [Safety](#safety) · [Plugging Things In](#plugging-things-in) · [Knowing It Worked](#knowing-it-worked) · [Reliability](#reliability) · [What It Does](#what-it-does) · [Responsible Use](#responsible-use) · [Login & Signup](#login--signup-no-llm) · [Limitations](#limitations) · [Examples](#examples) · [Troubleshooting](#troubleshooting) · [Docker API](#docker-api) · [Test Results](#test-results) · [Configuration](#configuration) · [Environment Variables](#environment-variables) · [CLI](#cli-commands) · [Contributing](#contributing)
+
 ## Getting Started
 
 ```bash
@@ -50,9 +65,11 @@ fantoma setup        # Guided wizard: pick your LLM, done
 fantoma test         # Verify it works
 ```
 
-**Need an LLM?** Install [Ollama](https://ollama.com), run `ollama pull phi3.5`, done. Works on CPU or GPU (8GB+ GPU recommended for speed). Or use a cloud API (OpenAI, Anthropic, DeepSeek) — the wizard handles it.
+No LLM needed to start: `fantoma read https://example.com` works straight after install. The browser (Camoufox) downloads itself on first use; `python -m camoufox fetch` does it up front.
 
-**Requirements:** Python 3.10+, Linux or macOS (Windows via WSL). No other dependencies — everything installs automatically.
+**Need an LLM?** Install [Ollama](https://ollama.com) and pull a small instruction-tuned model (for example `ollama pull qwen3:8b`), then point Fantoma at `http://localhost:11434/v1`. Works on CPU or GPU (8GB+ GPU recommended for speed). Or use a cloud API (OpenAI, Anthropic, DeepSeek); the wizard handles either. A model on another machine on your network works too; Fantoma recognises LAN, Docker and Tailscale addresses as self-hosted and turns off "thinking" mode for them.
+
+**Requirements:** Python 3.10+, Linux or macOS (Windows via WSL).
 
 ## Use It From Any LLM (MCP)
 
@@ -215,7 +232,7 @@ A consequence worth knowing: `/health` deliberately does not start a browser, so
 - **Subtask-cycle escape hatch (v0.8)** — Agent loop tracks the last 4 failed subtask instructions. If two share more than 60% token overlap (planner stuck repeating the same broken approach), the loop force-injects a hard-coded "Google the task, click the first organic result, read the page" plan. Same fallback fires if the replanner returns a near-duplicate of what just failed. One-shot per task.
 - **Wired escalation chain** — Three-tier LLM fallback (local → backup → cloud) with per-tier model names. After 3 failed replans on the current model, the Agent automatically swaps to the next tier and re-decomposes the task. Use `escalation`, `escalation_keys`, and `escalation_models` to wire it up.
 - **Empty-response bail-out** — If the LLM returns no parseable actions for 2 consecutive steps, the Navigator bails with `failure_reason="llm_empty"` instead of silently burning the step budget. Triggers escalation through the normal replan path.
-- **Multi-API compatible** — JSON mode (`response_format`) only sent to local endpoints. Cloud APIs (OpenRouter, OpenAI, Anthropic) work without 400 errors.
+- **Multi-API compatible** — JSON mode (`response_format`) and the thinking switch are only sent to self-hosted endpoints (localhost, private and Tailscale addresses, `.local` names, Docker service names). Cloud APIs (OpenRouter, OpenAI, Anthropic) work without 400 errors. `FANTOMA_LLM_SELF_HOSTED=1/0` overrides the detection.
 - **Sequential session safety** — after each browser session closes, the asyncio "running loop" pointer is cleared so the next session starts clean. Prevents "Event loop is closed" errors when running many tests back-to-back. The Docker server resets the event loop before each `/start` to handle stale greenlet residue.
 - **TLS validation** — certificate validation is on by default. Set `FANTOMA_IGNORE_HTTPS_ERRORS=1` to tolerate self-signed or expired certs on target sites.
 - **Playwright traces** — `Agent(trace=True)` records full debug sessions
@@ -226,7 +243,9 @@ A consequence worth knowing: `/health` deliberately does not start a browser, so
 - **Unified login pipeline** — signup → CAPTCHA → email verification → login-back, all in one `login()` call. Tries saved session first.
 - **Sensitive data** — pass credentials as `sensitive_data={"email": "...", "password": "..."}`. They appear as `<secret:email>` in LLM prompts and logs. Real values injected only at execution time.
 - **Inline error detection** — JS scans for `role="alert"`, `aria-invalid`, error CSS classes, and common error text patterns. No LLM needed.
-- **Smart element pruning** — relevance-based scoring replaces the hard cap. The LLM sees the most relevant elements for the current task, not the first N on the page.
+- **Smart element pruning** — relevance-based scoring replaces the hard cap. The LLM sees the most relevant elements for the current task, not the first N on the page. Links to other sites and header/footer/nav controls rank lower unless the task names them, so page furniture does not take the top slots.
+- **Dropdowns that small models can use** — each dropdown shows its current choice, its options are listed beneath it, and clicking an option (what small models do) performs the selection. Scripted ARIA dropdowns are opened and chosen from their own popup.
+- **Overlay-aware element list** — controls covered by a modal or cookie layer are left out, so the model is offered what a person could actually press.
 - **Tree diffing** — new elements (from dropdowns, modals, next form steps) marked with `*` prefix so the LLM sees what just appeared.
 - **Iframe ARIA extraction** — payment forms, embedded logins, and consent dialogs inside iframes are visible. Up to 5 iframes scanned per page.
 - **Inline field state** — `aria-invalid`, `required`, current value, and error text shown directly in the element list. LLM sees `[3] textbox "Email" [invalid: "Please enter a valid email"]` instead of guessing why a submit failed.
@@ -417,7 +436,10 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | LLM says DONE without acting | Fixed in v0.5.0 — prompt fix included |
 | Same action repeating | Agent has built-in loop detection and escalation |
 | "Event loop is closed" on second run | Fixed — `stop()` cleans up the asyncio event loop |
-| SSL certificate error blocks navigation | Fixed — contexts use `ignore_https_errors=True` by default |
+| SSL certificate error blocks navigation | Certificates are checked by default. For a site with a known bad certificate, set `FANTOMA_IGNORE_HTTPS_ERRORS=1` |
+| `read()` returns `blocked` | The page was a bot check, error page, login wall or empty. Try `browser="chromium"`, a proxy, or log in first with `login()` |
+| MCP tools fail | Call `fantoma_health`. It says which mode is running and whether an LLM is configured |
+| Domain policy slows pages down | Strict mode fetches each request itself to check redirects. `FANTOMA_DOMAIN_STRICT=0` uses the browser's own networking instead |
 | Camoufox SIGSEGV / "Page crashed" on Fedora 43 | Use Docker (recommended) or LD_PRELOAD shim. See [Fedora 43 / glibc 2.42](#fedora-43--glibc-242-camoufox-crash) below. |
 
 ## Fedora 43 / glibc 2.42 — Camoufox Crash
@@ -557,7 +579,9 @@ Leaderboard scores are over the full WebVoyager suite, not the same 5-task pilot
 
 ## Test Results
 
-Tested across 25 real sites with 6 different LLMs. 519 unit tests. Passed fingerprint checks on bot.sannysoft.com and nowsecure.nl. Zero bot detections across 2,241 stress tests. Full results below.
+**Continuous checks.** Every push runs 800+ unit tests, including real-browser cases, on GitHub Actions. A live check (`tools/live_read_check.py`) runs on every push and weekly with both Camoufox and Chromium: it reads public pages and requires text only the correct page contains, then ticks a checkbox and chooses a dropdown option on public practice pages, reading the result back from the live page. It uses no LLM, so a failure is Fantoma's.
+
+**Earlier runs (dated; detection moves, so treat these as snapshots).** 25 real sites with 6 LLMs; fingerprint checks passed on bot.sannysoft.com and nowsecure.nl; no detection events recorded across 2,241 stress tests (March 2026).
 
 **v0.7.0 live test — 25 sites, local-llm 9B local model (2026-03-31):**
 
@@ -624,9 +648,9 @@ Tested across 25 real sites with 6 different LLMs. 519 unit tests. Passed finger
 | Claude Sonnet | 1,159 | 99.9% |
 | Kimi Moonshot | 902 | 96.7% |
 
-**Anti-bot systems bypassed:** Cloudflare (X.com, Reddit, Indeed), DataDome (Amazon), PerimeterX (Walmart, Zillow), Akamai (Nike), Meta (Instagram, Facebook), custom (LinkedIn, Booking.com, TikTok, Craigslist, GitHub).
+**Pages behind bot protection that loaded and read correctly (March 2026):** sites fronted by Cloudflare, DataDome, PerimeterX and Akamai, among others. Results depend on IP reputation and change as protection changes.
 
-**Small model (Phi-3.5-mini 3.8B):** 15/15 bot-protected sites passed. Logged into ProtonMail. Created Reddit account with email verification.
+**Small model (Phi-3.5-mini 3.8B):** 15/15 bot-protected pages read correctly (March 2026).
 
 **6 LLMs tested:**
 
@@ -647,15 +671,30 @@ Tested across 25 real sites with 6 different LLMs. 519 unit tests. Passed finger
 # Tool API — drive the browser step by step
 Fantoma(
     llm_url=None,           # Optional — only needed for extract() and field labelling
-    headless=True,
-    proxy=None,
-    browser="camoufox",
+    api_key="",
+    model="auto",
+    headless=True,          # True, False, or "virtual" (Xvfb)
+    proxy=None,             # URL, list, rotator, or ProxyPool
+    browser="camoufox",     # or "chromium" (pip install "fantoma[chromium]")
     captcha_api=None,
     captcha_key=None,
     email_imap=None,
     verification_callback=None,
     timeout=300,
+    trace=False,
+    profile_dir=None,       # persistent browser profile
+    allowed_domains=None,   # e.g. ["example.com"]; see Safety
+    blocked_domains=None,
 )
+
+# Reading, no LLM
+browser.read(url=None, main_only=True, include_links=True, selector="",
+             max_chars=0, scroll=True)
+# → {"title", "url", "description", "markdown", "links", "hidden_removed",
+#    "truncated", "blocked", "injection_warnings"}
+
+# Extraction, needs llm_url. schema: a JSON Schema, or {"field": str, ...}
+browser.extract("the plan prices", schema={"type": "object", "properties": {...}})
 
 # Convenience API — describe a task, the agent does it
 Agent(
@@ -677,6 +716,26 @@ Agent(
 result = agent.run("task", deadline_s=120)   # hard 120s limit, default 300
 print(result.validated)                      # True/False/None (None = not validated)
 ```
+
+## Environment Variables
+
+| Variable | Used by | Effect |
+|---|---|---|
+| `FANTOMA_LLM_URL`, `FANTOMA_LLM_MODEL`, `FANTOMA_LLM_API_KEY` | MCP (built-in browser) | Model for `fantoma_run` and `fantoma_extract` |
+| `FANTOMA_BROWSER` | MCP (built-in browser) | `camoufox` (default) or `chromium` |
+| `FANTOMA_HEADLESS` | MCP (built-in browser), server | `true` (default), `false`, or `virtual` |
+| `FANTOMA_PROXY` | MCP (built-in browser), server | Proxy URL for all traffic |
+| `FANTOMA_MCP_BACKENDS` | MCP | Comma-separated HTTP backends, or `local` for the built-in browser |
+| `FANTOMA_MCP_TRANSPORT`, `FANTOMA_MCP_HOST`, `FANTOMA_MCP_PORT` | MCP | `http` serves streamable HTTP instead of stdio |
+| `FANTOMA_ALLOWED_DOMAINS`, `FANTOMA_BLOCKED_DOMAINS` | everywhere | Comma-separated host lists; see [Safety](#safety) |
+| `FANTOMA_DOMAIN_STRICT` | everywhere | `0` keeps the browser's own networking (no redirect checks) |
+| `FANTOMA_LLM_SELF_HOSTED` | LLM client | `1`/`0` overrides self-hosted detection |
+| `FANTOMA_ACTION_CACHE` | Agent | `0` disables replay of known task plans |
+| `FANTOMA_VALIDATE` | Agent | `1` turns on the post-run answer check |
+| `FANTOMA_IGNORE_HTTPS_ERRORS` | browser | `1` accepts bad certificates |
+| `FANTOMA_BLOCK_WEBRTC`, `FANTOMA_DISABLE_WEBGL` | Chromium | Opt-in WebRTC / WebGL kill switches |
+| `FANTOMA_API_KEY`, `FANTOMA_VNC_PASSWORD`, `FANTOMA_ALLOW_EVAL` | Docker server | See [Security](#security) |
+| `LOCAL_LLM_URL`, `BACKUP_LLM_URL`, `CLOUD_LLM_URL`, `CLOUD_LLM_KEY` | Docker server | Escalation chain for `/run` |
 
 ## CLI Commands
 
@@ -722,6 +781,7 @@ fantoma/
 
 | File | What it does |
 |------|-------------|
+| `examples/read_page.py` | Any page as Markdown, no LLM |
 | `examples/simple_search.py` | Search Hacker News |
 | `examples/local_llm.py` | Ollama / llama.cpp / vLLM |
 | `examples/data_extraction.py` | Structured data extraction |
@@ -733,6 +793,15 @@ fantoma/
 ## Contributing
 
 Contributions welcome. Fork, branch, test, PR.
+
+```bash
+pip install -e ".[mcp,server,sessions,dev]"
+python -m playwright install chromium          # for the real-browser tests
+python -m pytest -q                            # unit suite
+python tools/live_read_check.py                # live check on public sites, no LLM
+```
+
+Bug reports are most useful with the page URL, the task, and `steps_detail` from the result. A change to how pages are read should come with a test that shows the element or text the model was missing.
 
 ## Acknowledgments
 
