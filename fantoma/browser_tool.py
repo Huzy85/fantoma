@@ -17,7 +17,7 @@ from fantoma.browser.form_memory import FormMemory
 from fantoma.browser.observer import inject_observer, collect_mutations, wait_for_dom_stable
 from fantoma.browser.page_state import verify_action, detect_errors
 from fantoma.dom.accessibility import AccessibilityExtractor
-from fantoma.dom.markdown import page_to_markdown
+from fantoma.dom.markdown import page_to_markdown, aria_text_fallback
 from fantoma.browser.blocks import detect_block_page
 from fantoma.browser.domains import DomainBlocked
 from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted, scan_for_injection
@@ -288,24 +288,58 @@ class Fantoma:
         Many sites build dropdowns from ARIA combobox/listbox markup, where
         select_option() cannot work. Opening it and activating the matching
         option is what a keyboard user does.
+
+        Options are looked for in the popup this control owns (aria-controls
+        / aria-owns), else in any visible listbox, and never inside a native
+        <select>: a page-wide search found a same-named <option> in an
+        unrelated native dropdown earlier on the page and clicked that.
+        Returns True only if the choice is visible afterwards.
         """
         try:
             # Only something that opens a list of options. Clicking whatever
             # was passed would follow a link the model mis-numbered.
-            is_dropdown = element.evaluate("""el => {
+            info = element.evaluate("""el => {
                 const r = (el.getAttribute('role') || '').toLowerCase();
-                return r === 'combobox' || r === 'listbox'
-                    || el.hasAttribute('aria-haspopup') || el.hasAttribute('aria-expanded');
+                return {
+                    dropdown: r === 'combobox' || r === 'listbox'
+                        || el.hasAttribute('aria-haspopup') || el.hasAttribute('aria-expanded'),
+                    popup: (el.getAttribute('aria-controls') || el.getAttribute('aria-owns') || '')
+                        .split(/\\s+/)[0],
+                };
             }""")
-            if not is_dropdown:
+            if not info or not info.get("dropdown"):
                 return False
-            click_element(self._engine, element)
+            if (element.evaluate("el => (el.getAttribute('role') || '').toLowerCase()") != "listbox"):
+                click_element(self._engine, element)
+                wait_for_dom_stable(page)
+
+            scope = page.locator(f"[id='{info['popup']}']") if info.get("popup") else page
+            want = value.strip().lower()
+            options = scope.locator("[role=option]:visible")
+            target = None
+            for i in range(min(options.count(), 200)):
+                opt = options.nth(i)
+                label = (opt.get_attribute("aria-label") or opt.inner_text() or "").strip().lower()
+                if label == want:
+                    target = opt
+                    break
+                if target is None and want and want in label:
+                    target = opt
+            if target is None:
+                return False
+            chosen = target.element_handle()
+            click_element(self._engine, chosen)
             wait_for_dom_stable(page)
-            for exact in (True, False):
-                option = page.get_by_role("option", name=value, exact=exact)
-                if option.count() > 0:
-                    click_element(self._engine, option.first.element_handle())
-                    return True
+
+            # Confirm it took: the control now shows the value (its own text,
+            # not its label), or the option is marked selected.
+            shown = element.evaluate("el => (el.value || el.textContent || '')")
+            if want in (shown or "").lower():
+                return True
+            try:
+                return chosen.get_attribute("aria-selected") == "true"
+            except Exception:
+                return False
         except Exception as e:
             log.debug("custom dropdown select failed: %s", e)
         return False
@@ -495,13 +529,17 @@ class Fantoma:
         return result
 
     def read(self, url: str = None, main_only: bool = True, include_links: bool = True,
-             selector: str = "", max_chars: int = 0) -> dict:
+             selector: str = "", max_chars: int = 0, scroll: bool = True) -> dict:
         """Return the current page (or `url`) as clean Markdown. No LLM needed.
 
         Result keys: title, url, description, markdown, links, hidden_removed,
         truncated, blocked (a reason string when the page looks like a bot
         wall, error page or login wall, else ""), injection_warnings (excerpts
         of text that reads like instructions aimed at an AI).
+
+        scroll (default on) walks the page first so content that only renders
+        once scrolled into view is included. Raises RuntimeError when the page
+        cannot be opened or read (for example an invalid selector).
         """
         if url:
             nav = self.navigate(url)
@@ -511,7 +549,10 @@ class Fantoma:
                 raise RuntimeError(nav.get("error") or f"Could not open {url}")
         page = self._engine.get_page()
         result = page_to_markdown(page, main_only=main_only, include_links=include_links,
-                                  selector=selector, max_chars=max_chars)
+                                  selector=selector, max_chars=max_chars, scroll=scroll)
+        error = result.pop("error", "")
+        if error:
+            raise RuntimeError(f"Could not read {result.get('url') or 'the page'}: {error}")
         result["blocked"] = detect_block_page(result["title"], result["markdown"])
         result["injection_warnings"] = scan_for_injection(result["markdown"])
         return result
@@ -536,14 +577,9 @@ class Fantoma:
                                     max_chars=self.config.extraction.max_page_text)
         content = rendered["markdown"]
         if not content.strip():
-            # A page the Markdown walk could not read still has visible text.
-            try:
-                main = page.locator("main, [role=main]")
-                content = (main.first.inner_text() if main.count() > 0
-                           else page.inner_text("body"))
-            except Exception:
-                content = ""
-            content = (content or "")[: self.config.extraction.max_page_text]
+            # The Markdown walk failed. The accessibility tree still drops
+            # display:none and aria-hidden text, unlike raw innerText.
+            content = aria_text_fallback(page)[: self.config.extraction.max_page_text]
 
         shape = _schema_shape(schema) if schema else None
         if shape:
@@ -566,7 +602,7 @@ class Fantoma:
         response = response.strip()
         if not shape:
             return response
-        data = _parse_json_loose(response)
+        data = _parse_json_loose(response, shape["kind"])
         if shape["kind"] == "object":
             if isinstance(data, list):
                 return data[0] if data and isinstance(data[0], dict) else {}
@@ -662,8 +698,13 @@ def _schema_shape(schema: dict) -> dict | None:
             "kind": "array"}
 
 
-def _parse_json_loose(text: str):
-    """Parse JSON from a model reply that may wrap it in fences or prose."""
+def _parse_json_loose(text: str, kind: str = ""):
+    """Parse JSON from a model reply that may wrap it in fences or prose.
+
+    Decodes the first complete JSON value, starting at the first "{" or
+    "[" (or at the bracket `kind` asks for, "object" or "array"). Searching
+    for "[" first returned the inner list of {"tags": ["a", "b"]}.
+    """
     import json as _json
     t = text.strip()
     if t.startswith("```"):
@@ -673,11 +714,16 @@ def _parse_json_loose(text: str):
         return _json.loads(t)
     except (ValueError, TypeError):
         pass
-    for open_ch, close_ch in (("[", "]"), ("{", "}")):
-        i, j = t.find(open_ch), t.rfind(close_ch)
-        if 0 <= i < j:
-            try:
-                return _json.loads(t[i:j + 1])
-            except (ValueError, TypeError):
-                continue
+    decoder = _json.JSONDecoder()
+    order = {"object": "{[", "array": "[{"}.get(kind, "")
+    starts = sorted(i for i in (t.find("{"), t.find("[")) if i >= 0)
+    if order:
+        preferred = t.find(order[0])
+        starts = ([preferred] if preferred >= 0 else []) + [i for i in starts if i != preferred]
+    for i in starts:
+        try:
+            value, _ = decoder.raw_decode(t[i:])
+            return value
+        except ValueError:
+            continue
     return None

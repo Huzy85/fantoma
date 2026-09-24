@@ -136,7 +136,8 @@ class TestFilterOccludedRemovesHidden:
         # "Submit" is on top; "Cancel" is behind the modal
         responses = {"Submit": True, "Cancel": False}
 
-        def evaluate_fn(js, role, name):
+        def evaluate_fn(js, arg):
+            role, name, ordinal = arg
             return responses.get(name, True)
 
         page = _make_page_with_evaluate(evaluate_fn)
@@ -150,7 +151,8 @@ class TestFilterOccludedRemovesHidden:
         extractor = AccessibilityExtractor()
         visibility = {"Open": True, "Hidden1": False, "Close": True, "Hidden2": False}
 
-        def evaluate_fn(js, role, name):
+        def evaluate_fn(js, arg):
+            role, name, ordinal = arg
             return visibility.get(name, True)
 
         page = _make_page_with_evaluate(evaluate_fn)
@@ -166,6 +168,21 @@ class TestFilterOccludedRemovesHidden:
         elements = _make_elements("A", "B", "C")
         result = extractor._filter_occluded(page, elements)
         assert result == []
+
+    def test_evaluate_gets_one_argument(self):
+        """page.evaluate takes a single argument. Passing role and name as two
+        raised TypeError on every call, so the filter never ran at all."""
+        extractor = AccessibilityExtractor()
+        page = _make_page_with_evaluate(lambda js, *args: True)
+        extractor._filter_occluded(page, [{"role": "button", "name": "Buy", "_ordinal": 2}])
+        assert page.evaluate.call_args[0][1:] == (["button", "Buy", 2],)
+
+    def test_unnamed_elements_are_kept_without_a_check(self):
+        extractor = AccessibilityExtractor()
+        page = _make_page_with_evaluate(lambda js, *args: False)
+        result = extractor._filter_occluded(page, [{"role": "checkbox", "name": ""}])
+        assert len(result) == 1
+        page.evaluate.assert_not_called()
 
     def test_evaluate_called_once_per_element(self):
         """evaluate() is called exactly once for each element."""

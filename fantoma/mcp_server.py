@@ -94,15 +94,42 @@ _pool: BackendPool | None = None
 _pool_lock = threading.Lock()
 
 
+_mode: str | None = None   # "local" or "remote", decided once
+
+
+def _backend_answers(url: str) -> bool:
+    try:
+        with httpx.Client(timeout=httpx.Timeout(1.0, connect=0.5)) as client:
+            return client.get(f"{url}/health").status_code == 200
+    except Exception:
+        return False
+
+
 def _use_local() -> bool:
-    """True when no HTTP backend is configured: run the browser in-process.
+    """True when the browser should run in-process rather than over HTTP.
 
     An installed pool (tests, or a caller that set one up) always wins.
+    FANTOMA_MCP_BACKENDS=local forces in-process; any URL list forces HTTP.
+    Unset, a backend already answering on the old default address is used,
+    so existing Docker setups keep working; otherwise the browser runs here.
     """
+    global _mode
     if _pool is not None:
         return False
     raw = os.environ.get("FANTOMA_MCP_BACKENDS", "").strip().lower()
-    return raw in ("", "local")
+    if raw == "local":
+        return True
+    if raw:
+        return False
+    if _mode is None:
+        _mode = "remote" if _backend_answers(DEFAULT_BACKENDS) else "local"
+        import sys
+        if _mode == "remote":
+            print(f"fantoma-mcp: using the backend at {DEFAULT_BACKENDS}", file=sys.stderr)
+        else:
+            print("fantoma-mcp: no backend configured; running the browser in this process "
+                  "(set FANTOMA_MCP_BACKENDS to use HTTP backends)", file=sys.stderr)
+    return _mode == "local"
 
 
 def _pool_instance() -> BackendPool:

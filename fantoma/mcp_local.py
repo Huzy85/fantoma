@@ -94,7 +94,13 @@ class LocalBrowser:
         """Run fn() on the browser thread and wait for its result."""
         future: concurrent.futures.Future = concurrent.futures.Future()
         self._jobs.put((fn, future))
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            # If it never started, make sure it never does: the caller has
+            # already been told it failed.
+            future.cancel()
+            raise
 
     def shutdown(self):
         try:

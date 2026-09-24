@@ -12,7 +12,9 @@ def _clean(monkeypatch):
     monkeypatch.delenv("FANTOMA_MCP_BACKENDS", raising=False)
     monkeypatch.delenv("FANTOMA_LLM_URL", raising=False)
     mcp_server._pool = None
+    mcp_server._mode = None
     mcp_local._local = None
+    monkeypatch.setattr(mcp_server, "_backend_answers", lambda url: False)
     yield
     if mcp_local._local is not None:
         mcp_local._local._jobs.put((None, None))
@@ -30,6 +32,10 @@ class TestModeSelection:
 
     def test_remote_when_backends_are_set(self, monkeypatch):
         monkeypatch.setenv("FANTOMA_MCP_BACKENDS", "http://127.0.0.1:7860")
+        assert not mcp_server._use_local()
+
+    def test_an_existing_backend_on_the_default_port_is_kept(self, monkeypatch):
+        monkeypatch.setattr(mcp_server, "_backend_answers", lambda url: True)
         assert not mcp_server._use_local()
 
     def test_an_installed_pool_wins(self):

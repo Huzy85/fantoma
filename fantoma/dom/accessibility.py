@@ -951,38 +951,58 @@ class AccessibilityExtractor:
         cannot be located are assumed visible and kept. On any JS error the full
         list is returned unchanged.
         """
+        # Takes ONE argument: page.evaluate passes a single value, so the old
+        # (role, name) signature raised TypeError on every call and the filter
+        # silently kept everything.
+        #
+        # "Covered" means covered by an overlay: the element on top at its
+        # centre sits inside a fixed/sticky layer or a modal dialog that does
+        # not also contain the control. A label drawn over a styled checkbox,
+        # or a zero-size native input behind a custom widget, is NOT hidden
+        # from a keyboard user, and dropping it would remove the only control.
         _JS = """
-        (function(role, name) {
-            // Find the element by role + accessible name
-            var candidates = [];
-            var all = document.querySelectorAll('*');
-            for (var i = 0; i < all.length; i++) {
-                var el = all[i];
-                var elRole = el.getAttribute('role') || el.tagName.toLowerCase();
-                var elLabel = el.getAttribute('aria-label') || el.textContent.trim().slice(0, 80);
-                if (elRole === role && elLabel === name) {
-                    candidates.push(el);
-                }
+        ([role, name, ordinal]) => {
+            const IMPLICIT = {A: 'link', BUTTON: 'button', SELECT: 'combobox',
+                              TEXTAREA: 'textbox', SUMMARY: 'button'};
+            const INPUT = {checkbox: 'checkbox', radio: 'radio', button: 'button',
+                           submit: 'button', reset: 'button', search: 'searchbox',
+                           range: 'slider', number: 'spinbutton'};
+            const roleOf = (el) => el.getAttribute('role') || (el.tagName === 'INPUT'
+                ? (INPUT[(el.type || '').toLowerCase()] || 'textbox') : IMPLICIT[el.tagName] || '');
+            const nameOf = (el) => (el.getAttribute('aria-label') ||
+                (el.labels && el.labels[0] ? el.labels[0].textContent : '') ||
+                el.textContent || el.value || '').replace(/\\s+/g, ' ').trim();
+            const matches = [];
+            for (const el of document.querySelectorAll('*')) {
+                if (roleOf(el) === role && nameOf(el) === name) matches.push(el);
             }
-            if (candidates.length === 0) return true;  // not found → assume visible
-            var el = candidates[0];
-            var rect = el.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) return false;  // zero-size → hidden
-            var vw = window.innerWidth || document.documentElement.clientWidth;
-            var vh = window.innerHeight || document.documentElement.clientHeight;
-            var cx = rect.left + rect.width / 2;
-            var cy = rect.top + rect.height / 2;
-            if (cx < 0 || cy < 0 || cx > vw || cy > vh) return true;  // off-screen → keep
-            var top = document.elementFromPoint(cx, cy);
-            if (!top) return true;  // can't determine → keep
-            return el.contains(top) || top.contains(el) || el === top;
-        })(arguments[0], arguments[1])
+            const el = matches[ordinal] || null;
+            if (!el) return true;
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return true;
+            const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+            if (cx < 0 || cy < 0 || cx > innerWidth || cy > innerHeight) return true;
+            const top = document.elementFromPoint(cx, cy);
+            if (!top || el === top || el.contains(top) || top.contains(el)) return true;
+            for (let n = top; n && n !== document.body; n = n.parentElement) {
+                const cs = getComputedStyle(n);
+                const layer = cs.position === 'fixed' || cs.position === 'sticky'
+                    || n.getAttribute('aria-modal') === 'true' || n.tagName === 'DIALOG';
+                if (layer) return n.contains(el);
+            }
+            return true;
+        }
         """
         try:
             visible = []
             for el in elements:
                 try:
-                    is_on_top = page.evaluate(_JS, el["role"], el["name"])
+                    if not el.get("name"):
+                        # Unnamed controls cannot be found by name; keep them.
+                        visible.append(el)
+                        continue
+                    is_on_top = page.evaluate(
+                        _JS, [el["role"], el["name"], el.get("_ordinal", 0)])
                     # Only an explicit "covered" hides an element. Anything
                     # else (no answer, an odd return) means we do not know,
                     # and hiding a real control is worse than showing one.

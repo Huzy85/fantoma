@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from fantoma.dom.markdown import page_to_markdown
+from fantoma.dom.markdown import page_to_markdown, aria_text_fallback
 from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
 from fantoma.dom.aria_diff import aria_diff, aria_snapshot
 from fantoma.browser.page_state import classify_blocker
@@ -626,7 +626,7 @@ class Navigator:
             # at ~12k chars to fit a small model's context.
             rendered = page_to_markdown(page, main_only=False, include_links=False,
                                         max_chars=12000)
-            body = rendered["markdown"]
+            body = rendered["markdown"] or aria_text_fallback(page)[:12000]
             title = rendered["title"]
             content = wrap_untrusted(f"Page title: {title}\nURL: {page.url}\n\n{body}", page.url)
             log.info(

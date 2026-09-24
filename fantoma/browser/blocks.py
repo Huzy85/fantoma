@@ -26,14 +26,29 @@ _CHALLENGE = re.compile(
     re.IGNORECASE,
 )
 _CAPTCHA = re.compile(r"captcha|i'?m not a robot|are you a robot", re.IGNORECASE)
-_RATE = re.compile(r"too many requests|rate limit(ed)?|429\b|slow down", re.IGNORECASE)
+# The standard notice on any form that merely *uses* reCAPTCHA or hCaptcha.
+_CAPTCHA_NOTICE = re.compile(
+    r"(this (site|page|form) is )?protected by (re)?captcha|(re)?captcha and the google"
+    r"|hcaptcha privacy policy", re.IGNORECASE,
+)
+# Status codes count only beside the words that make them errors: a price of
+# "$1,429", an order "Reference #48213" or "500 Startups" is not a block page.
+_RATE = re.compile(
+    r"too many requests|rate[- ]limit(ed|ing)?\b|\b(error|http|status)\s*429\b|\b429\s+too many",
+    re.IGNORECASE,
+)
 _DENIED = re.compile(
-    r"access denied|403 forbidden|\bforbidden\b|you don'?t have permission to access"
-    r"|error 403|http 403|reference #\d", re.IGNORECASE,
+    r"access denied|access to this (page|resource) (is|has been) (denied|blocked)"
+    r"|\b403\s*[-:]?\s*forbidden\b|\b(error|http|status)\s*403\b"
+    r"|you don'?t have permission to access",
+    re.IGNORECASE,
 )
 _HTTP_ERROR_TITLE = re.compile(
-    r"^\s*(40[0-9]|50[0-9])\b|not found|bad gateway|service unavailable|gateway time-?out"
-    r"|internal server error|page not found", re.IGNORECASE,
+    r"^\s*(40\d|50\d)\b\s*[-:|]?\s*(error|not found|forbidden|unauthori[sz]ed|bad request"
+    r"|bad gateway|service unavailable|gateway time-?out|internal server error|gone)"
+    r"|^\s*(error|http)\s*(40\d|50\d)\b|^\s*(page )?not found\s*$|\bpage not found\b"
+    r"|^\s*(bad gateway|service unavailable|internal server error|gateway time-?out)\b",
+    re.IGNORECASE,
 )
 _LOGIN = re.compile(
     r"(sign|log)\s*in\s+(to continue|to view|is required)|you (must|need to) (sign|log)\s*in"
@@ -57,7 +72,7 @@ def detect_block_page(title: str, text: str) -> str:
 
     if _CHALLENGE.search(title) or (short and _CHALLENGE.search(text)):
         return "bot_challenge"
-    if short and _CAPTCHA.search(both):
+    if short and _CAPTCHA.search(_CAPTCHA_NOTICE.sub("", both)):
         return "captcha"
     if short and _RATE.search(both):
         return "rate_limited"

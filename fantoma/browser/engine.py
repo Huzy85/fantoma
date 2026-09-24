@@ -17,6 +17,8 @@ _log = logging.getLogger("fantoma.browser")
 _IGNORE_HTTPS_ERRORS = os.environ.get("FANTOMA_IGNORE_HTTPS_ERRORS", "").lower() in ("1", "true", "yes")
 
 
+from fantoma.browser.domains import DomainBlocked, DomainPolicy
+
 class BrowserEngine:
     """Manages a Camoufox browser session with anti-detection and human-like behaviour."""
 
@@ -35,7 +37,6 @@ class BrowserEngine:
         self._trace_dir = trace_dir or self.DEFAULT_TRACE_DIR
         self._trace_active = False
         self._browser_engine = browser_engine
-        from fantoma.browser.domains import DomainPolicy
         self.domain_policy = DomainPolicy.from_env(allowed_domains, blocked_domains)
         self._browser = None
         self._context = None
@@ -374,6 +375,16 @@ class BrowserEngine:
                     pass
                 self._page = old_page
                 raise
+        # A redirect can land on a host the policy forbids (always possible
+        # with strict=False). Leave at once so the page is never read.
+        if self.domain_policy.active and not self.domain_policy.permits(self._page.url):
+            landed = self._page.url
+            try:
+                self._page.goto("about:blank")
+            except Exception:
+                pass
+            raise DomainBlocked(f"{url} redirected to {landed}, which the domain policy "
+                                "does not permit")
         if self.humanizer:
             self.humanizer.reading_pause()
 

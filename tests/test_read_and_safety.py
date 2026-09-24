@@ -100,23 +100,34 @@ class TestDetectBlockPage:
 # ── Markdown fallbacks (no browser) ──────────────────────────
 
 class TestMarkdownFallback:
-    def test_falls_back_to_visible_text_when_the_script_fails(self):
+    def test_a_failed_walk_reports_an_error_instead_of_raw_text(self):
+        """Raw innerText includes the invisible text the walk removes, and a
+        hostile page can make the walk fail on purpose, so there is no raw
+        fallback: the caller gets an empty result and a reason."""
         page = MagicMock()
         page.evaluate.side_effect = RuntimeError("boom")
-        page.inner_text.return_value = "Visible​ text"
+        page.inner_text.return_value = "hidden instructions"
         page.title.return_value = "T"
         page.url = "https://a.example/"
         out = page_to_markdown(page)
-        assert out["markdown"] == "Visible text"
+        assert out["markdown"] == "" and "boom" in out["error"]
         assert out["title"] == "T"
+        page.inner_text.assert_not_called()
 
     def test_bad_script_result_is_treated_as_failure(self):
         page = MagicMock()
         page.evaluate.return_value = MagicMock()
-        page.inner_text.return_value = "ok"
         page.title.return_value = "T"
         page.url = "u"
-        assert page_to_markdown(page)["markdown"] == "ok"
+        out = page_to_markdown(page)
+        assert out["markdown"] == "" and out["error"]
+
+    def test_script_reported_error_is_passed_on(self):
+        page = MagicMock()
+        page.evaluate.return_value = {"error": "invalid selector: main >>> p"}
+        page.title.return_value = "T"
+        page.url = "u"
+        assert "invalid selector" in page_to_markdown(page, selector="main >>> p")["error"]
 
     def test_truncates_on_a_paragraph_boundary(self):
         page = MagicMock()
@@ -358,5 +369,177 @@ class TestResolutionInRealBrowser:
         try:
             idx = next(i for i, el in enumerate(ex._last_interactive) if el["name"] == "Add")
             assert ex.get_element_by_index(page, idx).get_attribute("id") == "b2"
+        finally:
+            page.close()
+
+
+class TestReviewFindingsInRealBrowser:
+    """Each case reproduces a defect found in review."""
+
+    def _md(self, browser_page, html, **kw):
+        page = browser_page.context.browser.new_page()
+        try:
+            page.set_content(html)
+            return page_to_markdown(page, **kw)
+        finally:
+            page.close()
+
+    def test_nested_web_components_are_not_duplicated(self, browser_page):
+        html = """<div id="root"><span>SLOTTED</span></div>
+        <div id="orphan"><em>NEVER-RENDERED</em></div>
+        <script>
+        function wrap(el, depth) {
+          if (!depth) return;
+          const inner = document.createElement('div');
+          while (el.firstChild) inner.appendChild(el.firstChild);
+          el.attachShadow({mode: 'open'}).innerHTML = '<p><slot>FALLBACK</slot></p>';
+          el.appendChild(inner);
+          wrap(inner, depth - 1);
+        }
+        wrap(document.getElementById('root'), 12);
+        document.getElementById('orphan').attachShadow({mode: 'open'}).innerHTML = '<p>SHADOW-ONLY</p>';
+        </script>"""
+        md = self._md(browser_page, html, main_only=False)["markdown"]
+        assert md.count("SLOTTED") == 1
+        assert "FALLBACK" not in md
+        assert "NEVER-RENDERED" not in md and "SHADOW-ONLY" in md
+
+    def test_selector_on_site_chrome_still_returns_it(self, browser_page):
+        out = self._md(browser_page, "<nav><a href='/a'>Alpha</a></nav><main><p>Body text here</p></main>",
+                       selector="nav")
+        assert "Alpha" in out["markdown"]
+
+    def test_invalid_or_unmatched_selector_is_an_error(self, browser_page):
+        assert "invalid selector" in self._md(browser_page, "<p>x</p>", selector="main >>> p")["error"]
+        assert "no element" in self._md(browser_page, "<p>x</p>", selector="#missing")["error"]
+
+    def test_open_dialog_is_read(self, browser_page):
+        md = self._md(browser_page, "<dialog open><p>Dialog body</p></dialog>", main_only=False)["markdown"]
+        assert "Dialog body" in md
+
+    def test_accordion_heading_buttons_keep_their_text(self, browser_page):
+        md = self._md(browser_page, "<h3><button>What does it cost?</button></h3><p>Ten dollars.</p>",
+                      main_only=False)["markdown"]
+        assert "### What does it cost?" in md
+
+    def test_svg_icon_text_does_not_leak(self, browser_page):
+        md = self._md(browser_page, '<p>Close <svg><title>Close icon</title><style>.a{fill:red}</style>'
+                                    '</svg> the window</p>', main_only=False)["markdown"]
+        assert "Close icon" not in md and "fill:red" not in md and "the window" in md
+
+    def test_zero_size_absolute_wrapper_keeps_visible_children(self, browser_page):
+        md = self._md(browser_page, '<div style="position:absolute;width:0;height:0">'
+                                    '<p style="position:absolute;width:300px">Visible child</p></div>',
+                      main_only=False)["markdown"]
+        assert "Visible child" in md
+
+    def test_scroll_reveals_fade_in_content(self, browser_page):
+        html = """<div style="height:3000px"></div>
+        <p id="late" style="opacity:0">Revealed on scroll</p>
+        <script>new IntersectionObserver(es => es.forEach(e => {
+          if (e.isIntersecting) e.target.style.opacity = 1; })).observe(document.getElementById('late'));
+        </script>"""
+        page = browser_page.context.browser.new_page()
+        try:
+            page.set_content(html)
+            assert "Revealed" not in page_to_markdown(page, main_only=False)["markdown"]
+            assert "Revealed" in page_to_markdown(page, main_only=False, scroll=True)["markdown"]
+        finally:
+            page.close()
+
+
+class TestOcclusionInRealBrowser:
+    def _shown(self, browser_page, html):
+        from fantoma.dom.accessibility import AccessibilityExtractor
+        page = browser_page.context.browser.new_page()
+        try:
+            page.set_content(html)
+            ex = AccessibilityExtractor()
+            ex.extract(page, task="agree and buy")
+            return [el["name"] for el in ex._last_interactive]
+        finally:
+            page.close()
+
+    def test_controls_behind_a_modal_are_hidden(self, browser_page):
+        names = self._shown(browser_page, """<button>Buy now</button>
+            <div role="dialog" aria-modal="true" style="position:fixed;inset:0;background:#0008">
+            <div style="position:absolute;top:300px;left:300px"><button>Accept cookies</button></div></div>""")
+        assert names == ["Accept cookies"]
+
+    def test_a_label_drawn_over_a_checkbox_does_not_hide_it(self, browser_page):
+        names = self._shown(browser_page, """<div style="position:relative;height:30px">
+            <input type="checkbox" id="c" style="position:absolute;left:0;top:0">
+            <label for="c" style="position:absolute;left:0;top:0;width:40px;height:20px;background:#fff">Agree</label>
+            </div><button>Buy now</button>""")
+        assert "Agree" in names and "Buy now" in names
+
+
+class TestBlockPageFalsePositives:
+    @pytest.mark.parametrize("title,text", [
+        ("Laptop", "Price $1,429 including VAT. Free delivery."),
+        ("Order confirmed", "Thanks! Reference #48213. We will email you."),
+        ("Sign in", "Email Password Sign in. This site is protected by reCAPTCHA and the Google "
+                    "Privacy Policy and Terms of Service apply."),
+        ("500 Startups - Global VC", "We invest in founders around the world, at every stage."),
+        ("Forbidden City tours", "Visit the Forbidden City in Beijing with a local guide today."),
+    ])
+    def test_ordinary_short_pages_are_not_blocks(self, title, text):
+        assert detect_block_page(title, text) == ""
+
+    @pytest.mark.parametrize("title,reason", [
+        ("403 Forbidden", "access_denied"),
+        ("502 Bad Gateway", "http_error"),
+        ("Error 404", "http_error"),
+        ("Page Not Found", "http_error"),
+    ])
+    def test_real_error_titles_still_match(self, title, reason):
+        assert detect_block_page(title, "nginx") == reason
+
+
+class TestParseJsonLooseOrder:
+    def test_object_with_inner_list_in_prose(self):
+        reply = 'Here is the data: {"price": "$5", "tags": ["a", "b"]} done'
+        assert _parse_json_loose(reply) == {"price": "$5", "tags": ["a", "b"]}
+        assert _parse_json_loose(reply, "object") == {"price": "$5", "tags": ["a", "b"]}
+
+    def test_array_preferred_when_asked(self):
+        reply = 'Note {"x": 1} then [{"a": 1}]'
+        assert _parse_json_loose(reply, "array") == [{"a": 1}]
+
+
+
+CUSTOM_DROPDOWN = """<html><body>
+<select id="native"><option>Blue</option><option>Red</option></select>
+<div role="combobox" aria-expanded="false" aria-controls="lb" tabindex="0" id="cb" aria-label="Colour">Choose…</div>
+<ul role="listbox" id="lb" style="display:none">
+  <li role="option" id="o1">Green</li><li role="option" id="o2">Red</li></ul>
+<script>
+const cb=document.getElementById('cb'), lb=document.getElementById('lb');
+cb.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' '){ lb.style.display='block'; cb.setAttribute('aria-expanded','true'); lb.querySelector('[role=option]').setAttribute('tabindex','0'); }});
+lb.querySelectorAll('[role=option]').forEach(o=>{ o.tabIndex=0; o.addEventListener('keydown', e=>{ if(e.key==='Enter'){ cb.textContent=o.textContent; o.setAttribute('aria-selected','true'); lb.style.display='none'; }});});
+</script></body></html>
+"""
+
+
+class TestCustomDropdownInRealBrowser:
+    def test_picks_from_its_own_popup_not_a_native_select(self, browser_page):
+        from fantoma.browser_tool import Fantoma
+        from fantoma.dom.accessibility import AccessibilityExtractor
+
+        page = browser_page.context.browser.new_page()
+        try:
+            page.set_content(CUSTOM_DROPDOWN)
+            engine = MagicMock(humanizer=None)
+            engine.get_page.return_value = page
+            f = Fantoma.__new__(Fantoma)
+            f._engine, f._dom, f._last_tree, f._task = engine, AccessibilityExtractor(), None, ""
+            f._action_result = lambda ok, pre=None: {"success": ok}
+            f._dom.extract(page, task="choose red colour")
+            idx = next(i for i, e in enumerate(f._dom._last_interactive)
+                       if e["role"] == "combobox" and e["name"] == "Colour")
+            assert f.select(idx, "Red")["success"] is True
+            assert page.inner_text("#cb") == "Red"
+            assert page.eval_on_selector("#native", "e => e.value") == "Blue"
+            assert f.select(idx, "Purple")["success"] is False
         finally:
             page.close()
