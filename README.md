@@ -591,7 +591,12 @@ Leaderboard scores are over the full WebVoyager suite, not the same 5-task pilot
 | Tick a checkbox, pick a dropdown option, type into a field | pass | pass | 0 |
 | Log in (two sites), log in then add a named item to the cart | pass | pass | 0 |
 | Search DuckDuckGo, search Etsy (both behind bot protection) | pass | pass | 0 |
-| Read a book's price | pass | pass | model reads the answer |
+| Read a book's price (Fantoma opens the book's page first) | pass | pass | 3-9 |
+| Answer a question from a Wikipedia article | pass | pass | 10-15 |
+| Open the 'Travel' category, name its first book | **fail** | pass | 10-18 |
+| **Total** | **10 of 11** | **11 of 11** | |
+
+The 7B failure is worth knowing: Fantoma opened the right category, then the model wandered back to the home page and answered with the first book there, while reporting success. Reading questions that need the model to stay on a page are where a 7B model is still weakest; a 14B model handled them. Runs took minutes each on CPU; a 12GB GPU is far faster.
 
 Before the fast path, the same 7B model passed 4 of 8 and reported success on several tasks it had failed. These tasks are also the ones the fast path was built against, so treat the table as proof the mechanism works, not as a benchmark of unseen sites. Protected-site reads from a data-centre address (the CI runner): Camoufox 7 of 10, Chromium 5 of 10; a home connection is a different, usually easier, case.
 
