@@ -1,5 +1,6 @@
 """Edge case and integration tests for CAPTCHA sitekey extraction, token injection, and API solver."""
 
+import itertools
 from unittest.mock import MagicMock, patch
 
 
@@ -343,7 +344,7 @@ def test_api_solver_v2_invisible_task_dict():
 
         # Will time out after first poll, but we only need to check the create call
         with patch("fantoma.captcha.api_solver.time.sleep"):
-            with patch("fantoma.captcha.api_solver.time.time", side_effect=[0, 0, 999]):
+            with patch("fantoma.captcha.api_solver.time.time", side_effect=itertools.chain([0, 0], itertools.repeat(999))):
                 solver.solve_recaptcha_v2("sitekey", "https://example.com", is_invisible=True)
 
         # Check the first call (createTask)
@@ -366,7 +367,7 @@ def test_api_solver_v2_visible_no_invisible_key():
         mock_post.return_value = mock_resp
 
         with patch("fantoma.captcha.api_solver.time.sleep"):
-            with patch("fantoma.captcha.api_solver.time.time", side_effect=[0, 0, 999]):
+            with patch("fantoma.captcha.api_solver.time.time", side_effect=itertools.chain([0, 0], itertools.repeat(999))):
                 solver.solve_recaptcha_v2("sitekey", "https://example.com", is_invisible=False)
 
         create_call = mock_post.call_args_list[0]
@@ -389,7 +390,7 @@ def test_api_solver_v3_with_page_action():
         mock_post.return_value = mock_resp
 
         with patch("fantoma.captcha.api_solver.time.sleep"):
-            with patch("fantoma.captcha.api_solver.time.time", side_effect=[0, 0, 999]):
+            with patch("fantoma.captcha.api_solver.time.time", side_effect=itertools.chain([0, 0], itertools.repeat(999))):
                 solver.solve_recaptcha_v3("sitekey", "https://example.com", page_action="submit")
 
         create_call = mock_post.call_args_list[0]
@@ -410,7 +411,7 @@ def test_api_solver_v3_without_page_action():
         mock_post.return_value = mock_resp
 
         with patch("fantoma.captcha.api_solver.time.sleep"):
-            with patch("fantoma.captcha.api_solver.time.time", side_effect=[0, 0, 999]):
+            with patch("fantoma.captcha.api_solver.time.time", side_effect=itertools.chain([0, 0], itertools.repeat(999))):
                 solver.solve_recaptcha_v3("sitekey", "https://example.com")
 
         create_call = mock_post.call_args_list[0]
