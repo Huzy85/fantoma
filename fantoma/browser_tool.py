@@ -19,6 +19,7 @@ from fantoma.browser.page_state import verify_action, detect_errors
 from fantoma.dom.accessibility import AccessibilityExtractor
 from fantoma.dom.markdown import page_to_markdown
 from fantoma.browser.blocks import detect_block_page
+from fantoma.browser.domains import DomainBlocked
 from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted, scan_for_injection
 from fantoma.config import FantomaConfig
 from fantoma.session import SessionManager
@@ -53,8 +54,14 @@ class Fantoma:
         timeout: int = 300,
         trace: bool = False,
         profile_dir: str = None,
+        allowed_domains: list[str] | str = None,
+        blocked_domains: list[str] | str = None,
     ):
         self.config = FantomaConfig()
+        # Hostnames the browser may / may not contact. None falls back to
+        # FANTOMA_ALLOWED_DOMAINS / FANTOMA_BLOCKED_DOMAINS. See browser.domains.
+        self._allowed_domains = allowed_domains
+        self._blocked_domains = blocked_domains
         self._profile_dir = profile_dir
         self.config.browser.headless = headless
         self.config.browser.browser_engine = browser
@@ -103,6 +110,8 @@ class Fantoma:
             trace=self.config.browser.trace,
             browser_engine=self.config.browser.browser_engine,
             profile_dir=self._profile_dir,
+            allowed_domains=self._allowed_domains,
+            blocked_domains=self._blocked_domains,
         )
         self._engine.start()
         if url:
@@ -343,9 +352,16 @@ class Fantoma:
             time.sleep(2)
             dismiss_consent(self._engine.get_page())
             wait_for_dom_stable(self._engine.get_page())
+        except DomainBlocked as e:
+            log.warning("Navigate refused: %s", e)
+            result = self._action_result(False, pre_url)
+            result["error"] = str(e)
+            return result
         except Exception as e:
             log.warning("Navigate failed: %s", e)
-            return self._action_result(False, pre_url)
+            result = self._action_result(False, pre_url)
+            result["error"] = str(e)
+            return result
         return self._action_result(True, pre_url)
 
     # ── Tabs ─────────────────────────────────────────────────
@@ -488,7 +504,11 @@ class Fantoma:
         of text that reads like instructions aimed at an AI).
         """
         if url:
-            self.navigate(url)
+            nav = self.navigate(url)
+            # Reading on after a failed navigation would describe whatever
+            # page was already open as if it were `url`.
+            if not nav.get("success"):
+                raise RuntimeError(nav.get("error") or f"Could not open {url}")
         page = self._engine.get_page()
         result = page_to_markdown(page, main_only=main_only, include_links=include_links,
                                   selector=selector, max_chars=max_chars)
