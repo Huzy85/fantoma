@@ -24,6 +24,7 @@
 - **`treeitem`, `menuitemcheckbox` and `menuitemradio` could never be acted on.** They were in neither the interactive nor the skipped role set.
 - **The server flattened JSON Schemas.** `/extract` turned `{"type": "object", "properties": ...}` into `{"type": str, "properties": str}`, so the schema form the MCP tool documented never worked.
 - **The Docker image fetched a browser for a different Camoufox release** than the one the package pins, then downgraded the package underneath it. The Dockerfile now pins the same version.
+- **A model served from another machine never had thinking turned off.** Only URLs containing `localhost` or `127.0.0.1` were treated as self-hosted, so a Qwen-style thinking model on a LAN address, a Docker service name or a Tailscale address reasoned through its whole token budget on every step. Private, loopback, link-local, CGNAT and `.local`/`.internal` hosts and bare hostnames now count as self-hosted; `FANTOMA_LLM_SELF_HOSTED=1/0` overrides.
 - **Four CAPTCHA tests failed on Python below 3.13**, where logging calls `time.time()` and exhausted a three-item mock.
 
 ### Also in 0.10.0 (landed on main after 0.9.0)

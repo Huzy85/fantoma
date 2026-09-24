@@ -1,12 +1,48 @@
 """OpenAI-compatible LLM API client."""
 
+import ipaddress
 import logging
+import os
 import re
 import time
+from urllib.parse import urlparse
 
 import httpx
 
 log = logging.getLogger("fantoma.llm")
+
+
+def is_self_hosted(base_url: str) -> bool:
+    """True for an endpoint on this machine or a private network.
+
+    Checking for "localhost" in the URL missed a model served from another
+    machine on the LAN, a Docker service name or a Tailscale address, so a
+    thinking model there spent its whole token budget reasoning and a small
+    model timed out on every step. FANTOMA_LLM_SELF_HOSTED=1/0 overrides.
+    """
+    override = os.environ.get("FANTOMA_LLM_SELF_HOSTED", "").strip().lower()
+    if override in ("1", "true", "yes"):
+        return True
+    if override in ("0", "false", "no"):
+        return False
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host in ("localhost", "host.docker.internal") or host.endswith((".local", ".internal", ".lan", ".home")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        # A bare name with no dot is a local hostname or a container name.
+        return "." not in host
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip in _CGNAT
+
+
+# Carrier-grade NAT range, used by Tailscale and similar overlays.
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
 class LLMClient:
@@ -99,14 +135,13 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        # Only add chat_template_kwargs for local/llama.cpp endpoints (Qwen thinking mode)
-        # Cloud APIs (OpenAI, Anthropic, Moonshot) reject unknown parameters
-        if "localhost" in self.base_url or "127.0.0.1" in self.base_url:
+        # Only add chat_template_kwargs for self-hosted endpoints (Qwen thinking
+        # mode). Cloud APIs (OpenAI, Anthropic, Moonshot) reject unknown
+        # parameters. response_format likewise: DeepSeek and others reject it.
+        if is_self_hosted(self.base_url):
             payload["chat_template_kwargs"] = {"enable_thinking": False}
-
-        # Only send response_format to local endpoints — cloud APIs (DeepSeek etc.) reject it
-        if response_format and ("localhost" in self.base_url or "127.0.0.1" in self.base_url):
-            payload["response_format"] = response_format
+            if response_format:
+                payload["response_format"] = response_format
 
         # Single retry on transient failures (timeout, connection error)
         for attempt in range(2):

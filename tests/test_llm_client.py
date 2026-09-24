@@ -104,3 +104,34 @@ class TestStripFences:
 
     def test_no_fence_passthrough(self):
         assert LLMClient._strip_code_fences("plain text") == "plain text"
+
+
+class TestSelfHostedDetection:
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize("url", [
+        "http://localhost:8080/v1", "http://127.0.0.1:11434/v1", "http://[::1]:8000/v1",
+        "http://192.168.1.20:8080/v1", "http://10.0.0.5:8000/v1", "http://172.20.0.3:8080/v1",
+        "http://100.101.102.103:8080/v1", "http://llm:8080/v1", "http://gpu-box.local:8080/v1",
+        "http://host.docker.internal:8081/v1",
+    ])
+    def test_self_hosted(self, url, monkeypatch):
+        from fantoma.llm.client import is_self_hosted
+        monkeypatch.delenv("FANTOMA_LLM_SELF_HOSTED", raising=False)
+        assert is_self_hosted(url)
+
+    @_pytest.mark.parametrize("url", [
+        "https://api.openai.com/v1", "https://openrouter.ai/api/v1",
+        "https://generativelanguage.googleapis.com/v1beta/openai/", "https://8.8.8.8/v1",
+    ])
+    def test_cloud(self, url, monkeypatch):
+        from fantoma.llm.client import is_self_hosted
+        monkeypatch.delenv("FANTOMA_LLM_SELF_HOSTED", raising=False)
+        assert not is_self_hosted(url)
+
+    def test_override(self, monkeypatch):
+        from fantoma.llm.client import is_self_hosted
+        monkeypatch.setenv("FANTOMA_LLM_SELF_HOSTED", "1")
+        assert is_self_hosted("https://my-vllm.example.com/v1")
+        monkeypatch.setenv("FANTOMA_LLM_SELF_HOSTED", "0")
+        assert not is_self_hosted("http://localhost:8080/v1")
