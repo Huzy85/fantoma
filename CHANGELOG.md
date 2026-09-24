@@ -1,8 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-09-24
+
+### Added
+
+- **Read any page as clean Markdown, no LLM.** `fantoma read URL` on the command line, `Fantoma.read()`, `POST /read` and the `fantoma_read` MCP tool return the page as Markdown (headings, nested lists, tables, code blocks, quotes, links, open shadow DOM, a dropdown's current choice) plus every link on it, absolute and de-duplicated. `main_only` (default on) drops navigation, header, footer, aside and cookie banners; `selector` narrows to one element; `max_chars` cuts on a paragraph boundary.
+- **The MCP server runs its own browser.** With `FANTOMA_MCP_BACKENDS` unset, `fantoma-mcp` drives a browser in-process, so an MCP client needs one command and no Docker. `FANTOMA_LLM_URL`, `FANTOMA_LLM_MODEL` and `FANTOMA_LLM_API_KEY` configure the model for `fantoma_run` and `fantoma_extract`; `fantoma_read` and `fantoma_login` need none. In this mode read, extract and login share one session, so a login carries over. Setting `FANTOMA_MCP_BACKENDS` keeps the Docker backends as before.
+- **Prompt-injection defences** (`fantoma/safety.py`). Text a person cannot see never reaches a model (`display:none`, `visibility:hidden`, `opacity:0`, `aria-hidden`, `[hidden]`, zero font size, clipped or far off-screen boxes, zero-width and bidi characters). Page text sent to the navigator, planner, answer extraction and `extract()` is fenced in `<untrusted_web_content>` with a random id the page cannot forge, and each system prompt says fenced text is data. `read()` returns `injection_warnings`: excerpts that read like instructions aimed at an AI.
+- **Allowed and blocked domains**, enforced by the browser on every request, not only navigation: `Fantoma(allowed_domains=[...], blocked_domains=[...])` or `FANTOMA_ALLOWED_DOMAINS` / `FANTOMA_BLOCKED_DOMAINS`. A page that talks the agent into loading a URL on another host sends nothing.
+- **Block-page detection.** `read()` reports `blocked` as `bot_challenge`, `captcha`, `rate_limited`, `access_denied`, `http_error`, `login_wall` or `empty` instead of returning an interstitial as if it were the page.
+- **JSON Schema extraction.** `extract()` and `fantoma_extract` accept a real JSON Schema; an object schema returns an object. The older flat `{field: type}` map still returns a list.
 
 ### Fixed
+
+- **`pip install "fantoma[mcp]"` installed an MCP SDK the server could not import.** MCP 2.x renamed `FastMCP`; the extra is now pinned below 2.
+- **Native dropdowns never worked for an agent (0/3 on the dropdown flow).** Small models click the `<option>` they want, which does nothing inside a closed native `<select>` in Firefox. Such a click now performs the select. `select()` matches label, then value, then case-insensitively, and opens scripted ARIA dropdowns. A dropdown now shows its current choice, its options are listed directly beneath it, and `[selected]` is no longer lost when an option is also `[disabled]`.
+- **A successful select was reported to the model as "No visible changes".** The change line compared only the first state flag and never tracked `[selected]`, and repeated or unnamed controls shared one key, so a change to the second of two checkboxes was invisible too.
+- **Every element after an occluded one resolved to the wrong control.** Occlusion filtering ran after the list was numbered, shifting later elements down one slot, so `[5]` clicked what was shown as `[6]`. It now runs before numbering.
+- **Name lookup was a substring match.** `Add` also matched `Add to cart`, so the position among same-named controls was counted over the wrong set. Exact match is tried first.
+- **Page furniture outranked the task's controls.** A "Fork me on GitHub" ribbon held slot `[0]` on a checkbox page; a cheap model clicked it and left. Links to other sites and controls in the header, footer or navigation now lose a point unless they match the task, and ranking applies whenever the list is capped, not only when a task is given.
+- **Read mode dropped almost all page text.** Unquoted snapshot lines such as `- paragraph: words` matched no pattern, so paragraphs, list items, table rows and footers vanished and content mode returned headings and links only.
+- **`treeitem`, `menuitemcheckbox` and `menuitemradio` could never be acted on.** They were in neither the interactive nor the skipped role set.
+- **The server flattened JSON Schemas.** `/extract` turned `{"type": "object", "properties": ...}` into `{"type": str, "properties": str}`, so the schema form the MCP tool documented never worked.
+- **The Docker image fetched a browser for a different Camoufox release** than the one the package pins, then downgraded the package underneath it. The Dockerfile now pins the same version.
+- **Four CAPTCHA tests failed on Python below 3.13**, where logging calls `time.time()` and exhausted a three-item mock.
+
+### Also in 0.10.0 (landed on main after 0.9.0)
+
+#### Fixed
 
 - **Unnamed form controls never reached the model.** The element list required a non-empty accessible name, so a bare `- checkbox` in the ARIA snapshot was discarded. On a page whose only task was "tick the first checkbox", the two elements offered were a GitHub ribbon and a footer link: the task was not hard, it was impossible, on every model. Form-control roles (checkbox, radio, textbox, combobox, searchbox, switch, spinbutton, slider) are now listed when unnamed and labelled from the adjacent text node, rendered as `(in: ...)` because per W3C AccName a neighbour does not contribute to an accessible name. Link, button, menuitem, option and tab are deliberately still excluded when unnamed — an unnamed one of those is usually an icon and admitting them floods the list.
 - **Unnamed elements with children were dropped entirely.** The snapshot appends `:` to any element that has children, and the no-name pattern anchored to end-of-string, so `- combobox:` matched nothing. Every unlabelled `<select>` on the web was invisible; on the dropdown page the model was shown the three options but never the control to select on.
@@ -10,7 +35,7 @@
 - **Only the first `[...]` group on a line was kept.** `option "Please select an option" [disabled] [selected]` retained `disabled` and silently discarded `selected`. Selection state is the entire feedback signal for "did my choice take effect", so a successful select was indistinguishable from a no-op and agents re-tried choices they had already made. All attribute groups are now collected, and `[selected]` is rendered.
 - **Unnamed elements lost their state.** Attributes on a no-name line were returned as a raw string rather than parsed, so `parsed.get("checked")` was always falsey and an unnamed checkbox rendered without `[checked]` — which is the one fact "tick it if it is not already ticked" depends on.
 
-### Changed
+#### Changed
 
 - **`camoufox` is pinned to an exact version.** It was `>=0.4`, so a routine image rebuild moved 0.4.11 to 0.5.4 with nobody choosing it. The one dependency the anti-detection behaviour rests on should not change silently; bump it deliberately and re-run the protected-site checks when you do.
 - **README claims now match measurement.** Reading pages works on a small local model — 30/31 real sites for a 35B local MoE, matching the best cheap API model and beating most. Multi-step interaction does not: the same model completed 1 of 6 login and form flows where a frontier model completed all 6. The distinction is now stated up front rather than implied away.
