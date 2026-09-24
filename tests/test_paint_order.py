@@ -182,28 +182,29 @@ class TestFilterOccludedRemovesHidden:
 
 class TestExtractCallsFilter:
 
-    def test_extract_applies_filter(self):
-        """extract() must call _filter_occluded and use its result."""
+    def test_extract_applies_filter_before_numbering(self):
+        """Occluded elements are dropped BEFORE numbering, so [N] still maps to
+        the element shown as [N]. Filtering afterwards shifted every later
+        element down a slot and a click on [1] hit what was rendered as [2]."""
         extractor = AccessibilityExtractor()
-
-        aria_output = (
-            'Page: Test\nURL: https://example.com\n\n'
-            'Elements (2 of 2):\n'
-            '[0] button "Visible"\n'
-            '[1] button "Hidden"\n'
-        )
 
         page = MagicMock()
         page.title.return_value = "Test"
         page.url = "https://example.com"
         page.locator.return_value.aria_snapshot.return_value = (
-            '- button "Visible"\n- button "Hidden"'
+            '- button "Hidden"\n- button "Visible"\n- button "Also visible"'
         )
 
-        filtered = [{"index": 0, "role": "button", "name": "Visible"}]
+        def fake_filter(_page, els):
+            return [el for el in els if el["name"] != "Hidden"]
 
-        with patch.object(extractor, "_filter_occluded", return_value=filtered) as mock_filter:
-            with patch("fantoma.dom.accessibility.extract_aria", return_value=aria_output):
-                extractor.extract(page)
+        with patch.object(extractor, "_filter_occluded", side_effect=fake_filter) as mock_filter:
+            with patch("fantoma.dom.accessibility.get_scroll_info", return_value=None), \
+                 patch("fantoma.dom.frames.collect_all_frame_elements", return_value=[]):
+                out = extractor.extract(page)
             mock_filter.assert_called_once()
-            assert extractor._last_interactive == filtered
+
+        assert "Hidden" not in out
+        assert '[0] button "Visible"' in out
+        assert '[1] button "Also visible"' in out
+        assert [el["name"] for el in extractor._last_interactive] == ["Visible", "Also visible"]

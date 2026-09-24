@@ -236,10 +236,25 @@ class TestFantomaActions:
 
         with patch("fantoma.browser_tool.detect_errors", return_value=[]):
             with patch("fantoma.browser_tool.wait_for_dom_stable"):
-                result = f.select(1, "Option A")
+                with patch("fantoma.browser_tool.select_dropdown_option",
+                           return_value=True) as sel:
+                    result = f.select(1, "Option A")
 
         assert result["success"] is True
-        mock_element.select_option.assert_called_once_with(label="Option A")
+        sel.assert_called_once_with(mock_element, "Option A")
+
+    def test_select_fails_when_no_option_matches(self):
+        from fantoma.browser_tool import Fantoma
+        f, page = self._make_fantoma()
+        f._dom.get_element_by_index.return_value = MagicMock()
+
+        with patch("fantoma.browser_tool.detect_errors", return_value=[]), \
+             patch("fantoma.browser_tool.wait_for_dom_stable"), \
+             patch("fantoma.browser_tool.select_dropdown_option", return_value=False), \
+             patch.object(Fantoma, "_select_custom_dropdown", return_value=False):
+            result = f.select(1, "Nope")
+
+        assert result["success"] is False
 
 
 class TestFantomaTabs:

@@ -7,7 +7,9 @@ import logging
 import time
 from typing import Any
 
-from fantoma.browser.actions import click_element, type_into, scroll_page
+from fantoma.browser.actions import (
+    click_element, type_into, scroll_page, native_option_target, select_dropdown_option,
+)
 from fantoma.browser.engine import BrowserEngine
 from fantoma.browser.consent import dismiss_consent
 from fantoma.browser.form_login import login as form_login, _looks_logged_in
@@ -217,7 +219,14 @@ class Fantoma:
             return self._action_result(False, pre_url)
         try:
             inject_observer(page)
-            click_element(self._engine, element)
+            option = native_option_target(element)
+            if option is not None:
+                # A click on an option in a native dropdown is a no-op; the
+                # intent is plainly "choose this one", so do that instead.
+                if not select_dropdown_option(element, option["label"] or option["value"]):
+                    return self._action_result(False, pre_url)
+            else:
+                click_element(self._engine, element)
             wait_for_dom_stable(page)
         except Exception as e:
             log.warning("Click [%d] failed: %s", element_id, e)
@@ -251,12 +260,43 @@ class Fantoma:
             return self._action_result(False, pre_url)
         try:
             inject_observer(page)
-            element.select_option(label=value)
+            if not select_dropdown_option(element, value) \
+                    and not self._select_custom_dropdown(page, element, value):
+                log.warning("Select [%d]: no option matching %r", element_id, value)
+                return self._action_result(False, pre_url)
             wait_for_dom_stable(page)
         except Exception as e:
             log.warning("Select [%d] failed: %s", element_id, e)
             return self._action_result(False, pre_url)
         return self._action_result(True, pre_url)
+
+    def _select_custom_dropdown(self, page, element, value: str) -> bool:
+        """Open a scripted (non-<select>) dropdown and pick an option by name.
+
+        Many sites build dropdowns from ARIA combobox/listbox markup, where
+        select_option() cannot work. Opening it and activating the matching
+        option is what a keyboard user does.
+        """
+        try:
+            # Only something that opens a list of options. Clicking whatever
+            # was passed would follow a link the model mis-numbered.
+            is_dropdown = element.evaluate("""el => {
+                const r = (el.getAttribute('role') || '').toLowerCase();
+                return r === 'combobox' || r === 'listbox'
+                    || el.hasAttribute('aria-haspopup') || el.hasAttribute('aria-expanded');
+            }""")
+            if not is_dropdown:
+                return False
+            click_element(self._engine, element)
+            wait_for_dom_stable(page)
+            for exact in (True, False):
+                option = page.get_by_role("option", name=value, exact=exact)
+                if option.count() > 0:
+                    click_element(self._engine, option.first.element_handle())
+                    return True
+        except Exception as e:
+            log.debug("custom dropdown select failed: %s", e)
+        return False
 
     def scroll(self, direction: str = "down") -> dict:
         """Scroll the page. Direction: 'up', 'down', 'left', 'right'."""
