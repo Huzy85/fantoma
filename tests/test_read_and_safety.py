@@ -543,3 +543,21 @@ class TestCustomDropdownInRealBrowser:
             assert f.select(idx, "Purple")["success"] is False
         finally:
             page.close()
+
+
+class TestBlockPagesSeenLive:
+    """Block pages seen from a CI address that the first rules missed."""
+
+    @pytest.mark.parametrize("title,text,reason", [
+        ("Blocked", "You've been blocked by network security. To continue, log in "
+                    "to your account or use your developer token.", "bot_challenge"),
+        ("Blocked - Indeed.com", "Request blocked. We have detected unusual activity.", "bot_challenge"),
+        ("Error Page | eBay", "Pardon the interruption, something went wrong on our end.", "access_denied"),
+        ("Amazon.com", "Click the button below to continue shopping. Continue shopping", "bot_challenge"),
+    ])
+    def test_recognised(self, title, text, reason):
+        assert detect_block_page(title, text) == reason
+
+    def test_a_page_about_being_blocked_is_not_a_block_page(self):
+        text = "How to unblock a drain. " * 100
+        assert detect_block_page("Blocked drains: a guide", text) == ""

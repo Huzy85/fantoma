@@ -1,0 +1,131 @@
+name: Real-world check
+
+# Two questions the unit tests cannot answer:
+#   1. Does the stealth browser get real content from bot-protected sites?
+#   2. Can a small local model (served by Ollama, as a user would run it)
+#      drive Fantoma through real tasks? Graded on the live page.
+# Runs on demand, weekly, and on pushes to claude/* branches. Results are
+# reported, not enforced: bot protection depends on the runner's network,
+# and small-model runs are noisy.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"
+  push:
+    branches: ["claude/**"]
+
+jobs:
+  protected-sites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [camoufox, chromium]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -e ".[chromium]"
+          python -m playwright install-deps firefox chromium
+          if [ "${{ matrix.browser }}" = "camoufox" ]; then python -m camoufox fetch; else python -m patchright install chromium; fi
+      - name: Read bot-protected sites
+        run: python tools/live_read_check.py --only protected --report-only --browser ${{ matrix.browser }} --json protected-${{ matrix.browser }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: protected-${{ matrix.browser }}
+          path: protected-${{ matrix.browser }}.json
+
+  plan:
+    # Which models and tasks to run. Everything by default; a push whose
+    # message contains e.g. "[agent-check models=qwen2.5:14b tasks=herokuapp-inputs]"
+    # runs just that subset.
+    if: github.event_name != 'push' || contains(github.event.head_commit.message, '[agent-check')
+    runs-on: ubuntu-latest
+    outputs:
+      models: ${{ steps.p.outputs.models }}
+      tasks: ${{ steps.p.outputs.tasks }}
+    steps:
+      - id: p
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, re
+          models = ["qwen2.5:7b", "qwen2.5:14b"]
+          tasks = ["herokuapp-checkboxes", "herokuapp-dropdown", "herokuapp-inputs",
+                   "herokuapp-login", "saucedemo-login", "saucedemo-add-to-cart",
+                   "books-read-price", "books-navigate-category", "wikipedia-read",
+                   "duckduckgo-search", "etsy-search"]
+          # The last tag wins, so a message that first describes the syntax
+          # still runs what its final tag asks for. Placeholders like "..."
+          # are ignored.
+          found = re.findall(r"\[agent-check([^\]]*)\]", os.environ.get("MSG") or "")
+          if found:
+              for key, val in re.findall(r"(models|tasks)=(\S+)", found[-1]):
+                  picked = [v for v in val.split(",") if re.fullmatch(r"[\w][\w.:/-]*", v)]
+                  if key == "models":
+                      models = picked or models
+                  else:
+                      tasks = [t for t in picked if t in tasks] or tasks
+          print("models=" + json.dumps(models))
+          print("tasks=" + json.dumps(tasks))
+          PY
+
+  small-model-agent:
+    # Slow (CPU inference, up to hours), so it runs on demand and weekly,
+    # not on every push.
+    needs: plan
+    # One machine per (model, task) so every run finishes at about the same
+    # time. GitHub's free machines have no GPU, so this is far slower than a
+    # 12GB card at home; timeouts are sized for CPU inference.
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(needs.plan.outputs.models) }}
+        task: ${{ fromJSON(needs.plan.outputs.tasks) }}
+    env:
+      FANTOMA_LLM_TIMEOUT: "900"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Fantoma
+        run: |
+          pip install -e .
+          python -m playwright install-deps firefox
+          # Many runners fetching at once can hit download limits; retry, and
+          # fail here rather than report a model failure that never ran.
+          for i in 1 2 3 4 5; do
+            python -m camoufox fetch && python -c "from camoufox.pkgman import launch_path; launch_path()" && break
+            sleep $((i * 20))
+          done
+          python -c "from camoufox.pkgman import launch_path; launch_path()"
+      - name: Start Ollama with the model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          sudo systemctl stop ollama 2>/dev/null || true
+          OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > ollama.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:11434/api/version && break; sleep 1; done
+          ollama pull "${{ matrix.model }}"
+      - name: Small model drives Fantoma
+        run: >
+          python tools/live_agent_check.py --llm http://localhost:11434/v1
+          --model "${{ matrix.model }}" --only "${{ matrix.task }}"
+          --max-steps 12 --timeout 14400 --json agent.json
+      - name: Name the result file
+        if: always()
+        run: echo "ARTIFACT=agent-$(echo '${{ matrix.model }}' | tr ':.' '--')-${{ matrix.task }}" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: agent.json

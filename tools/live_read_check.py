@@ -11,9 +11,9 @@ Two kinds of check:
 * read   — open a page, read it as Markdown, and require text that only the
            correct page contains. Also require the page not be reported as
            blocked.
-* action — tick a checkbox and choose a dropdown option on public test
-           pages made for automation practice, then read the state back
-           from the live page.
+* action — tick a checkbox, choose a dropdown option, type into a number
+           field and log in, on public test pages made for automation
+           practice, then read the state back from the live page.
 
     python tools/live_read_check.py                 # Camoufox
     python tools/live_read_check.py --browser chromium
@@ -43,8 +43,33 @@ READS = [
     ("https://the-internet.herokuapp.com/tables", "jsmith@gmail.com"),
 ]
 
+# Public pages behind well-known bot protection. A pass means the real page
+# came back, not a challenge or block page. Results depend on the network the
+# check runs from: cloud and CI addresses are refused by some of these sites
+# whatever the browser, so a failure there is not proof a home connection
+# would fail too.
+PROTECTED = [
+    "https://www.etsy.com/",
+    "https://uk.indeed.com/",
+    "https://old.reddit.com/",
+    "https://duckduckgo.com/",
+    "https://www.cloudflare.com/",
+    "https://www.amazon.com/",
+    "https://www.ebay.com/",
+    "https://www.linkedin.com/",
+    "https://www.zillow.com/",
+    "https://www.walmart.com/",
+]
+
+PROTECTED_SEARCHES = [
+    ("https://duckduckgo.com/", "fantoma browser agent", "q=fantoma"),
+    ("https://www.etsy.com/", "wooden spoon", "q=wooden"),
+]
+
 CHECKBOXES = "https://the-internet.herokuapp.com/checkboxes"
 DROPDOWN = "https://the-internet.herokuapp.com/dropdown"
+INPUTS = "https://the-internet.herokuapp.com/inputs"
+SAUCE = "https://www.saucedemo.com/"
 
 
 def _index_of(browser, predicate):
@@ -70,6 +95,41 @@ def check_reads(browser) -> list[dict]:
         except Exception as e:
             ok, why = False, f"error: {e}"
         results.append({"check": f"read {url}", "ok": ok, "why": why,
+                        "secs": round(time.time() - started, 1)})
+    return results
+
+
+def check_protected(browser) -> list[dict]:
+    results = []
+    for url in PROTECTED:
+        started = time.time()
+        try:
+            page = browser.read(url, max_chars=4000)
+            chars = len(page["markdown"])
+            ok = not page["blocked"] and chars >= 300
+            why = (f"{chars} chars, title {page['title'][:50]!r}" if ok else
+                   f"blocked={page['blocked']!r}, {chars} chars, title {page['title'][:50]!r}")
+        except Exception as e:
+            ok, why = False, f"error: {str(e)[:120]}"
+        results.append({"check": f"protected {url}", "ok": ok, "why": why,
+                        "secs": round(time.time() - started, 1)})
+
+    # Acting, not just reading: search on protected sites with no model, the
+    # way the agent's fast path does for a user's "Search for '...'".
+    from fantoma.fast_path import run_fast_path
+    for url, query, expect in PROTECTED_SEARCHES:
+        started = time.time()
+        try:
+            nav = browser.navigate(url)
+            if not nav.get("success"):
+                raise RuntimeError(nav.get("error") or "could not open")
+            r = run_fast_path(f"Search for '{query}'", browser)
+            where = browser._engine.get_page().url
+            ok = r.complete and expect in where
+            why = f"at {where[:90]}" if ok else (r.failed or f"not handled; at {where[:90]}")
+        except Exception as e:
+            ok, why = False, f"error: {str(e)[:120]}"
+        results.append({"check": f"search {url}", "ok": ok, "why": why,
                         "secs": round(time.time() - started, 1)})
     return results
 
@@ -114,13 +174,55 @@ def check_actions(browser) -> list[dict]:
         ok, why = False, f"error: {e}"
     results.append({"check": "choose a dropdown option by clicking it", "ok": ok, "why": why,
                     "secs": round(time.time() - started, 1)})
+
+    # Typing into a number field, through the element list.
+    started = time.time()
+    try:
+        browser.navigate(INPUTS)
+        page = browser._engine.get_page()
+        idx = _index_of(browser, lambda el: el["role"] in ("spinbutton", "textbox"))
+        if idx is None:
+            raise RuntimeError("no input offered to the model")
+        browser.type_text(idx, "42")
+        value = page.evaluate("() => document.querySelector('input[type=number]').value")
+        ok = value == "42"
+        why = "" if ok else f"input value={value!r}"
+    except Exception as e:
+        ok, why = False, f"error: {e}"
+    results.append({"check": "type into a number field", "ok": ok, "why": why,
+                    "secs": round(time.time() - started, 1)})
+
+    # A React login form: the fields only count if the app sees the input.
+    started = time.time()
+    try:
+        browser.navigate(SAUCE)
+        page = browser._engine.get_page()
+        for field, value in (("user", "standard_user"), ("pass", "secret_sauce")):
+            idx = _index_of(browser, lambda el, f=field: el["role"] == "textbox"
+                            and f in el["name"].lower())
+            if idx is None:
+                raise RuntimeError(f"no {field} field offered to the model")
+            browser.type_text(idx, value)
+        idx = _index_of(browser, lambda el: "login" in el["name"].lower().replace(" ", ""))
+        if idx is None:
+            raise RuntimeError("no login button offered to the model")
+        browser.click(idx)
+        page.wait_for_timeout(1500)
+        ok = "inventory" in page.url
+        why = "" if ok else f"still at {page.url}"
+    except Exception as e:
+        ok, why = False, f"error: {e}"
+    results.append({"check": "log in on a React form", "ok": ok, "why": why,
+                    "secs": round(time.time() - started, 1)})
     return results
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--browser", default="camoufox", choices=["camoufox", "chromium"])
-    parser.add_argument("--only", choices=["read", "action"])
+    parser.add_argument("--only", choices=["read", "action", "protected"])
+    parser.add_argument("--report-only", action="store_true",
+                        help="always exit 0 (for checks whose result depends on the network)")
     parser.add_argument("--json", help="also write results to this file")
     args = parser.parse_args()
 
@@ -134,6 +236,8 @@ def main() -> int:
             results += check_reads(browser)
         if args.only in (None, "action"):
             results += check_actions(browser)
+        if args.only == "protected":
+            results += check_protected(browser)
     finally:
         browser.stop()
 
@@ -145,7 +249,7 @@ def main() -> int:
     if args.json:
         with open(args.json, "w") as f:
             json.dump({"browser": args.browser, "results": results}, f, indent=2)
-    return failed
+    return 0 if args.report_only else failed
 
 
 if __name__ == "__main__":

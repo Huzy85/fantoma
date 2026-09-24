@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0 — 2026-09-24
+
+### Added
+
+- **Common steps are done in code, before any model is asked.** Log in, search, pick a dropdown option, type into a field, tick a checkbox, add a named item to the cart and click a named link run without a model when the page leaves no doubt, and the page is checked afterwards. The model gets only what is left and is told what is already done. Measured on GitHub's machines with qwen2.5 7B and 14B: every task in the live check that fits these steps now passes with zero model steps, including searches on DuckDuckGo and Etsy. `fast_path=False` or `FANTOMA_FAST_PATH=0` turns it off.
+- **Anti-Captcha and CapMonster**, alongside CapSolver and 2Captcha. `FANTOMA_CAPTCHA_API` / `FANTOMA_CAPTCHA_KEY` configure a service once for the library, the MCP server and the HTTP server.
+
+### Fixed
+
+- A model saying it is done is checked against the page. Before, 7B and 14B models reported success on an untouched dropdown, an empty box and a rejected login. When the page disagrees the model is told why.
+- A visible password box after a login attempt now means the login failed (a failed saucedemo login stays on `/`, which was read as success). A select task is judged by what the dropdown holds, not by the option being listed. A click task is no longer failed because the clicked button went away.
+- Labelled fields show what was typed; password fields show dots, never their contents.
+- 2Captcha was sent CapSolver's task-type names; each service now gets its own. A solver error stops polling instead of waiting out the timeout.
+
 ## 0.10.0 — 2026-09-24
 
 ### Added

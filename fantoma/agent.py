@@ -20,6 +20,7 @@ from fantoma.planner import Planner, Subtask, Checkpoint
 from fantoma.navigator import Navigator, NavigatorResult
 from fantoma.state_tracker import StateTracker
 from fantoma.task_spec import parse_task, verify_outcome
+from fantoma.fast_path import run_fast_path
 from fantoma.validator import validate_answer
 
 log = logging.getLogger("fantoma")
@@ -169,6 +170,7 @@ class Agent:
         sensitive_data: dict = None,
         action_cache: bool = True,
         validate: bool = None,
+        fast_path: bool = True,
         **kwargs,
     ):
         self.fantoma = Fantoma(llm_url=llm_url, api_key=api_key, model=model, **kwargs)
@@ -193,6 +195,11 @@ class Agent:
         # Answer validator — opt-in. Env: FANTOMA_VALIDATE=1 enables globally.
         env_validate = os.environ.get("FANTOMA_VALIDATE", "0").lower() in ("1", "true", "yes")
         self._validate = validate if validate is not None else env_validate
+        # Steps code can do reliably (log in, pick an option, type into the
+        # one field, tick a box, add a named item) run before the model is
+        # asked. Env: FANTOMA_FAST_PATH=0 disables.
+        self._fast_path = fast_path and os.environ.get(
+            "FANTOMA_FAST_PATH", "1").lower() not in ("0", "false", "no")
 
     def _capture_final_state(self, result: "AgentResult") -> "AgentResult":
         """Record where the browser ended up, before run() tears it down.
@@ -398,9 +405,30 @@ class Agent:
                 log.info("Replay failed (page changed) — invalidating cache, full run")
                 cache.invalidate(start_domain, task)
 
+            # ── Fast path: the steps code can do without the model ──
+            # Measured on 7B and 14B models: the same tasks they failed while
+            # claiming success, Fantoma completes on its own. The model only
+            # gets what is left, told what is already done.
+            llm_task = task
+            if getattr(self, "_fast_path", False):
+                fast = run_fast_path(task, self.fantoma, self._sensitive_data)
+                all_steps.extend(fast.steps)
+                total_steps += len(fast.steps)
+                if fast.complete:
+                    return self._apply_validator(task, AgentResult(
+                        success=True,
+                        data="Done: " + "; ".join(fast.done) + ".",
+                        steps_taken=total_steps,
+                        steps_detail=all_steps,
+                        escalations=0,
+                    ))
+                if fast.done:
+                    llm_task = (f"{fast.remainder}\n(Already done, do not repeat: "
+                                f"{'; '.join(fast.done)}.)")
+
             # ── Phase 1: Flat reactive loop ──────────────────────────
             flat_subtask = Subtask(
-                instruction=task,
+                instruction=llm_task,
                 mode="find",
                 done_when="Task is complete",
             )
@@ -415,6 +443,7 @@ class Agent:
                 sensitive_data=self._sensitive_data,
                 deadline=deadline,
                 target=self._spec.target,
+                spec=self._spec,
             )
 
             all_steps.extend(phase1_result.steps_detail)
@@ -498,6 +527,7 @@ class Agent:
                     sensitive_data=self._sensitive_data,
                     deadline=deadline,
                     target=self._spec.target,
+                    spec=self._spec,
                 )
 
                 all_steps.extend(result.steps_detail)

@@ -16,7 +16,7 @@ services:
       - CLOUD_LLM_KEY=${OPENROUTER_KEY}
       - CLOUD_LLM_MODEL=qwen/qwen3.6-plus
       # CAPTCHA solving
-      - CAPTCHA_API=capsolver
+      - CAPTCHA_API=${CAPTCHA_SERVICE:-capsolver}
       - CAPTCHA_KEY=${CAPSOLVER_KEY}
       # Security — set these on any shared network. Without FANTOMA_API_KEY the
       # HTTP API is unauthenticated; without FANTOMA_VNC_PASSWORD noVNC is open.

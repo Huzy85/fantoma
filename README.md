@@ -9,7 +9,7 @@
 
 No vision model, no pixel coordinates, no mouse telemetry. A step costs about 500 tokens instead of the 1,000-5,000 a screenshot costs, which is what makes a small model on your own hardware practical.
 
-**What that buys you, and what it does not.** Reading pages works on a small local model. In a 31-site run across 9 models, a 35B local MoE scored 30/31, matching the best cheap API models and beating most of them. That run included sites that block conventional scrapers. Multi-step *interaction* is a different story: the same local model completed 1 of 6 login and form flows, while a frontier API model completed all of them. So extraction on your own hardware is real, and driving a checkout on a 7B model is not yet. Pick the model to match the job. Several jobs need no model at all:
+**What that buys you, and what it does not.** Reading pages works on a small local model. In a 31-site run across 9 models, a 35B local MoE scored 30/31, matching the best cheap API models and beating most of them. That run included sites that block conventional scrapers. Multi-step *interaction* is a different story: the same local model completed 1 of 6 login and form flows, while a frontier API model completed all of them. So extraction on your own hardware is real. For interaction, Fantoma now does the common steps itself (log in, search, pick an option, type into a field, tick a box, add a named item to the cart) and checks the page afterwards, so the model is only asked about what code cannot settle. On GitHub's machines with qwen2.5 7B and 14B, those steps pass with no model action at all ([details](#small-models-on-real-sites)). Open-ended multi-page flows still need a stronger model. Several jobs need no model at all:
 
 ```bash
 pip install fantoma
@@ -52,6 +52,7 @@ result = agent.run("Go to github.com/trending and tell me the top repo")
 | Stealth browsers | [Camoufox](https://github.com/daijro/camoufox) (Firefox) by default, [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) (Chromium) optional |
 | Any AI app can use it | MCP server, one command, no Docker |
 | Logs in without a model | Form fields matched by code; sessions saved encrypted |
+| Common steps without a model | Log in, search, select, type, tick, add to cart: done in code and checked on the page; a model's "done" is checked too |
 | Built for small models | ~500 tokens a step, repeated tasks replayed with no model calls |
 | Guarded against page-borne instructions | Hidden-text removal, fenced page text, domain allow/block lists |
 
@@ -161,7 +162,7 @@ pool.report_failure("429")   # too many strikes and it moves to a fresh IP
 
 Rotating on every request is the wrong default for residential proxies: you throw away cookies, logins, and any anti-bot clearance tied to that IP. `ProxyPool` is sticky and rotates on failure.
 
-**CAPTCHA solvers.** `APICaptchaSolver` reads from a `PROVIDERS` table, so adding one is a dict entry with its two endpoints. CapSolver and 2Captcha ship configured. There are also proof-of-work solvers (ALTCHA, Friendly Captcha — free, no service needed), a human-in-the-loop solver, and a Telegram solver.
+**CAPTCHA solvers.** CapSolver, 2Captcha, Anti-Captcha and CapMonster ship configured for reCAPTCHA v2/v3, hCaptcha and Cloudflare Turnstile. Pass `captcha_api="capmonster", captcha_key="..."`, or set `FANTOMA_CAPTCHA_API` and `FANTOMA_CAPTCHA_KEY` once and every entry point (library, MCP, HTTP server) uses them. `APICaptchaSolver` reads from a `PROVIDERS` table; adding a service is one entry with its two endpoints and its task-type names, which differ between services. There are also proof-of-work solvers (ALTCHA, Friendly Captcha — free, no service needed), a human-in-the-loop solver, and a Telegram solver.
 
 **The coupling worth knowing about.** A CAPTCHA solution is bound to the exit IP it was solved through — clearance obtained on one IP is worthless from another. So a solver and a proxy pool are not independent plugins. Solve through the same proxy you then browse through, and treat "rotate the IP" and "discard the clearance" as a single action. `ProxyPool(on_rotate=...)` exists for that: register a callback that clears whatever was bound to the retired IP.
 
@@ -579,7 +580,25 @@ Leaderboard scores are over the full WebVoyager suite, not the same 5-task pilot
 
 ## Test Results
 
-**Continuous checks.** Every push runs 800+ unit tests, including real-browser cases, on GitHub Actions. A live check (`tools/live_read_check.py`) runs on every push and weekly with both Camoufox and Chromium: it reads public pages and requires text only the correct page contains, then ticks a checkbox and chooses a dropdown option on public practice pages, reading the result back from the live page. It uses no LLM, so a failure is Fantoma's.
+**Continuous checks.** Every push runs 860+ unit tests, including real-browser cases, on GitHub Actions. A live check (`tools/live_read_check.py`) runs on every push and weekly with both Camoufox and Chromium: it reads public pages and requires text only the correct page contains, then ticks a checkbox and chooses a dropdown option on public practice pages, reading the result back from the live page. It uses no LLM, so a failure is Fantoma's.
+
+### Small models on real sites
+
+`tools/live_agent_check.py` has a model drive the Agent through real tasks on public sites and grades each run on the live page afterwards (is the box ticked, is the item in the cart), never on the agent's own report. Run on GitHub's CPU-only machines with Ollama, September 2026:
+
+| Task | qwen2.5:7b | qwen2.5:14b | Model actions |
+|---|---|---|---|
+| Tick a checkbox, pick a dropdown option, type into a field | pass | pass | 0 |
+| Log in (two sites), log in then add a named item to the cart | pass | pass | 0 |
+| Search DuckDuckGo, search Etsy (both behind bot protection) | pass | pass | 0 |
+| Read a book's price (Fantoma opens the book's page first) | pass | pass | 3-9 |
+| Answer a question from a Wikipedia article | pass | pass | 10-15 |
+| Open the 'Travel' category, name its first book | **fail** | pass | 10-18 |
+| **Total** | **10 of 11** | **11 of 11** | |
+
+The 7B failure is worth knowing: Fantoma opened the right category, then the model wandered back to the home page and answered with the first book there, while reporting success. Reading questions that need the model to stay on a page are where a 7B model is still weakest; a 14B model handled them. Runs took minutes each on CPU; a 12GB GPU is far faster.
+
+Before the fast path, the same 7B model passed 4 of 8 and reported success on several tasks it had failed. These tasks are also the ones the fast path was built against, so treat the table as proof the mechanism works, not as a benchmark of unseen sites. Protected-site reads from a data-centre address (the CI runner): Camoufox 7 of 10, Chromium 5 of 10; a home connection is a different, usually easier, case.
 
 **Earlier runs (dated; detection moves, so treat these as snapshots).** 25 real sites with 6 LLMs; fingerprint checks passed on bot.sannysoft.com and nowsecure.nl; no detection events recorded across 2,241 stress tests (March 2026).
 
@@ -731,6 +750,8 @@ print(result.validated)                      # True/False/None (None = not valid
 | `FANTOMA_DOMAIN_STRICT` | everywhere | `0` keeps the browser's own networking (no redirect checks) |
 | `FANTOMA_LLM_SELF_HOSTED` | LLM client | `1`/`0` overrides self-hosted detection |
 | `FANTOMA_ACTION_CACHE` | Agent | `0` disables replay of known task plans |
+| `FANTOMA_FAST_PATH` | Agent | `0` makes the model do every step (log in, select, type, search are otherwise done in code) |
+| `FANTOMA_CAPTCHA_API`, `FANTOMA_CAPTCHA_KEY` | everywhere | Paid CAPTCHA service (`capsolver`, `2captcha`, `anticaptcha`, `capmonster`) and your key. A key alone means CapSolver |
 | `FANTOMA_VALIDATE` | Agent | `1` turns on the post-run answer check |
 | `FANTOMA_IGNORE_HTTPS_ERRORS` | browser | `1` accepts bad certificates |
 | `FANTOMA_BLOCK_WEBRTC`, `FANTOMA_DISABLE_WEBGL` | Chromium | Opt-in WebRTC / WebGL kill switches |

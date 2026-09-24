@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fantoma"
-version = "0.10.0"
+version = "0.11.0"
 description = "Accessibility-first browser automation for AI agents. MCP server included. Runs on small local LLMs."
 readme = "README.md"
 license = "MIT"
