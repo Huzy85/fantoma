@@ -43,6 +43,24 @@ READS = [
     ("https://the-internet.herokuapp.com/tables", "jsmith@gmail.com"),
 ]
 
+# Public pages behind well-known bot protection. A pass means the real page
+# came back, not a challenge or block page. Results depend on the network the
+# check runs from: cloud and CI addresses are refused by some of these sites
+# whatever the browser, so a failure there is not proof a home connection
+# would fail too.
+PROTECTED = [
+    "https://www.etsy.com/",
+    "https://uk.indeed.com/",
+    "https://old.reddit.com/",
+    "https://duckduckgo.com/",
+    "https://www.cloudflare.com/",
+    "https://www.amazon.com/",
+    "https://www.ebay.com/",
+    "https://www.linkedin.com/",
+    "https://www.zillow.com/",
+    "https://www.walmart.com/",
+]
+
 CHECKBOXES = "https://the-internet.herokuapp.com/checkboxes"
 DROPDOWN = "https://the-internet.herokuapp.com/dropdown"
 
@@ -70,6 +88,23 @@ def check_reads(browser) -> list[dict]:
         except Exception as e:
             ok, why = False, f"error: {e}"
         results.append({"check": f"read {url}", "ok": ok, "why": why,
+                        "secs": round(time.time() - started, 1)})
+    return results
+
+
+def check_protected(browser) -> list[dict]:
+    results = []
+    for url in PROTECTED:
+        started = time.time()
+        try:
+            page = browser.read(url, max_chars=4000)
+            chars = len(page["markdown"])
+            ok = not page["blocked"] and chars >= 300
+            why = (f"{chars} chars, title {page['title'][:50]!r}" if ok else
+                   f"blocked={page['blocked']!r}, {chars} chars, title {page['title'][:50]!r}")
+        except Exception as e:
+            ok, why = False, f"error: {str(e)[:120]}"
+        results.append({"check": f"protected {url}", "ok": ok, "why": why,
                         "secs": round(time.time() - started, 1)})
     return results
 
@@ -120,7 +155,9 @@ def check_actions(browser) -> list[dict]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--browser", default="camoufox", choices=["camoufox", "chromium"])
-    parser.add_argument("--only", choices=["read", "action"])
+    parser.add_argument("--only", choices=["read", "action", "protected"])
+    parser.add_argument("--report-only", action="store_true",
+                        help="always exit 0 (for checks whose result depends on the network)")
     parser.add_argument("--json", help="also write results to this file")
     args = parser.parse_args()
 
@@ -134,6 +171,8 @@ def main() -> int:
             results += check_reads(browser)
         if args.only in (None, "action"):
             results += check_actions(browser)
+        if args.only == "protected":
+            results += check_protected(browser)
     finally:
         browser.stop()
 
@@ -145,7 +184,7 @@ def main() -> int:
     if args.json:
         with open(args.json, "w") as f:
             json.dump({"browser": args.browser, "results": results}, f, indent=2)
-    return failed
+    return 0 if args.report_only else failed
 
 
 if __name__ == "__main__":

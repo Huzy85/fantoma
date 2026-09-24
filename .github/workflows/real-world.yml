@@ -1,0 +1,80 @@
+name: Real-world check
+
+# Two questions the unit tests cannot answer:
+#   1. Does the stealth browser get real content from bot-protected sites?
+#   2. Can a small local model (served by Ollama, as a user would run it)
+#      drive Fantoma through real tasks? Graded on the live page.
+# Runs on demand, weekly, and on pushes to claude/* branches. Results are
+# reported, not enforced: bot protection depends on the runner's network,
+# and small-model runs are noisy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Ollama model"
+        default: "qwen2.5:3b"
+      runs:
+        description: "Runs per task"
+        default: "1"
+  schedule:
+    - cron: "0 7 * * 1"
+  push:
+    branches: ["claude/**"]
+
+jobs:
+  protected-sites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [camoufox, chromium]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install -e ".[chromium]"
+          python -m playwright install-deps firefox chromium
+          if [ "${{ matrix.browser }}" = "camoufox" ]; then python -m camoufox fetch; else python -m patchright install chromium; fi
+      - name: Read bot-protected sites
+        run: python tools/live_read_check.py --only protected --report-only --browser ${{ matrix.browser }} --json protected-${{ matrix.browser }}.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: protected-${{ matrix.browser }}
+          path: protected-${{ matrix.browser }}.json
+
+  small-model-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      MODEL: ${{ github.event.inputs.model || 'qwen2.5:3b' }}
+      RUNS: ${{ github.event.inputs.runs || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Fantoma
+        run: |
+          pip install -e .
+          python -m playwright install-deps firefox
+          python -m camoufox fetch
+      - name: Start Ollama with the model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          sudo systemctl stop ollama 2>/dev/null || true
+          OLLAMA_CONTEXT_LENGTH=8192 nohup ollama serve > ollama.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:11434/api/version && break; sleep 1; done
+          ollama pull "$MODEL"
+      - name: Small model drives Fantoma
+        run: python tools/live_agent_check.py --llm http://localhost:11434/v1 --model "$MODEL" --runs "$RUNS" --json agent.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: small-model-agent
+          path: agent.json
