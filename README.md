@@ -9,7 +9,7 @@
 
 No vision model, no pixel coordinates, no mouse telemetry. A step costs about 500 tokens instead of the 1,000-5,000 a screenshot costs, which is what makes a small model on your own hardware practical.
 
-**What that buys you, and what it does not.** Reading pages works on a small local model. In a 31-site run across 9 models, a 35B local MoE scored 30/31, matching the best cheap API models and beating most of them. That run included sites that block conventional scrapers. Multi-step *interaction* is a different story: the same local model completed 1 of 6 login and form flows, while a frontier API model completed all of them. So extraction on your own hardware is real, and driving a checkout on a 7B model is not yet. Pick the model to match the job. Several jobs need no model at all:
+**What that buys you, and what it does not.** Reading pages works on a small local model. In a 31-site run across 9 models, a 35B local MoE scored 30/31, matching the best cheap API models and beating most of them. That run included sites that block conventional scrapers. Multi-step *interaction* is a different story: the same local model completed 1 of 6 login and form flows, while a frontier API model completed all of them. So extraction on your own hardware is real. For interaction, Fantoma now does the common steps itself (log in, search, pick an option, type into a field, tick a box, add a named item to the cart) and checks the page afterwards, so the model is only asked about what code cannot settle. On GitHub's machines with qwen2.5 7B and 14B, those steps pass with no model action at all ([details](#small-models-on-real-sites)). Open-ended multi-page flows still need a stronger model. Several jobs need no model at all:
 
 ```bash
 pip install fantoma
@@ -52,6 +52,7 @@ result = agent.run("Go to github.com/trending and tell me the top repo")
 | Stealth browsers | [Camoufox](https://github.com/daijro/camoufox) (Firefox) by default, [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python) (Chromium) optional |
 | Any AI app can use it | MCP server, one command, no Docker |
 | Logs in without a model | Form fields matched by code; sessions saved encrypted |
+| Common steps without a model | Log in, search, select, type, tick, add to cart: done in code and checked on the page; a model's "done" is checked too |
 | Built for small models | ~500 tokens a step, repeated tasks replayed with no model calls |
 | Guarded against page-borne instructions | Hidden-text removal, fenced page text, domain allow/block lists |
 
@@ -579,7 +580,20 @@ Leaderboard scores are over the full WebVoyager suite, not the same 5-task pilot
 
 ## Test Results
 
-**Continuous checks.** Every push runs 800+ unit tests, including real-browser cases, on GitHub Actions. A live check (`tools/live_read_check.py`) runs on every push and weekly with both Camoufox and Chromium: it reads public pages and requires text only the correct page contains, then ticks a checkbox and chooses a dropdown option on public practice pages, reading the result back from the live page. It uses no LLM, so a failure is Fantoma's.
+**Continuous checks.** Every push runs 860+ unit tests, including real-browser cases, on GitHub Actions. A live check (`tools/live_read_check.py`) runs on every push and weekly with both Camoufox and Chromium: it reads public pages and requires text only the correct page contains, then ticks a checkbox and chooses a dropdown option on public practice pages, reading the result back from the live page. It uses no LLM, so a failure is Fantoma's.
+
+### Small models on real sites
+
+`tools/live_agent_check.py` has a model drive the Agent through real tasks on public sites and grades each run on the live page afterwards (is the box ticked, is the item in the cart), never on the agent's own report. Run on GitHub's CPU-only machines with Ollama, September 2026:
+
+| Task | qwen2.5:7b | qwen2.5:14b | Model actions |
+|---|---|---|---|
+| Tick a checkbox, pick a dropdown option, type into a field | pass | pass | 0 |
+| Log in (two sites), log in then add a named item to the cart | pass | pass | 0 |
+| Search DuckDuckGo, search Etsy (both behind bot protection) | pass | pass | 0 |
+| Read a book's price | pass | pass | model reads the answer |
+
+Before the fast path, the same 7B model passed 4 of 8 and reported success on several tasks it had failed. These tasks are also the ones the fast path was built against, so treat the table as proof the mechanism works, not as a benchmark of unseen sites. Protected-site reads from a data-centre address (the CI runner): Camoufox 7 of 10, Chromium 5 of 10; a home connection is a different, usually easier, case.
 
 **Earlier runs (dated; detection moves, so treat these as snapshots).** 25 real sites with 6 LLMs; fingerprint checks passed on bot.sannysoft.com and nowsecure.nl; no detection events recorded across 2,241 stress tests (March 2026).
 
