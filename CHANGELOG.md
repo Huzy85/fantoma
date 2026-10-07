@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.1 — 2026-10-07
+
+### Fixed
+
+- **A search run in code was reported as not done.** Pressing Enter in a search box submits the form, and the page was read while the new document was still landing, so the read raised "Execution context was destroyed" and the finished search was handed to the model as a failure. A key press now waits for the page the way a click does, and the page title is read again once the new document has loaded.
+- **Signup wizards on one URL.** A wizard that shows the password step on the same URL as the email step was reported complete after the first step: the page's "Create your account" heading scored as logged in. A visible password box after a submit now means there is another step to do, the same rule the task verifier applies, and `login()` carries on to it.
+- **Terms boxes are ticked in code.** "I agree to the terms" style checkboxes were only ticked when a model labelled the form, so a plain `login()` submitted signup forms with the box empty. Marketing opt-ins ("send me offers") are left alone.
+- **Named tabs in a step-by-step session.** `session.tabs`, `new_tab(url, name=)`, `switch_tab("name")` and `close_tab("name")` were lost in the 0.9 rewrite; the CLI's `/tabs` command and the weekly monitor's Multi-Tab check both raised `'_Session' object has no attribute 'tabs'`. Restored, with `session.url` for the current tab's address.
+- The weekly live check no longer expects the "Example Domain" heading that example.com dropped in 2026.
+- The weekly monitor can hand its report to a sender command (`TELEGRAM_SEND_CMD`, message on stdin) when no bot token is set, so the token can live in one place on the machine.
+
 ## 0.11.0 — 2026-09-24
 
 ### Added

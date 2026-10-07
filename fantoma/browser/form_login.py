@@ -304,6 +304,15 @@ def login(browser, dom_extractor, email="", username="", password="",
                         filled_labels.append(("challenge", challenge_field["name"]))
                         filled_this_step = True
 
+        # Tick a terms / privacy consent box on the same step, in code.
+        # Before, only the LLM labeller path did this, so a plain login()
+        # with no model submitted signup forms with the box empty.
+        if filled_this_step:
+            ticked = _tick_consent_boxes(page, dom_extractor, elements)
+            if ticked:
+                fields_filled.extend(ticked)
+                log.info("Step %d: ticked %s", step + 1, ticked)
+
         if not filled_this_step and step > 0:
             # Nothing to fill — we might be done or on an unrecognised page
             log.info("Step %d: no fillable fields found — stopping", step + 1)
@@ -412,6 +421,14 @@ def login(browser, dom_extractor, email="", username="", password="",
 
         # Check if we've left the login page
         new_url = page.url
+        if _password_box_showing(post_tree):
+            # A password box still on screen means the form is not done,
+            # whatever the URL or body text says. A signup wizard reveals
+            # it on the same URL after the email step, and that page's
+            # "Create your account" heading scored as logged in, so the
+            # wizard was reported complete after one of its three steps.
+            log.info("Step %d: page still asks for a password — continuing", step + 1)
+            continue
         if _looks_logged_in(page, new_url, start_url):
             log.info("Login complete — landed on: %s", new_url)
             return {
@@ -422,8 +439,13 @@ def login(browser, dom_extractor, email="", username="", password="",
             }
 
     final_url = page.url
+    try:
+        final_tree = dom_extractor.extract(page)
+    except Exception:
+        final_tree = ""
     return {
-        "success": _looks_logged_in(page, final_url, start_url),
+        "success": (not _password_box_showing(final_tree)
+                    and _looks_logged_in(page, final_url, start_url)),
         "steps": max_steps,
         "url": final_url,
         "fields_filled": fields_filled,
@@ -703,6 +725,45 @@ def _find_raw_buttons(page):
         return []
 
 
+_CONSENT_WORDS = ("agree", "terms", "accept", "privacy", "consent", "policy",
+                  "conditions")
+_NOT_CONSENT_WORDS = ("newsletter", "marketing", "offers", "promot", "updates",
+                      "remember", "subscribe", "news", "tips")
+
+
+def _tick_consent_boxes(page, dom_extractor, elements) -> list[str]:
+    """Tick unchecked "I agree to the terms" style boxes. Returns their names.
+
+    Marketing opt-ins are left alone: "send me offers" is a choice the
+    caller never asked us to make, while an untouched terms box simply
+    blocks the submit.
+    """
+    ticked = []
+    for el in elements or []:
+        if el.get("role") != "checkbox":
+            continue
+        name = (el.get("name") or "").lower()
+        if not any(w in name for w in _CONSENT_WORDS):
+            continue
+        if any(w in name for w in _NOT_CONSENT_WORDS):
+            continue
+        if el.get("raw", {}).get("checked") or "checked" in (el.get("state") or ""):
+            continue
+        handle = _get_element(page, dom_extractor, el)
+        if not handle:
+            continue
+        try:
+            handle.check(timeout=3000)
+        except Exception:
+            try:
+                handle.click(timeout=3000)
+            except Exception as e:
+                log.debug("Could not tick '%s': %s", el.get("name"), e)
+                continue
+        ticked.append(el.get("name", "checkbox"))
+    return ticked
+
+
 def _has_fillable_fields(elements):
     """Check if elements list contains any textbox or input fields."""
     if not elements:
@@ -764,6 +825,18 @@ def _find_submit(elements):
                 return el
 
     return None
+
+
+_PASSWORD_BOX = re.compile(r'textbox "[^"]*pass(word|code)?[^"]*"', re.IGNORECASE)
+
+
+def _password_box_showing(tree: str) -> bool:
+    """True when the accessibility tree still offers a password field.
+
+    The same rule the task verifier applies: a visible password box after
+    a submit means the form was not accepted or has another step to go.
+    """
+    return bool(_PASSWORD_BOX.search(tree or ""))
 
 
 def _looks_logged_in(page, url, start_url=""):

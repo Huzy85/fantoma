@@ -692,9 +692,13 @@ class _Session:
     def __init__(self, agent: Agent, start_url: str):
         self.agent = agent
         self.start_url = start_url
+        # [{index, name, url}] — names let callers say switch_tab("email")
+        # instead of remembering which index a tab landed on.
+        self._tabs: list[dict] = []
 
     def __enter__(self):
         self.agent.fantoma.start(self.start_url)
+        self._tabs = [{"index": 0, "name": "main", "url": self.start_url}]
         return self
 
     def __exit__(self, *args):
@@ -727,11 +731,67 @@ class _Session:
         """Extract info from current page."""
         return self.agent.fantoma.extract(query)
 
-    def new_tab(self, url: str, name: str = None) -> dict:
-        return self.agent.fantoma.new_tab(url)
+    def new_tab(self, url: str, name: str = None) -> int:
+        """Open a new tab, optionally with a name. Returns the tab index."""
+        self.agent.fantoma.new_tab(url)
+        idx = max(len(self.agent.fantoma.list_tabs()) - 1, 0)
+        self._tabs.append({"index": idx, "name": name or f"tab-{idx}", "url": url})
+        return idx
+
+    def _tab_index(self, tab: int | str) -> int | None:
+        if isinstance(tab, int):
+            return tab
+        for t in self._tabs:
+            if t["name"] == tab:
+                return t["index"]
+        log.warning("Tab '%s' not found. Open tabs: %s",
+                    tab, [t["name"] for t in self._tabs])
+        return None
 
     def switch_tab(self, tab: int | str) -> dict:
-        return self.agent.fantoma.switch_tab(tab)
+        """Switch to a tab by index or name."""
+        idx = self._tab_index(tab)
+        if idx is None:
+            return {"state": self.agent.fantoma.get_state()}
+        return self.agent.fantoma.switch_tab(idx)
 
     def close_tab(self, tab: int | str = None) -> dict:
-        return self.agent.fantoma.close_tab(tab)
+        """Close a tab by index or name. Defaults to the current tab."""
+        if tab is None:
+            result = self.agent.fantoma.close_tab()
+            self._sync_tabs()
+            return result
+        idx = self._tab_index(tab)
+        if idx is None:
+            return {"state": self.agent.fantoma.get_state()}
+        result = self.agent.fantoma.close_tab(idx)
+        self._tabs = [t for t in self._tabs if t["index"] != idx]
+        self._sync_tabs()
+        return result
+
+    def _sync_tabs(self):
+        """Re-number the tracked tabs against the browser's open pages.
+
+        Closing a tab shifts every later index down by one, so the names
+        are re-attached to the pages that remain, in order.
+        """
+        live = self.agent.fantoma.list_tabs()
+        kept = self._tabs[:len(live)]
+        for i, (t, page) in enumerate(zip(kept, live)):
+            t["index"] = i
+            t["url"] = page["url"]
+        self._tabs = kept
+
+    @property
+    def url(self) -> str:
+        """The current tab's URL."""
+        return self.agent.fantoma._engine.get_url()
+
+    @property
+    def tabs(self) -> list[dict]:
+        """Open tabs as [{index, name, url}], URLs refreshed from the browser."""
+        live = self.agent.fantoma.list_tabs()
+        for t in self._tabs:
+            if t["index"] < len(live):
+                t["url"] = live[t["index"]]["url"]
+        return [dict(t) for t in self._tabs]

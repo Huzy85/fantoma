@@ -64,7 +64,22 @@ def send_telegram(message: str):
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
 
     if not bot_token or not chat_id:
-        log.warning("No Telegram config found — skipping notification")
+        # No bot details here: hand the plain text to a sender command if
+        # one is configured (TELEGRAM_SEND_CMD reads the message on stdin),
+        # so the token can live in one place on the machine.
+        send_cmd = os.environ.get("TELEGRAM_SEND_CMD", "")
+        if not send_cmd:
+            log.warning("No Telegram config found — skipping notification")
+            return
+        import re
+        import subprocess
+        plain = re.sub(r"</?(b|i|code|pre)>", "", message)
+        try:
+            subprocess.run(send_cmd, shell=True, input=plain.encode(),
+                           timeout=60, check=True)
+            log.info("Telegram notification sent via %s", send_cmd)
+        except Exception as e:
+            log.error("Telegram send command failed: %s", e)
         return
 
     payload = json.dumps({
@@ -240,7 +255,7 @@ def run_multitab_test(agent_cls, llm_url: str, model: str) -> dict:
             # Switch back
             s.switch_tab("main")
             time.sleep(1)
-            main_url = s._browser.get_url()
+            main_url = s.url
             # Close second tab
             s.close_tab("github")
             remaining = s.tabs
