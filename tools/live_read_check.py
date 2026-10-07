@@ -35,7 +35,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # (url, text the correct page contains, lowercased). Sites chosen because
 # they exist for testing scrapers or are stable reference pages.
 READS = [
-    ("https://example.com", "example domain"),
+    # example.com dropped its "Example Domain" heading in 2026; the body now
+    # carries this sentence (and asks not to be relied on, so keep it light).
+    ("https://example.com", "documentation examples"),
     ("https://books.toscrape.com/", "a light in the attic"),
     ("https://quotes.toscrape.com/", "albert einstein"),
     ("https://en.wikipedia.org/wiki/Python_(programming_language)", "guido van rossum"),

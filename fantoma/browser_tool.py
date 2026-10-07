@@ -377,6 +377,10 @@ class Fantoma:
         pre_url = page.url
         try:
             page.keyboard.press(key)
+            # Enter in a search box submits a form; give the navigation
+            # the same chance to land as a click gets before the state
+            # is read.
+            wait_for_dom_stable(page)
         except Exception as e:
             log.warning("Press %s failed: %s", key, e)
             return self._action_result(False, pre_url)

@@ -13,6 +13,33 @@ from typing import Optional, Any
 
 log = logging.getLogger("fantoma.accessibility")
 
+
+def page_title(page) -> str:
+    """The page's title, read safely across a navigation.
+
+    A key press or a form submit starts a navigation; if the new document
+    commits while the title is read, Playwright raises "Execution context
+    was destroyed". Seen on the fast path's search step: Enter submitted
+    the form and the state extraction straight after it raised, so a
+    search that had worked was reported as not done. Wait for the new
+    document and read again; fall back to the URL.
+    """
+    for attempt in range(2):
+        try:
+            return page.title()
+        except Exception as e:
+            if attempt:
+                log.debug("Page title unavailable: %s", e)
+                break
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+    try:
+        return page.url
+    except Exception:
+        return ""
+
 # ARIA roles that represent interactive elements
 INTERACTIVE_ROLES = {
     "button", "link", "textbox", "combobox", "searchbox",
@@ -533,7 +560,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
     if mode == "content":
         return extract_aria_content(page)
 
-    title = page.title()
+    title = page_title(page)
     url = page.url
 
     try:
@@ -824,7 +851,7 @@ def extract_aria_content(page) -> str:
     - Includes all text nodes, not just short ones
     - Groups content by ARIA regions/landmarks when available
     """
-    title = page.title()
+    title = page_title(page)
     url = page.url
 
     try:
@@ -1085,7 +1112,7 @@ class AccessibilityExtractor:
         # 4. Fallback: raw page text
         try:
             text = page.inner_text("body")[:4000]
-            return f"Page: {page.title()}\nURL: {page.url}\n\nPage content:\n{text}"
+            return f"Page: {page_title(page)}\nURL: {page.url}\n\nPage content:\n{text}"
         except Exception:
             return ""
 
