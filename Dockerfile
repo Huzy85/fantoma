@@ -39,8 +39,20 @@ RUN pip3 install --no-cache-dir \
     "flask>=3.0" \
     && pip3 install --no-cache-dir -e /app 2>/dev/null || true
 
-# Download Camoufox browser binary (must succeed — no runtime fetch)
-RUN python3 -m camoufox fetch
+# Download the Camoufox browser binary. `camoufox fetch` exits 0 even when
+# GitHub's API refuses it (unauthenticated calls are limited to 60 an hour per
+# IP), which once shipped images with no browser. Retry, then fail the build
+# unless a version is really installed. Pass a token to lift the limit:
+#   docker build --secret id=github_token,env=GITHUB_TOKEN .
+RUN --mount=type=secret,id=github_token,required=false \
+    if [ -f /run/secrets/github_token ]; then export GITHUB_TOKEN="$(cat /run/secrets/github_token)"; fi; \
+    for i in 1 2 3; do \
+        python3 -m camoufox fetch; \
+        python3 -m camoufox active | grep -qv "not fetched" && break; \
+        echo "camoufox fetch failed, retrying in 60 s"; sleep 60; \
+    done; \
+    python3 -m camoufox active | grep -v "not fetched" \
+        || { echo "Camoufox browser not installed (GitHub rate limit?)"; exit 1; }
 
 # Copy Fantoma source
 COPY . /app
