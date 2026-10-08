@@ -1211,3 +1211,8 @@ Fantoma uses 3-5 LLM calls per task at ~200 tokens each. Check each provider's c
 
 ## 2026-10-08 — 0.11.2
 Security and reliability fixes, see CHANGELOG 0.11.2. Next candidates (secret-to-host binding, fewer snapshots per step, batched occlusion filter, resource blocking, prompt cache order, domcontentloaded navigation, CDP attach, stable refs, WebMCP, skill/CLI packaging).
+
+## 2026-10-08 (later)
+- 0.11.2 pushed to GitHub (3e9cd2e).
+- Local, not pushed: 8f1c684 keeps a page that already shows text when a script stalls navigation; 4ae3657 live check reads scrapethissite.com/pages/forms/ (herokuapp tables stalls 30 s in every browser). Suite 898 pass, live check 10/10 in camoufox and chromium.
+- Next: secret-to-site binding, fewer page reads per step, CDP attach, stable element refs, opt-in resource blocking, cache-friendly prompt order, fresh WebVoyager run, skill/CLI packaging, WebMCP.
