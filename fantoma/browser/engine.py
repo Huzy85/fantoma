@@ -44,6 +44,16 @@ class BrowserEngine:
         self._camoufox_cm = None
         self._playwright = None
         self._persistent = False
+        # Page events worth telling the model about. Playwright dismisses
+        # dialogs nobody handles, so a "Delete this? OK/Cancel" confirm was
+        # silently cancelled while the click reported success. Popups opened
+        # by the page (target=_blank, window.open) became tabs nobody
+        # mentioned. Crashed pages hung get_state until the task timeout.
+        self.last_dialog: dict | None = None
+        self._popup_count = 0
+        self._crashed: set = set()
+        self.last_status: int | None = None
+        self._last_status_url: str = ""
 
     def _proxy_dict(self) -> dict | None:
         """Convert any proxy config to Playwright format. Supports rotation."""
@@ -60,6 +70,54 @@ class BrowserEngine:
             self.domain_policy.install(self._context)
             _log.info("Domain policy on: allowed=%s blocked=%s",
                       self.domain_policy.allowed or "any", self.domain_policy.blocked or "none")
+        self._install_page_hooks()
+
+    # Dialogs: FANTOMA_DIALOGS=dismiss (default) cancels confirm/prompt and
+    # closes alerts, which is what Playwright did silently before; "accept"
+    # presses OK on everything. Either way the text is recorded so the
+    # action result can say what happened.
+    def _on_dialog(self, dialog):
+        self.last_dialog = {"type": dialog.type, "message": dialog.message}
+        policy = os.environ.get("FANTOMA_DIALOGS", "dismiss").strip().lower()
+        try:
+            if dialog.type == "beforeunload" or policy == "accept":
+                dialog.accept()
+            else:
+                dialog.dismiss()
+        except Exception:
+            pass
+
+    def _on_page(self, page):
+        self._popup_count += 1
+        try:
+            page.on("crash", lambda p=page: self._crashed.add(p))
+        except Exception:
+            pass
+
+    def _install_page_hooks(self):
+        ctx = self._context
+        if ctx is None:
+            return
+        try:
+            ctx.on("dialog", self._on_dialog)
+            ctx.on("page", self._on_page)
+            for p in ctx.pages:
+                p.on("crash", lambda pg=p: self._crashed.add(pg))
+        except Exception as e:
+            _log.debug("page hooks not installed: %s", e)
+
+    def page_crashed(self, page=None) -> bool:
+        page = page or self._page
+        return page in self._crashed or (page is not None and page.is_closed())
+
+    def take_popup_count(self) -> int:
+        """Number of pages the site itself opened since the last call."""
+        n, self._popup_count = self._popup_count, 0
+        return n
+
+    def take_dialog(self) -> dict | None:
+        d, self.last_dialog = self.last_dialog, None
+        return d
 
     def _start_camoufox(self):
         """Launch Camoufox browser. Uses persistent profile if profile_dir is set."""
@@ -217,7 +275,7 @@ class BrowserEngine:
         # Save trace before closing browser
         if self._trace_active and self._context:
             try:
-                os.makedirs(self._trace_dir, exist_ok=True)
+                os.makedirs(self._trace_dir, mode=0o700, exist_ok=True)
                 # Build filename from current domain + timestamp
                 url = self._page.url if self._page else "unknown"
                 try:
@@ -356,17 +414,20 @@ class BrowserEngine:
     def navigate(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 30000):
         """Navigate to URL with human-like delay after."""
         self.domain_policy.check(url)
+        self.last_status, self._last_status_url = None, ""
         try:
-            self._page.goto(url, wait_until=wait_until, timeout=timeout)
+            response = self._page.goto(url, wait_until=wait_until, timeout=timeout)
         except Exception as e:
             # If page crashed, try to recover with a new page
             _log.warning("Navigation failed: %s — trying recovery", e)
             if not self._context:
                 raise
             old_page = self._page
+            self._crashed.discard(old_page)
             self._page = self._context.new_page()
+            self._popup_count = max(0, self._popup_count - 1)  # our own page, not a popup
             try:
-                self._page.goto(url, wait_until=wait_until, timeout=timeout)
+                response = self._page.goto(url, wait_until=wait_until, timeout=timeout)
             except Exception:
                 # Recovery also failed — close the new blank page, restore old
                 try:
@@ -375,6 +436,11 @@ class BrowserEngine:
                     pass
                 self._page = old_page
                 raise
+        if response is not None:
+            try:
+                self.last_status, self._last_status_url = response.status, self._page.url
+            except Exception:
+                pass
         # A redirect can land on a host the policy forbids (always possible
         # with strict=False). Leave at once so the page is never read.
         if self.domain_policy.active and not self.domain_policy.permits(self._page.url):
@@ -402,6 +468,7 @@ class BrowserEngine:
             self.domain_policy.check(url)
         ctx = self._context if self._context else self._page.context
         new_page = ctx.new_page()
+        self._popup_count = max(0, self._popup_count - 1)  # opened by us, not the site
         if url:
             new_page.goto(url, wait_until="domcontentloaded", timeout=30000)
             if self.humanizer:

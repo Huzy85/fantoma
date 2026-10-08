@@ -548,6 +548,10 @@ The HTTP API and noVNC ship without authentication by default, so secure them be
 | `FANTOMA_API_KEY` | unset (open) | When set, every endpoint except `/health` requires it via `X-API-Key: <key>` or `Authorization: Bearer <key>`. Unset logs a warning at startup. |
 | `FANTOMA_VNC_PASSWORD` | unset (open) | Password-protects the noVNC display on port 6080. |
 | `FANTOMA_ALLOW_EVAL` | `0` (off) | `/evaluate` runs arbitrary JS in the page (a cookie and token theft surface). Returns 403 unless set to `1`. |
+| `FANTOMA_HOST` | `127.0.0.1` without a key, `0.0.0.0` with one | Interface the HTTP server listens on. |
+| `FANTOMA_ALLOW_REQUEST_PROXY` | `0` (off) | Lets a `/run` body name its own proxy without an API key. On automatically when a key is set. |
+| `FANTOMA_PROFILE_BASE` | `~/.local/share/fantoma` | Browser profiles named in requests must sit under this folder. |
+| `FANTOMA_DIALOGS` | `dismiss` | How page dialogs are answered: `dismiss` (Cancel) or `accept` (OK). The action result reports the dialog either way. |
 | `FANTOMA_IGNORE_HTTPS_ERRORS` | `0` (off) | TLS certificate validation stays on by default. Set to `1` only for sites with known bad certificates. |
 
 On any shared network, set `FANTOMA_API_KEY` and `FANTOMA_VNC_PASSWORD`. Credentials passed via `sensitive_data` are masked in the ARIA tree sent to the LLM and in step logs; the real value is substituted only at execution time.

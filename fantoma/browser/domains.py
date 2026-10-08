@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import ipaddress
 import os
 from urllib.parse import urljoin, urlparse
 
@@ -86,6 +87,35 @@ def _to_ascii(pattern: str) -> str:
     return prefix + host
 
 
+# Schemes that fetch nothing and are safe whatever the policy says.
+_INERT_SCHEMES = {"data", "blob", "about", ""}
+
+
+def _is_private_host(host: str) -> bool:
+    """True for loopback, link-local, private-range and metadata addresses.
+
+    Covers IP literals (IPv4, IPv6, and the bare-integer form 2130706433),
+    plus the names browsers resolve locally. A name that resolves to a
+    private address at request time is not caught here; an allow-list is
+    the defence for that.
+    """
+    if host in ("localhost", "ip6-localhost", "ip6-loopback") or host.endswith(".localhost"):
+        return True
+    candidate = host.strip("[]")
+    try:
+        addr = ipaddress.ip_address(candidate)
+    except ValueError:
+        if candidate.isdigit():
+            try:
+                addr = ipaddress.ip_address(int(candidate))
+            except ValueError:
+                return False
+        else:
+            return False
+    return (addr.is_private or addr.is_loopback or addr.is_link_local
+            or addr.is_reserved or addr.is_unspecified)
+
+
 def _matches(host: str, pattern: str) -> bool:
     if pattern.startswith("*."):
         base = pattern[2:]
@@ -121,14 +151,25 @@ class DomainPolicy:
             parsed = urlparse(url)
         except Exception:
             return False
-        if parsed.scheme.lower() not in _NETWORK_SCHEMES:
-            return True
+        scheme = parsed.scheme.lower()
+        if scheme not in _NETWORK_SCHEMES:
+            # data:/blob:/about: fetch nothing. file:, chrome:, view-source:
+            # and friends read the machine, not the network, so an active
+            # policy refuses them: a page cannot be allowed to steer the
+            # agent into reading /etc/passwd through the browser.
+            return scheme in _INERT_SCHEMES or not self.active
         host = _to_ascii((parsed.hostname or "").lower().rstrip("."))
         if not host:
             return False
         if any(_matches(host, p) for p in self.blocked):
             return False
         if self.allowed and not any(_matches(host, p) for p in self.allowed):
+            return False
+        # With a policy on, loopback / link-local / RFC1918 / metadata
+        # addresses are off limits unless named in the allow-list. A
+        # block-list alone used to leave 169.254.169.254 and 127.0.0.1
+        # wide open to a page that talked the model into visiting them.
+        if self.active and _is_private_host(host) and not any(_matches(host, p) for p in self.allowed):
             return False
         return True
 

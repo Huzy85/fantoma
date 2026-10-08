@@ -24,7 +24,10 @@ _INTERACTIVE_ROLES = {
 }
 
 _MAX_FRAMES = 5
-_SKIP_URLS = {"about:blank", "", "data:,", "about:srcdoc"}
+# about:srcdoc is NOT skipped: consent widgets, card forms and embedded
+# logins are often srcdoc iframes, and skipping them hid their controls.
+# A genuinely empty srcdoc frame yields no elements anyway.
+_SKIP_URLS = {"about:blank", "", "data:,"}
 
 
 def extract_frame_elements(frame) -> list[dict]:

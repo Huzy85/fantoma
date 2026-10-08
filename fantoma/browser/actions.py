@@ -53,10 +53,18 @@ def click_element(engine, element_or_selector):
 
     is_checkbox = el_type in ("checkbox", "radio") or role in ("checkbox", "radio", "switch")
 
-    # Activate via keyboard
+    # Enter/Space only activate elements the browser itself wires up:
+    # links, buttons, inputs, <summary>. A <div role="button"> with an
+    # onclick handler and nothing listening for keys swallowed the key and
+    # the click was reported as a success that did nothing. Those get a
+    # synthetic el.click() instead, which still sends no mouse telemetry.
+    native = tag in ("a", "button", "input", "select", "textarea", "summary", "option", "label", "area")
     key = "Space" if is_checkbox else "Enter"
     try:
-        page.keyboard.press(key)
+        if native:
+            page.keyboard.press(key)
+        elif not _key_did_something(page, element, key):
+            element.evaluate("el => el.click()")
     except Exception:
         # Keyboard failed — fall back to JS click (no mouse events)
         try:
@@ -68,6 +76,40 @@ def click_element(engine, element_or_selector):
         engine.humanizer.action_pause()
 
     return True
+
+
+_WATCH_JS = """() => {
+  const w = window.__fantoma_keywatch = {muts: 0, href: location.href, focus: document.activeElement};
+  w.obs = new MutationObserver(ms => { w.muts += ms.length; });
+  w.obs.observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+}"""
+_WATCH_RESULT_JS = """() => {
+  const w = window.__fantoma_keywatch; if (!w) return true;
+  w.obs.disconnect();
+  return w.muts > 0 || location.href !== w.href || document.activeElement !== w.focus;
+}"""
+
+
+def _key_did_something(page, element, key: str) -> bool:
+    """Press `key` on a custom widget and report whether the page reacted.
+
+    ARIA widgets that follow the authoring practices answer Enter/Space;
+    the common div-with-onclick does not. Watching for any DOM mutation,
+    focus move or URL change for a short while tells the two apart, so
+    the keyboard-first model is kept where it works and a synthetic
+    click is sent where it does not.
+    """
+    try:
+        page.evaluate(_WATCH_JS)
+    except Exception:
+        page.keyboard.press(key)
+        return True  # cannot tell; assume the key worked as before
+    page.keyboard.press(key)
+    try:
+        page.wait_for_timeout(150)
+        return bool(page.evaluate(_WATCH_RESULT_JS))
+    except Exception:
+        return True  # navigation tore the context down: the key did plenty
 
 
 def native_option_target(element) -> dict | None:

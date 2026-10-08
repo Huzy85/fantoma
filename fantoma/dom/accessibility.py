@@ -564,8 +564,18 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
     url = page.url
 
     try:
-        snapshot = page.locator("body").aria_snapshot()
+        # A crashed page never answers; without the timeout get_state hung
+        # until the task deadline. 20 s is far above any real snapshot.
+        snapshot = page.locator("body").aria_snapshot(timeout=20000)
     except Exception as e:
+        if "different thread" in str(e):
+            # Playwright's sync API is single-threaded. Falling back to the
+            # DOM extractor here hid the mistake and left the connection
+            # wedged, so later calls hung instead of this one failing.
+            raise RuntimeError(
+                "Fantoma was called from a different thread than the one that "
+                "started the browser. Playwright's sync API cannot be shared "
+                "across threads: use one Fantoma per thread.") from e
         log.warning("ARIA snapshot failed: %s — falling back to DOM", e)
         return ""
 
@@ -978,7 +988,13 @@ class AccessibilityExtractor:
                               task=task, previous_elements=previous, mode=mode,
                               _shown_out=shown,
                               element_filter=lambda els: self._filter_occluded(page, els))
-        if not result or "Elements: none found" in result:
+        from fantoma.dom.frames import collect_all_frame_elements
+        main_empty = not result or "Elements: none found" in result
+        # A page whose only controls sit inside an iframe (embedded login,
+        # card form, consent widget) used to fall to the DOM extractor
+        # before the frames were looked at, and reported nothing to click.
+        iframe_elements = collect_all_frame_elements(page) if (not main_empty or page.frames[1:]) else []
+        if main_empty and not iframe_elements:
             log.debug("ARIA tree empty — falling back to DOM extraction")
             self._last_interactive = []
             from fantoma.dom.extractor import DOMExtractor
@@ -990,11 +1006,9 @@ class AccessibilityExtractor:
         # nothing came back, which keeps older callers working.
         # Occluded elements were filtered out BEFORE numbering (see
         # element_filter), so position N here is exactly what was shown as [N].
-        self._last_interactive = shown or self._parse_interactive_from_output(result)
+        self._last_interactive = [] if main_empty else (shown or self._parse_interactive_from_output(result))
 
         # Merge iframe elements
-        from fantoma.dom.frames import collect_all_frame_elements
-        iframe_elements = collect_all_frame_elements(page)
         if iframe_elements:
             base_idx = len(self._last_interactive)
             self._last_interactive.extend(iframe_elements)

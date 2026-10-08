@@ -124,11 +124,14 @@ class Fantoma:
             profile_dir=self._profile_dir,
             allowed_domains=self._allowed_domains,
             blocked_domains=self._blocked_domains,
+            # Was always on: the config flag never reached the engine, so
+            # every click carried a 1-3 s pause even with humanize=False.
+            humanize=self.config.browser.humanize,
         )
         self._engine.start()
         if url:
             self._engine.navigate(url)
-            time.sleep(2)
+            wait_for_dom_stable(self._engine.get_page())
             dismiss_consent(self._engine.get_page())
         state = self.get_state(task=self._task)
         # Baseline for the first action's `changed` comparison.
@@ -160,6 +163,17 @@ class Fantoma:
     def get_state(self, mode: str = "navigate", task: str = "") -> dict:
         """Get current page state: URL, title, ARIA tree, errors, tab count."""
         page = self._engine.get_page()
+        # A crashed or closed tab never answers a snapshot. Say so instead
+        # of hanging until the task deadline (measured: 85 s+ on chrome://crash).
+        crashed = getattr(self._engine, "page_crashed", None)
+        if callable(crashed) and crashed(page) is True:
+            ctx = getattr(self._engine, '_context', None)
+            return {
+                "url": getattr(page, "url", ""), "title": "",
+                "aria_tree": "Page crashed or was closed. Navigate again or switch_tab.",
+                "errors": ["Page crashed or closed — navigate again"],
+                "tab_count": len(ctx.pages) if ctx else 1,
+            }
         # Rank against the running task when none is given, so the state
         # returned after an action numbers elements the way the model's own
         # view did. Ranked without it, the same box was [0] in one view and
@@ -167,6 +181,9 @@ class Fantoma:
         task = task or getattr(self, "_task", "") or ""
         aria_tree = self._dom.extract(page, task=task, mode=mode)
         errors = detect_errors(page)
+        status = getattr(self._engine, "last_status", None)
+        if isinstance(status, int) and status >= 400 and getattr(self._engine, "_last_status_url", "") == page.url:
+            errors.append(f"HTTP {status} response for this page")
         ctx = getattr(self._engine, '_context', None)
         tab_count = len(ctx.pages) if ctx else 1
         try:
@@ -230,11 +247,27 @@ class Fantoma:
         url_changed = pre_url is not None and state["url"] != pre_url
         dom_changed = self._last_tree is not None and tree != self._last_tree
         self._last_tree = tree
+        # Things the page did that the tree does not show: a dialog that
+        # was answered for the model, a tab the site opened on its own.
+        notes: list[str] = []
+        engine = getattr(self, "_engine", None)
+        take_dialog = getattr(engine, "take_dialog", None)
+        dialog = take_dialog() if callable(take_dialog) else None
+        if isinstance(dialog, dict):
+            policy = os.environ.get("FANTOMA_DIALOGS", "dismiss").strip().lower()
+            verb = "accepted" if (policy == "accept" or dialog.get("type") == "beforeunload") else "dismissed (Cancel)"
+            notes.append(f"A {dialog.get('type')} dialog was {verb}: \"{(dialog.get('message') or '')[:160]}\"")
+        take_popups = getattr(engine, "take_popup_count", None)
+        popups = take_popups() if callable(take_popups) else 0
+        if isinstance(popups, int) and popups > 0:
+            notes.append(f"The page opened {popups} new tab(s); now {state['tab_count']} open. "
+                         f"Use switch_tab to read it.")
         return {
             "success": success,
-            "changed": bool(url_changed or dom_changed),
+            "changed": bool(url_changed or dom_changed or notes),
             "url_changed": url_changed,
             "errors": state["errors"],
+            "notes": notes,
             "state": state,
         }
 
@@ -392,7 +425,6 @@ class Fantoma:
         pre_url = page.url
         try:
             page.go_back(timeout=10000)
-            time.sleep(1)
             wait_for_dom_stable(self._engine.get_page())
         except Exception as e:
             log.warning("Go back failed: %s", e)
@@ -404,9 +436,10 @@ class Fantoma:
         pre_url = self._engine.get_page().url
         try:
             self._engine.navigate(url)
-            time.sleep(2)
-            dismiss_consent(self._engine.get_page())
+            # Settle first, then clear any banner that arrived with the page.
+            # The fixed 2 s sleep that sat here cost more than the wait does.
             wait_for_dom_stable(self._engine.get_page())
+            dismiss_consent(self._engine.get_page())
         except DomainBlocked as e:
             log.warning("Navigate refused: %s", e)
             result = self._action_result(False, pre_url)
@@ -424,7 +457,7 @@ class Fantoma:
     def new_tab(self, url: str) -> dict:
         """Open a new tab and navigate to url."""
         self._engine.new_tab(url)
-        time.sleep(2)
+        wait_for_dom_stable(self._engine.get_page())
         return {"state": self.get_state()}
 
     def switch_tab(self, tab: int | str) -> dict:

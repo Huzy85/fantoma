@@ -510,6 +510,9 @@ class Navigator:
                     snap_before = snap_after  # track across multi-action batches
                 except Exception:
                     change_line = "No changes detected"
+                notes = result.get("notes") if isinstance(result, dict) else None
+                if notes:
+                    change_line = f"{change_line} | " + " ".join(notes)
 
                 # Element numbers are captured once per step, so any action
                 # after a re-render acts on whatever now sits at that number.

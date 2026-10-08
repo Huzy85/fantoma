@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.11.2 — 2026-10-08
+
+### Security
+
+- **The HTTP server listens on 127.0.0.1 unless a key is set.** With no `FANTOMA_API_KEY` it bound to every interface, so anyone on the network could drive the browser. `FANTOMA_HOST` overrides the choice. The Docker image sets it to `0.0.0.0`, because loopback inside a container cannot be reached from the published port.
+- **A proxy named in a request body is ignored without a key.** It routed all browser traffic, logins included, through a host the caller picked. Set `FANTOMA_API_KEY` or `FANTOMA_ALLOW_REQUEST_PROXY=1` to allow it.
+- **Profile paths stay under one directory** (`FANTOMA_PROFILE_BASE`, default `~/.local/share/fantoma`). `/start` and `/manual/open` accepted any path.
+- **A requested timeout is capped at an hour**, so one call cannot hold the single worker indefinitely.
+- **Domain policy covers schemes and private addresses.** With a policy active, `file:`, `chrome:` and `view-source:` are refused, and localhost, private, link-local and cloud metadata addresses are refused unless named in the allow list.
+- Saved sessions and the form memory database are written owner-only (0600 files, 0700 folders). A warning is logged when sessions are saved as plain JSON because `cryptography` is missing.
+- The weekly monitor runs its sender command without a shell.
+- MCP over HTTP logs a warning when bound beyond loopback, since it has no authentication.
+
+### Fixed
+
+- **Dialogs are reported.** A confirm box was cancelled silently while the click reported success. Dialogs are now answered by `FANTOMA_DIALOGS` (`dismiss` by default, or `accept`) and the action result says what the dialog asked.
+- **Tabs the site opens are reported**, with a hint to use `switch_tab`.
+- **A crashed or closed tab is reported** instead of hanging the next read until the task timeout. Page reads now time out after 20 seconds.
+- **HTTP errors are reported.** A 404 or 500 page adds an error to the state.
+- **Clickable divs work.** Enter does nothing on a `div` with an `onclick` handler. Non-native elements get the key first and a synthetic click if the page did not react.
+- **Pages whose controls sit only in an iframe** (card forms, embedded logins, `srcdoc` consent widgets) listed nothing to click.
+- Calling Fantoma from a second thread raises a clear error instead of hanging later calls.
+
+### Performance
+
+- `humanize=False` now reaches the browser. Every click carried a 1 to 3 second pause regardless.
+- Fixed sleeps after start, navigate, back and new tab are replaced by a wait for the page to settle.
+- Change tracking on pages with thousands of identically named links is linear instead of quadratic.
+
 ## 0.11.1 — 2026-10-07
 
 ### Fixed

@@ -24,7 +24,12 @@ class SessionManager:
         self._fernet = None
 
     def _ensure_dir(self):
-        os.makedirs(self._dir, exist_ok=True)
+        # Cookies and tokens live here: owner-only, whatever the umask says.
+        os.makedirs(self._dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(self._dir, 0o700)
+        except OSError:
+            pass
 
     def _key_path(self) -> str:
         return os.path.join(self._dir, ".key")
@@ -77,8 +82,13 @@ class SessionManager:
 
         filepath = self._filepath(domain, account)
         tmp_path = filepath + ".tmp"
+        if not fernet:
+            log.warning("cryptography is not installed — session for %s is being "
+                        "written as plain JSON. pip install fantoma[sessions] to "
+                        "encrypt it.", domain)
         try:
-            with open(tmp_path, "wb" if fernet else "w") as f:
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb" if fernet else "w") as f:
                 if fernet:
                     f.write(payload)
                 else:

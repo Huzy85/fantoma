@@ -543,9 +543,16 @@ def fantoma_health() -> dict:
 def main() -> None:
     transport = os.environ.get("FANTOMA_MCP_TRANSPORT", "stdio").lower()
     if transport in ("http", "streamable-http"):
+        host = os.environ.get("FANTOMA_MCP_HOST", "127.0.0.1")
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            import logging
+            logging.getLogger("fantoma").warning(
+                "MCP over HTTP on %s has no authentication: anything that can "
+                "reach the port can drive the browser. Put it behind a proxy "
+                "that checks a token, or keep it on 127.0.0.1.", host)
         mcp.run(
             transport="streamable-http",
-            host=os.environ.get("FANTOMA_MCP_HOST", "127.0.0.1"),
+            host=host,
             port=int(os.environ.get("FANTOMA_MCP_PORT", "8767")),
         )
     else:

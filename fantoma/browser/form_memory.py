@@ -60,8 +60,12 @@ CREATE TABLE IF NOT EXISTS snapshots (
 class FormMemory:
     def __init__(self, db_path=None):
         self._db_path = db_path or _DEFAULT_DB_PATH
-        os.makedirs(os.path.dirname(self._db_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self._db_path), mode=0o700, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path)
+        try:
+            os.chmod(self._db_path, 0o600)  # holds page snapshots and field labels
+        except OSError:
+            pass
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
 

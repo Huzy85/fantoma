@@ -72,10 +72,12 @@ def send_telegram(message: str):
             log.warning("No Telegram config found — skipping notification")
             return
         import re
+        import shlex
         import subprocess
         plain = re.sub(r"</?(b|i|code|pre)>", "", message)
         try:
-            subprocess.run(send_cmd, shell=True, input=plain.encode(),
+            # Split like a shell would, but never hand the string to one.
+            subprocess.run(shlex.split(send_cmd), input=plain.encode(),
                            timeout=60, check=True)
             log.info("Telegram notification sent via %s", send_cmd)
         except Exception as e:

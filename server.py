@@ -30,6 +30,43 @@ app = Flask(__name__)
 # the key. /evaluate is additionally gated by FANTOMA_ALLOW_EVAL (see below).
 API_KEY = os.environ.get("FANTOMA_API_KEY", "")
 ALLOW_EVAL = os.environ.get("FANTOMA_ALLOW_EVAL", "").lower() in ("1", "true", "yes")
+# A proxy named in a /run or /login body sends every byte of browser traffic,
+# logins included, through that host. Only an authenticated caller may ask
+# for it, or set FANTOMA_ALLOW_REQUEST_PROXY=1 on a network you trust.
+ALLOW_REQUEST_PROXY = bool(API_KEY) or os.environ.get(
+    "FANTOMA_ALLOW_REQUEST_PROXY", "").lower() in ("1", "true", "yes")
+# Persistent profiles (cookies, logins) must stay under one directory; a
+# request cannot point the browser at an arbitrary path.
+PROFILE_BASE = os.path.realpath(os.environ.get(
+    "FANTOMA_PROFILE_BASE", os.path.join(os.path.expanduser("~"), ".local", "share", "fantoma")))
+
+
+def _bind_host(api_key: str, env_host: str | None) -> str:
+    """Where the server listens. FANTOMA_HOST wins; otherwise an open
+    (keyless) server stays on loopback and a keyed one serves all interfaces."""
+    if env_host:
+        return env_host
+    return "0.0.0.0" if api_key else "127.0.0.1"
+
+
+def _safe_profile_dir(value) -> str | None:
+    """Resolve a caller-supplied profile path under PROFILE_BASE, or None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    candidate = value if os.path.isabs(value) else os.path.join(PROFILE_BASE, value)
+    resolved = os.path.realpath(candidate)
+    if resolved == PROFILE_BASE or resolved.startswith(PROFILE_BASE + os.sep):
+        return resolved
+    return None
+
+
+def _request_proxy(data: dict):
+    proxy = data.get("proxy")
+    if proxy and not ALLOW_REQUEST_PROXY:
+        log.warning("Ignoring request-supplied proxy: set FANTOMA_API_KEY or "
+                    "FANTOMA_ALLOW_REQUEST_PROXY=1 to allow it")
+        return PROXY_URL
+    return proxy if proxy else PROXY_URL
 
 
 @app.before_request
@@ -68,6 +105,7 @@ _WATCHDOG_DEFAULT = 120
 _WATCHDOG_BY_PATH = {"/run": 420, "/login": 240, "/extract": 240, "/read": 120, "/start": 75}
 # /health must never arm a watchdog — it is how callers check liveness.
 _WATCHDOG_EXEMPT = {"/health", "/manual/status"}
+_WATCHDOG_MAX_REQUESTED = 3600
 
 _watchdog_timer: threading.Timer | None = None
 
@@ -92,7 +130,9 @@ def _arm_watchdog():
         body = request.get_json(silent=True) or {}
         requested = body.get("timeout")
         if isinstance(requested, (int, float)) and requested > 0:
-            budget = max(budget, int(requested) + 120)
+            # Capped: a huge timeout would park the single worker for as
+            # long as the caller liked.
+            budget = max(budget, min(int(requested), _WATCHDOG_MAX_REQUESTED) + 120)
     if _watchdog_timer is not None:
         _watchdog_timer.cancel()
     _watchdog_timer = threading.Timer(budget, _watchdog_fire, args=(request.path, budget))
@@ -235,7 +275,10 @@ def start():
     data = request.get_json(force=True) or {}
     defaults = _get_fantoma_defaults()
     if data.get("profile_dir"):
-        defaults["profile_dir"] = data["profile_dir"]
+        safe = _safe_profile_dir(data["profile_dir"])
+        if not safe:
+            return jsonify({"error": f"profile_dir must sit under {PROFILE_BASE}"}), 400
+        defaults["profile_dir"] = safe
     _fantoma = Fantoma(**defaults)
 
     try:
@@ -487,7 +530,7 @@ def run_task():
             escalation_keys=escalation_keys,
             escalation_models=escalation_models,
             captcha_api=CAPTCHA_API, captcha_key=CAPTCHA_KEY,
-            proxy=data.get("proxy", PROXY_URL), headless=HEADLESS_MODE, browser="camoufox",
+            proxy=_request_proxy(data), headless=HEADLESS_MODE, browser="camoufox",
             max_steps=data.get("max_steps", 50), timeout=data.get("timeout", 300),
             sensitive_data=data.get("sensitive_data"),
         )
@@ -548,7 +591,9 @@ def manual_open():
 
     data = request.get_json(force=True) or {}
     url = data.get("url", "about:blank")
-    profile_dir = data.get("profile", "/root/.local/share/fantoma/chrome-x-profile")
+    profile_dir = _safe_profile_dir(data.get("profile") or os.path.join(PROFILE_BASE, "chrome-x-profile"))
+    if not profile_dir:
+        return jsonify({"error": f"profile must sit under {PROFILE_BASE}"}), 400
 
     try:
         _manual_fantoma = Fantoma(
@@ -618,5 +663,8 @@ if __name__ == "__main__":
         )
     if ALLOW_EVAL:
         log.warning("FANTOMA_ALLOW_EVAL is on — /evaluate will run arbitrary JS in the page.")
-    log.info("Fantoma server starting on port %d (auth=%s)", port, "on" if API_KEY else "OFF")
-    app.run(host="0.0.0.0", port=port, threaded=False)
+    host = _bind_host(API_KEY, os.environ.get("FANTOMA_HOST"))
+    if not API_KEY and host != "127.0.0.1":
+        log.warning("Serving without a key on %s — every host that can reach the port can drive the browser.", host)
+    log.info("Fantoma server starting on %s:%d (auth=%s)", host, port, "on" if API_KEY else "OFF")
+    app.run(host=host, port=port, threaded=False)

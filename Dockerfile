@@ -50,6 +50,9 @@ RUN pip3 install --no-cache-dir -e ".[captcha]"
 
 # Xvfb display setup
 ENV DISPLAY=:99
+# Inside a container loopback is unreachable from the published port, so the
+# server listens on all interfaces. Set FANTOMA_API_KEY on any shared network.
+ENV FANTOMA_HOST=0.0.0.0
 
 # Create dirs Fantoma expects
 RUN mkdir -p /root/.local/share/fantoma/traces \
