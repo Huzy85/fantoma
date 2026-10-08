@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A page that has arrived is read even when a script stalls.** A script at the end of a page that never finishes loading used to time out the navigation, and the retry in a new tab timed out the same way. When the page already has text on screen, Fantoma now reads it. A page with nothing drawn yet still fails as before.
+- The live check reads its table page from scrapethissite.com. the-internet.herokuapp.com now holds scripts in the page head back for 30 seconds, so no browser could draw that page in time.
+
 ## 0.11.2 — 2026-10-08
 
 ### Security

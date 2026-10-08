@@ -42,7 +42,10 @@ READS = [
     ("https://quotes.toscrape.com/", "albert einstein"),
     ("https://en.wikipedia.org/wiki/Python_(programming_language)", "guido van rossum"),
     ("https://docs.python.org/3/library/json.html", "json"),
-    ("https://the-internet.herokuapp.com/tables", "jsmith@gmail.com"),
+    # A table page. the-internet.herokuapp.com/tables was used until 2026-10:
+    # that host started holding scripts in <head> back for 30 s, so no browser
+    # could draw the page in time and the check failed on every run.
+    ("https://www.scrapethissite.com/pages/forms/", "boston bruins"),
 ]
 
 # Public pages behind well-known bot protection. A pass means the real page
