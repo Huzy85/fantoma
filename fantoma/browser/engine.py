@@ -418,24 +418,53 @@ class BrowserEngine:
         try:
             response = self._page.goto(url, wait_until=wait_until, timeout=timeout)
         except Exception as e:
-            # If page crashed, try to recover with a new page
-            _log.warning("Navigation failed: %s — trying recovery", e)
-            if not self._context:
-                raise
-            old_page = self._page
-            self._crashed.discard(old_page)
-            self._page = self._context.new_page()
-            self._popup_count = max(0, self._popup_count - 1)  # our own page, not a popup
+            response = None
+            if self._arrived_with_content(e):
+                # One slow script can hold DOMContentLoaded back for 30 s
+                # while the page itself is already on screen (measured on a
+                # host that throttles parallel requests). Reloading in a new
+                # tab doubled the wait and failed the same way, so read what
+                # arrived instead.
+                _log.warning("Navigation to %s timed out waiting for scripts; "
+                             "using the page as loaded so far", url)
+            else:
+                response = self._recover_navigation(url, wait_until, timeout, e)
+        self._after_navigation(url, response)
+
+    def _arrived_with_content(self, error) -> bool:
+        """True when a goto timed out but the document is there to read."""
+        if "Timeout" not in type(error).__name__ and "Timeout" not in str(error):
+            return False
+        try:
+            if self._page.url in ("", "about:blank") or self.page_crashed():
+                return False
+            return bool(self._page.evaluate(
+                "() => !!document.body && document.body.innerText.trim().length > 0"))
+        except Exception:
+            return False
+
+    def _recover_navigation(self, url, wait_until, timeout, e):
+        # If page crashed, try to recover with a new page
+        _log.warning("Navigation failed: %s — trying recovery", e)
+        if not self._context:
+            raise e
+        old_page = self._page
+        self._crashed.discard(old_page)
+        self._page = self._context.new_page()
+        self._popup_count = max(0, self._popup_count - 1)  # our own page, not a popup
+        try:
+            response = self._page.goto(url, wait_until=wait_until, timeout=timeout)
+        except Exception:
+            # Recovery also failed — close the new blank page, restore old
             try:
-                response = self._page.goto(url, wait_until=wait_until, timeout=timeout)
+                self._page.close()
             except Exception:
-                # Recovery also failed — close the new blank page, restore old
-                try:
-                    self._page.close()
-                except Exception:
-                    pass
-                self._page = old_page
-                raise
+                pass
+            self._page = old_page
+            raise
+        return response
+
+    def _after_navigation(self, url, response):
         if response is not None:
             try:
                 self.last_status, self._last_status_url = response.status, self._page.url

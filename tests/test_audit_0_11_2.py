@@ -161,14 +161,20 @@ IFRAME_ONLY = """<html><body><h1>Pay</h1>
 
 @pytest.fixture(scope="module")
 def site():
-    pages = {"/dialog": DIALOG_PAGE, "/iframe": IFRAME_ONLY}
+    pages = {"/dialog": DIALOG_PAGE, "/iframe": IFRAME_ONLY,
+             "/stall": "<html><body><table><tr><td>jsmith@example.com</td></tr></table>"
+                       "<script src='/slow.js'></script></body></html>",
+             "/slow.js": None}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
 
         def do_GET(self):
-            body = pages.get(self.path, "<h1>missing</h1>").encode()
+            if self.path == "/slow.js":
+                import time
+                time.sleep(4)
+            body = (pages.get(self.path) or "<h1>missing</h1>").encode()
             self.send_response(200 if self.path in pages else 404)
             self.send_header("Content-Type", "text/html")
             self.send_header("Content-Length", str(len(body)))
@@ -296,5 +302,26 @@ class TestRealBrowser:
             assert e.page_crashed() is False
             e._page.close()
             assert e.page_crashed() is True
+        finally:
+            ctx.close()
+
+
+    def test_page_kept_when_a_script_stalls(self, chromium, site):
+        ctx = chromium.new_context()
+        try:
+            e = _engine_on(ctx)
+            e.navigate(site + "/stall", timeout=1500)
+            assert e._page.url.endswith("/stall")
+            assert "jsmith@example.com" in e._page.inner_text("body")
+            assert len(ctx.pages) == 1  # no recovery tab opened
+        finally:
+            ctx.close()
+
+    def test_timeout_on_empty_page_still_raises(self, chromium, site):
+        ctx = chromium.new_context()
+        try:
+            e = _engine_on(ctx)
+            with pytest.raises(Exception):
+                e.navigate(site + "/slow.js", timeout=1000)
         finally:
             ctx.close()
