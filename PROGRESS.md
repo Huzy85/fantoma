@@ -1208,3 +1208,6 @@ Fantoma uses 3-5 LLM calls per task at ~200 tokens each. Check each provider's c
 15. ~~Overnight stress test~~ DONE (2026-03-24) — 2,241 tests, 98.6% pass rate, 3 APIs, 7 hours
 16. ~~Fresh install test (pip install in clean venv)~~ DONE (2026-10-07) — clean venv, `pip install .`, import + `fantoma --help` OK
 17. ~~Create GitHub repo~~ DONE — public repo live since 2026-03
+
+## 2026-10-08 — 0.11.2
+Security and reliability fixes, see CHANGELOG 0.11.2. Next candidates (secret-to-host binding, fewer snapshots per step, batched occlusion filter, resource blocking, prompt cache order, domcontentloaded navigation, CDP attach, stable refs, WebMCP, skill/CLI packaging).

