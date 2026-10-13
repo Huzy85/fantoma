@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Listed for the official MCP Registry: `server.json` and the `mcp-name` line in the README. The headline now says small local models can drive the read path, matching what the measurements show.
+- Added `llms.txt`.
+
 ### Fixed
 
 - **A page that has arrived is read even when a script stalls.** A script at the end of a page that never finishes loading used to time out the navigation, and the retry in a new tab timed out the same way. When the page already has text on screen, Fantoma now reads it. A page with nothing drawn yet still fails as before.

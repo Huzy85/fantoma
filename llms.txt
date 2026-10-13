@@ -1,0 +1,17 @@
+# Fantoma
+
+> A browser for AI agents that reads pages through the accessibility tree instead of screenshots. Python library, HTTP server and MCP server. MIT licence.
+
+Reading pages works on small local models (30/31 sites on a 35B local MoE). Multi-step interaction needs a stronger model: the same local model finished 1 of 6 flows, a frontier model finished 6 of 6. Trust `verified` over `success` on results.
+
+## Use it
+- Install: `pip install "fantoma[mcp]"`, then `claude mcp add fantoma -- fantoma-mcp`
+- MCP tools: `fantoma_read` and `fantoma_login` (no LLM needed), `fantoma_run` and `fantoma_extract` (need an OpenAI-compatible LLM)
+
+## Docs
+- [README](https://github.com/Huzy85/fantoma/blob/main/README.md): install, MCP setup, safety, limitations, measured results
+- [Changelog](https://github.com/Huzy85/fantoma/blob/main/CHANGELOG.md)
+
+## Limits
+- No automation is undetectable. Protected-site reads are good, not guaranteed.
+- For accessibility auditing, QA of your own apps and personal automation. No bulk account creation.

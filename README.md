@@ -5,7 +5,10 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Tests](https://github.com/Huzy85/fantoma/actions/workflows/tests.yml/badge.svg)](https://github.com/Huzy85/fantoma/actions/workflows/tests.yml)
 
-**A stealth browser for AI agents that runs on small, local models.** Fantoma reads pages the way a screen reader does, through the accessibility tree rather than screenshots, so the model gets structured text instead of pixels.
+**A stealth browser for AI agents. It reads pages through the accessibility tree, so small local models can drive it.** Fantoma sees a page the way a screen reader does, as structured text rather than screenshots, so the model gets words instead of pixels.
+
+<!-- mcp-name: io.github.Huzy85/fantoma -->
+mcp-name: io.github.Huzy85/fantoma
 
 No vision model, no pixel coordinates, no mouse telemetry. A step costs about 500 tokens instead of the 1,000-5,000 a screenshot costs, which is what makes a small model on your own hardware practical.
 
