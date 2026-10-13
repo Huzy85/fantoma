@@ -1,8 +1,11 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Huzy85/fantoma",
-  "description": "Accessibility-tree browser for AI agents: read pages, log in, extract, run tasks. Small local models can read; acting needs a stronger one.",
-  "repository": {"url": "https://github.com/Huzy85/fantoma", "source": "github"},
+  "description": "Accessibility-tree browser for AI agents: read pages, log in, extract data, run tasks.",
+  "repository": {
+    "url": "https://github.com/Huzy85/fantoma",
+    "source": "github"
+  },
   "version": "0.11.3",
   "packages": [
     {
@@ -10,7 +13,9 @@
       "identifier": "fantoma",
       "version": "0.11.3",
       "runtimeHint": "uvx",
-      "transport": {"type": "stdio"}
+      "transport": {
+        "type": "stdio"
+      }
     }
   ]
 }
