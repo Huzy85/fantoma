@@ -34,7 +34,22 @@
 - Listed for the official MCP Registry: `server.json` and the `mcp-name` line in the README. The headline now says small local models can drive the read path, matching what the measurements show.
 - Added `llms.txt`.
 
+### Security
+
+- Element numbers no longer match look-alikes: when the exact role and name finds nothing, the fallback accepts only a name equal after case and whitespace folding, so "Delete" no longer clicks "Undo delete".
+- Element numbers for repeated controls (several "Remove" buttons) are checked against their link target and item label before use, so a same-length reorder of rows can no longer land on the wrong row; if nothing matches uniquely the action is refused. A control with neither link target nor label is still found by position only.
+- The WebMCP prompt block is masked with the scoped secret store for the current URL; it crashed on `sensitive_data=None` and on the scoped form.
+- The field-labelling prompt in form login fences page attribute values as untrusted and cuts each to 40 characters.
+- Injection warning excerpts are cut from the same invisible-character-stripped text the match offsets come from.
+- The resource blocker aborts a request when handing it on fails, instead of continuing it past the domain policy.
+- The action cache directory is created mode 0700 and the setup config file is created 0600 from the first write.
+- `fantoma` CLI no longer builds shell strings for `/monitor` and `/clear`.
+- Hidden-text removal in `read` also drops text with a sub-pixel font size and absolutely positioned text whose box is fully outside the document.
+- The dropdown popup selector built from the page's `aria-controls` is quoted as a CSS string.
+
 ### Fixed
+
+- A timed-out page read no longer makes every later read fail. The "page not answering" flag now expires after 5 seconds and is cleared at the start of each public call (`navigate`, `read`, `extract`, `login`, `Agent.run`), so one timeout cannot poison later calls in the same thread or server process.
 
 - **Fantoma no longer kills other programs' browsers.** Clearing a wedged driver ran `pkill -f playwright/driver/node` (and the same for `camoufox-bin` and the glxtest Xvfb), which matched every Playwright browser on the machine, including a second Fantoma. Only processes started by this Fantoma are touched now. The Docker image sets `FANTOMA_REAP_ALL=1` to keep the old container-wide clean-up, since every browser there is Fantoma's.
 - **A page that has arrived is read even when a script stalls.** A script at the end of a page that never finishes loading used to time out the navigation, and the retry in a new tab timed out the same way. When the page already has text on screen, Fantoma now reads it. A page with nothing drawn yet still fails as before.

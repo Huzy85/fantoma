@@ -35,7 +35,22 @@ PAGE = b"""<!doctype html><html><head><title>Stable refs</title></head><body>
 <button id="remove" onclick="removeB()">Remove B</button>
 <button id="dup" onclick="dup()">Duplicate Save</button>
 <ul id="list"></ul>
+<button id="swaprows" onclick="swapRows()">Swap rows</button>
+<ul id="rows"></ul>
 <script>
+let rows = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo'];
+function drawRows() {
+  const ul = document.getElementById('rows'); ul.innerHTML = '';
+  for (const n of rows) {
+    const li = document.createElement('li'); const a = document.createElement('a');
+    a.href = '#' + n; a.textContent = 'Row ' + n;
+    const b = document.createElement('button'); b.textContent = 'Remove';
+    b.onclick = () => { document.getElementById('result').textContent = 'removed ' + n; };
+    li.appendChild(a); li.appendChild(b); ul.appendChild(li);
+  }
+}
+function swapRows() { [rows[1], rows[3]] = [rows[3], rows[1]]; drawRows(); }
+drawRows();
 let items = ['Item A', 'Item B', 'Item C', 'Item D'];
 function draw() {
   const ul = document.getElementById('list'); ul.innerHTML = '';
@@ -140,6 +155,24 @@ def run(browser, url):
     check("after a re-read both Saves are addressable", len(set(new_save)) == 2, str(new_save))
 
 
+def run_same_length_reorder(browser, url):
+    print("same-length reorder of identical buttons with different row labels")
+    fresh(browser, url)
+    page = browser._engine.get_page()
+    bravo = next((e["index"] for e in browser._dom._last_interactive
+                  if e["name"] == "Remove" and e.get("_context") == "Row Bravo"), None)
+    check("Remove for Row Bravo is listed with its row label", bravo is not None)
+    if bravo is None:
+        return
+    page.click("#swaprows")                      # rows 2 and 4 swap, same count
+    el = browser._dom.get_element_by_index(page, bravo)
+    check("resolved to a live element", el is not None)
+    if el is not None:
+        el.click()
+        check("hit the Bravo row, not whatever sits at its old position",
+              result_text(browser) == "removed Bravo", result_text(browser))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--browser", default="camoufox", choices=["camoufox", "chromium"])
@@ -154,6 +187,7 @@ def main() -> int:
     try:
         browser.start()
         run(browser, url)
+        run_same_length_reorder(browser, url)
     finally:
         try:
             browser.stop()
