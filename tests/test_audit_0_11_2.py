@@ -78,7 +78,7 @@ class TestServerHelpers:
         monkeypatch.setattr(s, "PROXY_URL", None)
         assert s._request_proxy({"proxy": "http://attacker:8080"}) is None
         monkeypatch.setattr(s, "ALLOW_REQUEST_PROXY", True)
-        assert s._request_proxy({"proxy": "http://mine:8080"}) == "http://mine:8080"
+        assert s._request_proxy({"proxy": "http://mine:8080"}) == {"server": "http://mine:8080"}
         assert s._request_proxy({}) is None
 
     def test_watchdog_cap_exists(self):

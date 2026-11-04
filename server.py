@@ -13,7 +13,7 @@ import re
 import threading
 import uuid
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from flask import Flask, request, jsonify, send_file
 from io import BytesIO
@@ -94,10 +94,8 @@ def _clean_allowed_domains(value):
         item = item.strip().lower()
         if not ALLOW_PRIVATE and _is_private_host(item.removeprefix("*.")):
             return None, "'allowed_domains' may not name a private or loopback host"
-        bare = item.removeprefix("*.")
-        if not ALLOW_PRIVATE and not item.startswith("*.") and _resolves_private(bare):
-            return None, ("'allowed_domains' entry resolves to a private address or does not "
-                          "resolve: " + bare)
+        # No DNS lookup here: 100 entries at 3 s each would outlast the /start
+        # watchdog. DomainPolicy.permits() resolves per request instead.
         out.append(item)
     return (out or None), None
 
@@ -148,13 +146,33 @@ def _server_error(e, *secrets, **extra):
     return jsonify(body), 500
 
 
-def _json_object() -> dict:
-    """The request body, which must be a JSON object. Anything else raises
-    TypeError, which the 400 handler below turns into a clean answer."""
-    data = request.get_json(force=True)
+class BadRequestBody(Exception):
+    """The caller sent a body or field we cannot use. The message is ours,
+    written for the caller, and is the only exception type answered as a 400."""
+
+
+def _json_object(optional: bool = False) -> dict:
+    """The request body, which must be a JSON object. An empty body is {} when
+    `optional`. Malformed JSON raises werkzeug's BadRequest, an object of the
+    wrong shape raises BadRequestBody; both are answered as JSON 400s."""
+    if not request.get_data(cache=True).strip():
+        if optional:
+            return {}
+        raise BadRequestBody("body must be a JSON object")
+    data = request.get_json()
     if not isinstance(data, dict):
-        raise TypeError("body must be a JSON object")
+        raise BadRequestBody("body must be a JSON object")
     return data
+
+
+def _field(data: dict, name: str, kind=None):
+    """A required body field, optionally of one type (bool is never an int)."""
+    if name not in data:
+        raise BadRequestBody(f"missing field '{name}'")
+    value = data[name]
+    if kind is not None and (not isinstance(value, kind) or (kind is int and isinstance(value, bool))):
+        raise BadRequestBody(f"field '{name}' has the wrong type")
+    return value
 
 
 def _apply_block_private_env() -> None:
@@ -187,27 +205,49 @@ def _safe_profile_dir(value) -> str | None:
     return None
 
 
-def _proxy_problem(proxy):
-    """Why a request-supplied proxy is refused, or None. Only http, https and
-    socks5 proxies, and not one on a private or loopback host (it would let a
-    caller aim the browser's traffic at the local network) unless
-    FANTOMA_ALLOW_PRIVATE=1."""
+def _parse_proxy(proxy, check_host=True):
+    """Validate a request-supplied proxy and rebuild it from its parsed parts.
+    Returns (playwright_proxy_dict | None, error | None).
+
+    Only http, https and socks5 proxies, and not one on a private or loopback
+    host (it would let a caller aim the browser's traffic at the local network)
+    unless FANTOMA_ALLOW_PRIVATE=1. The string the caller sent is never passed
+    on: a netloc with a second "@", a comma, a semicolon or whitespace is
+    refused outright, because the URL parser and the browser can disagree
+    about which host such a string names."""
     if proxy is None or proxy == "":
-        return None
+        return None, None
     if not isinstance(proxy, str) or len(proxy) > 2048:
-        return "'proxy' must be a URL string"
+        return None, "'proxy' must be a URL string"
+    if re.search(r"[,;\s]", proxy):
+        return None, "'proxy' is not a valid URL"
+    text = proxy if "://" in proxy else "http://" + proxy
     try:
-        parsed = urlparse(proxy if "://" in proxy else "http://" + proxy)
+        parsed = urlparse(text)
         host = parsed.hostname or ""
-        parsed.port  # noqa: B018 (raises ValueError on a bad port)
+        port = parsed.port
     except ValueError:
-        return "'proxy' is not a valid URL"
-    if parsed.scheme.lower() not in ("http", "https", "socks5", "socks5h") or not host:
-        return "'proxy' must be an http, https or socks5 URL with a host"
-    if not ALLOW_PRIVATE and (_is_private_host(host) or _resolves_private(host)):
-        return ("'proxy' may not point at a private or loopback host "
-                "(set FANTOMA_ALLOW_PRIVATE=1 to allow it)")
-    return None
+        return None, "'proxy' is not a valid URL"
+    if parsed.netloc.count("@") > 1 or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        return None, "'proxy' is not a valid URL"
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https", "socks5", "socks5h") or not host:
+        return None, "'proxy' must be an http, https or socks5 URL with a host"
+    if check_host and not ALLOW_PRIVATE and (_is_private_host(host) or _resolves_private(host)):
+        return None, ("'proxy' may not point at a private or loopback host "
+                      "(set FANTOMA_ALLOW_PRIVATE=1 to allow it)")
+    shown = f"[{host}]" if ":" in host else host
+    out = {"server": f"{scheme}://{shown}" + (f":{port}" if port else "")}
+    if parsed.username is not None:
+        out["username"] = unquote(parsed.username)
+        if parsed.password is not None:
+            out["password"] = unquote(parsed.password)
+    return out, None
+
+
+def _proxy_problem(proxy):
+    """Why a request-supplied proxy is refused, or None."""
+    return _parse_proxy(proxy)[1]
 
 
 def _request_proxy(data: dict):
@@ -216,7 +256,8 @@ def _request_proxy(data: dict):
         log.warning("Ignoring request-supplied proxy: set FANTOMA_API_KEY or "
                     "FANTOMA_ALLOW_REQUEST_PROXY=1 to allow it")
         return PROXY_URL
-    return proxy if proxy else PROXY_URL
+    parsed, _ = _parse_proxy(proxy, check_host=False) if proxy else (None, None)
+    return parsed if parsed else PROXY_URL
 
 
 @app.before_request
@@ -233,6 +274,37 @@ def _refuse_open_remote():
                              "FANTOMA_INSECURE_NO_AUTH=1 to allow it)"}), 503
 
 
+_PROXY_HEADERS = ("X-Forwarded-For", "Forwarded", "X-Real-IP", "Via")
+
+
+@app.before_request
+def _keyless_guard():
+    """With no API key the only protection is "the caller is on loopback". Two
+    ways round that are closed here.
+
+    A browser on this machine can be told by any web page to send a request to
+    127.0.0.1, so a keyless server refuses anything that looks like a browser
+    page made it: an Origin header, or Sec-Fetch-Site other than none /
+    same-origin (403). Scripts, curl and the MCP backend send neither.
+
+    A reverse proxy on the same host makes every remote client look like
+    loopback, so a keyless request that carries proxy headers is refused
+    (503). Behind any proxy a key is mandatory. FANTOMA_INSECURE_NO_AUTH=1
+    skips only this second check, because that operator chose an open API on a
+    non-loopback address."""
+    if API_KEY or request.path == "/health":
+        return None
+    if request.headers.get("Origin") is not None or \
+            request.headers.get("Sec-Fetch-Site", "none").lower() not in ("none", "same-origin"):
+        return jsonify({"error": "browser-originated requests are refused when FANTOMA_API_KEY "
+                                 "is not set"}), 403
+    if not INSECURE_NO_AUTH and any(h in request.headers for h in _PROXY_HEADERS):
+        return jsonify({"error": "server misconfigured: request carries proxy headers but "
+                                 "FANTOMA_API_KEY is not set. Behind a reverse proxy a key is "
+                                 "mandatory"}), 503
+    return None
+
+
 @app.before_request
 def _require_api_key():
     if not API_KEY or request.path == "/health":
@@ -244,6 +316,18 @@ def _require_api_key():
             provided = auth[7:]
     if not hmac.compare_digest(provided, API_KEY):
         return jsonify({"error": "unauthorized"}), 401
+    return None
+
+
+@app.before_request
+def _require_json_body():
+    """Every body must be declared as application/json. A page cannot send
+    that cross-origin without a CORS preflight, which this server never
+    answers, so a text/plain "simple" request is refused (415)."""
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and request.path != "/health":
+        if (request.content_length or request.headers.get("Transfer-Encoding")) \
+                and request.mimetype != "application/json":
+            return jsonify({"error": "Content-Type must be application/json"}), 415
     return None
 
 
@@ -414,25 +498,21 @@ def _release_session() -> None:
 
 # ── Lifecycle endpoints ──────────────────────────────────────
 
-@app.errorhandler(KeyError)
-def _missing_key(e):
-    return jsonify({"error": f"missing field {e.args[0]!r}" if e.args else "missing field"}), 400
-
-
-@app.errorhandler(TypeError)
-@app.errorhandler(ValueError)
-def _bad_input(e):
-    # A JSON body of the wrong shape (a list, a number) or a wrong-typed
-    # field. Generic text: the exception message may carry internals.
-    log.info("bad request %s: %s", request.path, str(e)[:200])
-    return jsonify({"error": "invalid request body"}), 400
+@app.errorhandler(BadRequestBody)
+def _bad_body(e):
+    log.info("bad request %s: %s", request.path, _masked(e)[:200])
+    return jsonify({"error": str(e)}), 400
 
 
 @app.errorhandler(Exception)
 def _unhandled(e):
     from werkzeug.exceptions import HTTPException
     if isinstance(e, HTTPException):
-        return e
+        # Malformed JSON (BadRequest), wrong content type (415), unknown
+        # route and so on: always a JSON body, never an HTML page.
+        return jsonify({"error": e.name.lower() if e.code == 400 else (e.description or e.name)}), e.code
+    # Library errors (KeyError, ValueError, ...) are server faults, not
+    # something the caller can fix: generic 500, detail only in the masked log.
     return _server_error(e)
 
 
@@ -447,9 +527,7 @@ def start():
     global _fantoma
     if _fantoma is not None:
         return jsonify({"error": "session active", "url": "unknown"}), 409
-    data = request.get_json(force=True, silent=True) or {}
-    if not isinstance(data, dict):
-        return jsonify({"error": "body must be a JSON object"}), 400
+    data = _json_object(optional=True)
     bad = _bad_url(data.get("url"))
     if bad:
         return bad
@@ -578,7 +656,7 @@ def click():
     if err:
         return err
     data = _json_object()
-    return jsonify(_fantoma.click(data["element_id"]))
+    return jsonify(_fantoma.click(_field(data, "element_id")))
 
 
 @app.route("/type", methods=["POST"])
@@ -587,7 +665,7 @@ def type_text():
     if err:
         return err
     data = _json_object()
-    return jsonify(_fantoma.type_text(data["element_id"], data["text"]))
+    return jsonify(_fantoma.type_text(_field(data, "element_id"), _field(data, "text", str)))
 
 
 @app.route("/navigate", methods=["POST"])
@@ -595,8 +673,8 @@ def navigate():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True, silent=True) or {}
-    bad = _bad_url(data.get("url") if isinstance(data, dict) else None, required=True)
+    data = _json_object(optional=True)
+    bad = _bad_url(data.get("url"), required=True)
     if bad:
         return bad
     return jsonify(_fantoma.navigate(data["url"]))
@@ -608,7 +686,7 @@ def select():
     if err:
         return err
     data = _json_object()
-    return jsonify(_fantoma.select(data["element_id"], data["value"]))
+    return jsonify(_fantoma.select(_field(data, "element_id"), _field(data, "value")))
 
 
 @app.route("/scroll", methods=["POST"])
@@ -626,7 +704,7 @@ def press_key():
     if err:
         return err
     data = _json_object()
-    return jsonify(_fantoma.press_key(data["key"]))
+    return jsonify(_fantoma.press_key(_field(data, "key", str)))
 
 
 # ── High-level endpoints ─────────────────────────────────────
@@ -670,17 +748,11 @@ def _login_guard(url: str, secrets: dict):
 def login():
     """Manages its own session — starts, logs in, leaves browser open."""
     global _fantoma
-    data = request.get_json(force=True, silent=True) or {}
-    if not isinstance(data, dict):
-        return jsonify({"error": "body must be a JSON object"}), 400
+    data = _json_object(optional=True)
     url = data.get("url")
     bad = _bad_url(url, required=True)
     if bad:
         return bad
-    proxy_problem = _proxy_problem(data.get("proxy"))
-    if proxy_problem:
-        return jsonify({"error": proxy_problem}), 400
-
     secrets = {k: data.get(k) for k in ("email", "username", "password")}
     guard = _login_guard(url, secrets)
 
@@ -734,17 +806,20 @@ def read_page():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(silent=True) or {}
+    data = _json_object(optional=True)
     bad = _bad_url(data.get("url"))
     if bad:
         return bad
+    max_chars = data.get("max_chars") or 0
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int):
+        raise BadRequestBody("field 'max_chars' must be an integer")
     try:
         result = _fantoma.read(
             url=data.get("url") or None,
             main_only=bool(data.get("main_only", True)),
             include_links=bool(data.get("include_links", True)),
             selector=str(data.get("selector") or ""),
-            max_chars=int(data.get("max_chars") or 0),
+            max_chars=max_chars,
         )
         return jsonify({"success": True, **result})
     except DomainBlocked as e:
@@ -761,9 +836,7 @@ def run_task():
     caller can inspect the end state via /state.
     """
     global _fantoma
-    data = request.get_json(force=True, silent=True) or {}
-    if not isinstance(data, dict):
-        return jsonify({"error": "body must be a JSON object"}), 400
+    data = _json_object(optional=True)
     task = data.get("task")
     if not task or not isinstance(task, str):
         return jsonify({"error": "Missing 'task'"}), 400
@@ -876,7 +949,7 @@ def manual_open():
     if _manual_fantoma is not None:
         return jsonify({"error": "Manual session already open. POST /manual/close first."}), 409
 
-    data = request.get_json(force=True) or {}
+    data = _json_object(optional=True)
     url = data.get("url", "about:blank")
     bad = _bad_url(url)
     if bad:
