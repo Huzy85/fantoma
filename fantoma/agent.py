@@ -716,6 +716,8 @@ class _Session:
             {"role": "user", "content": f"Page ({state['url']}):\n"
                                         f"{wrap_untrusted(state['aria_tree'], state['url'])}"},
         ]
+        if getattr(self.agent.fantoma, "_webmcp", False) is True:
+            messages[-1]["content"] += self.agent.fantoma.webmcp_prompt()
         raw = self.agent._llm.chat(messages, max_tokens=200)
         actions = _parse_actions(raw or "")
         result = state

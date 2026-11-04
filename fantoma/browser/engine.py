@@ -26,8 +26,9 @@ class BrowserEngine:
 
     def __init__(self, headless=True, profile_dir=None, humanize=True, accessibility=True, proxy=None,
                  trace=False, trace_dir=None, browser_engine="camoufox",
-                 allowed_domains=None, blocked_domains=None, chromium_full_headless=None):
+                 allowed_domains=None, blocked_domains=None, chromium_full_headless=None, webmcp=False):
         self.headless = headless
+        self.webmcp = webmcp  # Chromium only: full Chrome + --enable-features=WebMCP
         # Chromium only. Headless runs default to chrome-headless-shell, which
         # lacks some features (WebMCP). True uses the full Chrome build with
         # --headless instead. Env FANTOMA_CHROMIUM_FULL_HEADLESS=1 also turns it on.
@@ -283,6 +284,11 @@ class BrowserEngine:
             chromium_flags.append("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
         if os.environ.get("FANTOMA_DISABLE_WEBGL", "").lower() in ("1", "true", "yes"):
             chromium_flags.append("--disable-webgl")
+        if self.webmcp:
+            from fantoma.webmcp import CHROME_FLAG
+            chromium_flags.append(CHROME_FLAG)
+            if self.headless:
+                launch_args["channel"] = "chromium"  # chrome-headless-shell has no WebMCP
         if chromium_flags:
             launch_args["args"] = chromium_flags
         if self.profile_dir:
