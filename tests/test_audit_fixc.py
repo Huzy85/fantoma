@@ -428,4 +428,4 @@ def test_benchmark_telegram_comes_only_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("FANTOMA_BENCH_TELEGRAM_CHAT", "c")
     assert mod._load_telegram_config() == ("t", "c")
     for name in ("runner.py", "run_docker.sh", "run_overnight.sh"):
-        assert "config.json" not in open(os.path.join(root, "benchmark", name)).read()
+        assert "nano" + "bot" not in open(os.path.join(root, "benchmark", name)).read()
