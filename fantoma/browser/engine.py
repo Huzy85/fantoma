@@ -25,14 +25,21 @@ _ATTACH_WARNED = False
 class BrowserEngine:
     """Manages a Camoufox browser session with anti-detection and human-like behaviour."""
 
+    _blocker = None
+    block_resources = False
     _cdp_url = None  # class default: some tests build engines without __init__
     DEFAULT_TRACE_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "fantoma", "traces")
 
     def __init__(self, headless=True, profile_dir=None, humanize=True, accessibility=True, proxy=None,
                  trace=False, trace_dir=None, browser_engine="camoufox",
                  allowed_domains=None, blocked_domains=None, chromium_full_headless=None,
-                 cdp_url=None, allow_remote_cdp=False, webmcp=False):
+                 cdp_url=None, allow_remote_cdp=False, webmcp=False, block_resources=None):
         self.headless = headless
+        if block_resources is None:
+            from fantoma.browser.blocking import env_enabled
+            block_resources = env_enabled()
+        self.block_resources = bool(block_resources)
+        self._blocker = None
         self.webmcp = webmcp  # Chromium only: full Chrome + --enable-features=WebMCP
         # Attach to a Chrome the user already runs. Chromium only. Fantoma
         # works in tabs it opens itself and never closes the browser.
@@ -154,7 +161,20 @@ class BrowserEngine:
             self.domain_policy.install(self._context)
             _log.info("Domain policy on: allowed=%s blocked=%s",
                       self.domain_policy.allowed or "any", self.domain_policy.blocked or "none")
+        if self.block_resources:
+            if self.attached:
+                _log.warning("block_resources ignored: attached to your own Chrome, "
+                             "Fantoma does not change its network behaviour.")
+            else:
+                from fantoma.browser.blocking import ResourceBlocker
+                self._blocker = ResourceBlocker()
+                self._blocker.install(self._context)  # after domain policy: runs first, falls back
+                _log.info("Blocking fonts and media")
         self._install_page_hooks()
+
+    @property
+    def blocked_requests(self) -> int:
+        return self._blocker.blocked if self._blocker else 0
 
     # Dialogs: FANTOMA_DIALOGS=dismiss (default) cancels confirm/prompt and
     # closes alerts, which is what Playwright did silently before; "accept"
@@ -423,6 +443,8 @@ class BrowserEngine:
 
     def stop(self):
         """Close browser gracefully."""
+        if self._blocker:
+            _log.info("Blocked %d font/media requests", self._blocker.blocked)
         if self.attached:
             if self._trace_active and self._context:
                 try:

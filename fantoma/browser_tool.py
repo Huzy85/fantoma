@@ -60,6 +60,7 @@ class Fantoma:
         cdp_url: str = None,
         allow_remote_cdp: bool = False,
         webmcp: bool | str = None,
+        block_resources: bool = None,
     ):
         self.config = FantomaConfig()
         # Hostnames the browser may / may not contact. None falls back to
@@ -92,6 +93,7 @@ class Fantoma:
         self._webmcp_all = isinstance(webmcp, str) and webmcp.lower() == "all"
         self._webmcp = bool(webmcp)
         self._webmcp_last: dict | None = None
+        self._block_resources = block_resources  # None: FANTOMA_BLOCK_RESOURCES
         self.config.browser.headless = headless
         self.config.browser.browser_engine = browser
         self.config.browser.timeout = timeout
@@ -155,6 +157,7 @@ class Fantoma:
             allowed_domains=self._allowed_domains,
             blocked_domains=self._blocked_domains,
             webmcp=self._webmcp,
+            block_resources=self._block_resources,
             # Was always on: the config flag never reached the engine, so
             # every click carried a 1-3 s pause even with humanize=False.
             humanize=self.config.browser.humanize,
