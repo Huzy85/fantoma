@@ -24,6 +24,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from fantoma.secrets_scope import SecretStore, refusal_message
 from fantoma.task_spec import _quoted_spans, _value_key
 
 log = logging.getLogger("fantoma.fast_path")
@@ -398,25 +399,38 @@ def _click(clause, fantoma):
 
 
 class _Revealing:
-    """The browser, with <secret:name> placeholders filled in as it types."""
+    """The browser, with <secret:name> placeholders filled in as it types.
+
+    The page URL is read at the moment of filling. A scoped secret on the
+    wrong site raises SecretRefused, which the clause loop reports as a
+    failed step; the value is never typed.
+    """
 
     def __init__(self, fantoma, secrets):
         self._f = fantoma
-        self._secrets = secrets
+        self._store = SecretStore.from_any(secrets)
 
     def __getattr__(self, name):
         return getattr(self._f, name)
 
     def reveal(self, text: str) -> str:
-        for name, value in self._secrets.items():
-            text = text.replace(f"<secret:{name}>", value)
+        text, refused = self._store.reveal(text, _url(self._f))
+        if refused:
+            raise SecretRefused(refusal_message(refused))
         return text
 
     def type_text(self, element_id, text):
         return self._f.type_text(element_id, self.reveal(text))
 
     def login(self, url, **creds):
-        return self._f.login(url, **{k: self.reveal(v) for k, v in creds.items()})
+        # Placeholders go down as they are; each is filled in at the moment of
+        # typing, after the page URL is read again, so a redirect between the
+        # username and password steps is caught.
+        return self._f.login(url, value_guard=self.reveal, **creds)
+
+
+class SecretRefused(Exception):
+    """A secret was asked for on a site it is not scoped to."""
 
 
 _QUESTION = re.compile(r"^(?:what|what's|how|when|who|which|where|tell|give|show|list|find out|report)\b", re.I)

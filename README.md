@@ -272,6 +272,19 @@ A consequence worth knowing: `/health` deliberately does not start a browser, so
 - **ARIA landmark grouping** — interactive elements grouped under their nearest ARIA landmark (`[form: Login]`, `[navigation: Main nav]`). LLM sees structural context, not a flat list.
 - **Cookie consent auto-dismiss** — detects and closes consent banners without LLM involvement.
 
+
+### Scoped secrets
+
+`sensitive_data` also accepts secrets tied to a site: `{"https://*.example.com": {"password": "..."}, "github.com": {"token": "..."}}`. The flat form (`{"password": "..."}`) still works and types on any site.
+
+- A pattern without a scheme means https only. `http://` and `http*://` (either) are allowed.
+- `*.example.com` matches `example.com` and its subdomains. Bare `example.com` matches only that host. Ports must match (443 and 80 are the defaults).
+- Patterns with more than one wildcard, a wildcard TLD (`example.*`) or a prefix wildcard (`*google.com`) raise `ValueError` when the `Agent` is built. Lookalike hosts such as `github.com.evil.test` never match, and internationalised names are compared in their punycode form.
+- The page URL is read again right before each fill. If it does not match, the action fails with `secret 'name' is not allowed on this site` and the value is never typed.
+- The model only sees `<secret:name>` placeholders, and only those usable on the current page. Real values are masked out of page text, step details and the returned result.
+
+`python tools/secrets_scope_live.py` shows it against two local pages, with no model.
+
 ## What It's For
 
 - **Agentic workflows on your own systems.** Give an LLM a browser it can actually drive, including past a login, without handing credentials to a third-party cloud.
@@ -401,6 +414,12 @@ agent = Agent(
 )
 result = agent.run("Sign up at https://example.com/register")
 # LLM sees: TYPE [3] "<secret:email>" — real value injected at execution time
+
+# Python: secrets tied to their site (see "Scoped secrets" below)
+agent = Agent(
+    llm_url="http://localhost:8080/v1",
+    sensitive_data={"https://*.example.com": {"password": "SecurePass123!"}},
+)
 
 # Python: local model with cloud fallback
 agent = Agent(

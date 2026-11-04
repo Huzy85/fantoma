@@ -79,7 +79,7 @@ _EMPTY_RETRY_DELAY = 3.0
 def login(browser, dom_extractor, email="", username="", password="",
           first_name="", last_name="",
           max_steps=5, step_delay=3.0, memory=None, visit_id=None,
-          config=None, llm=None):
+          config=None, llm=None, value_guard=None):
     """Fill a login/signup form using pure code. No LLM needed.
 
     Args:
@@ -94,12 +94,18 @@ def login(browser, dom_extractor, email="", username="", password="",
         visit_id: optional visit ID for memory recording
         config: optional FantomaConfig for CAPTCHA solving
         llm: optional LLMClient for LLM-assisted field labelling
+        value_guard: optional callable(text) -> text, run immediately before
+            every fill. It may raise to refuse (used to re-check the page URL
+            for site-scoped secrets). Nothing is typed if it raises.
 
     Returns:
         dict with 'success' (bool), 'steps' (int), 'url' (final URL),
         'fields_filled' (list of field labels filled)
     """
-    from fantoma.browser.actions import type_into
+    from fantoma.browser.actions import type_into as _type_into
+
+    def type_into(engine, el, text):
+        return _type_into(engine, el, value_guard(text) if value_guard else text)
     from fantoma.browser.consent import dismiss_consent
 
     page = browser.get_page()
