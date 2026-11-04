@@ -17,7 +17,7 @@ from pathlib import Path
 from flask import Flask, request, jsonify, send_file
 from io import BytesIO
 
-from fantoma.browser.domains import DomainBlocked, DomainPolicy, _is_private_host
+from fantoma.browser.domains import DomainBlocked, DomainPolicy, _is_private_host, _resolves_private
 from fantoma.browser_tool import Fantoma
 from fantoma.agent import Agent
 
@@ -93,6 +93,10 @@ def _clean_allowed_domains(value):
         item = item.strip().lower()
         if not ALLOW_PRIVATE and _is_private_host(item.removeprefix("*.")):
             return None, "'allowed_domains' may not name a private or loopback host"
+        bare = item.removeprefix("*.")
+        if not ALLOW_PRIVATE and not item.startswith("*.") and _resolves_private(bare):
+            return None, ("'allowed_domains' entry resolves to a private address or does not "
+                          "resolve: " + bare)
         out.append(item)
     return (out or None), None
 

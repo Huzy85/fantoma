@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from fantoma.netutil import is_private_address, is_private_name
+
 log = logging.getLogger("fantoma.llm")
 
 
@@ -31,18 +33,15 @@ def is_self_hosted(base_url: str) -> bool:
         return False
     if not host:
         return False
-    if host in ("localhost", "host.docker.internal") or host.endswith((".local", ".internal", ".lan", ".home")):
+    if is_private_name(host):
         return True
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         # A bare name with no dot is a local hostname or a container name.
         return "." not in host
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip in _CGNAT
+    return is_private_address(ip)
 
-
-# Carrier-grade NAT range, used by Tailscale and similar overlays.
-_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
 class LLMClient:
