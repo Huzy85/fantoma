@@ -8,7 +8,7 @@ from fantoma.prompt_parts import today_line
 from fantoma.state_tracker import StateTracker
 
 
-def _run_three_steps(webmcp=False):
+def _run_three_steps(webmcp=False, sensitive=None, webmcp_text=None):
     nav = Navigator()
     subtask = Subtask("Open the basket", "interact", "Basket is open")
     state = {"n": 0}
@@ -17,7 +17,7 @@ def _run_three_steps(webmcp=False):
     fantoma = MagicMock()
     fantoma._engine.get_page.return_value = page
     fantoma._webmcp = webmcp
-    fantoma.webmcp_prompt.return_value = "\n\nWebMCP tools:\n- search {}" if webmcp else ""
+    fantoma.webmcp_prompt.return_value = (webmcp_text or "\n\nWebMCP tools:\n- search {}") if webmcp else ""
     pages = ["PAGE-ONE [0] link 'a'", "PAGE-TWO [0] button 'b'", "PAGE-THREE [0] link 'c'"]
 
     def extract(*a, **k):
@@ -31,7 +31,7 @@ def _run_three_steps(webmcp=False):
     with patch("fantoma.navigator.aria_snapshot", return_value={}), \
          patch("fantoma.navigator.aria_diff", return_value="changed"), \
          patch("fantoma.navigator.classify_blocker", return_value=None):
-        nav.execute(subtask, fantoma, llm, StateTracker(), max_steps=5, sensitive_data={})
+        nav.execute(subtask, fantoma, llm, StateTracker(), max_steps=5, sensitive_data={} if sensitive is None else sensitive)
     return [c[0][0] for c in llm.chat.call_args_list[:3]]
 
 
@@ -81,3 +81,16 @@ def test_planner_gets_date_and_page_last():
     s2, u2 = llm.chat.call_args[0][0]
     assert s2["content"] == sysm["content"]
     assert u2["content"].rindex("PAGE-Y") > u2["content"].index("dom_stagnant")
+
+
+def test_webmcp_block_masks_secrets_with_a_scoped_dict():
+    secret = "s3cretvalue99"
+    sens = {"shop.example": {"pw": secret}}
+    calls = _run_three_steps(webmcp=True, sensitive=sens, webmcp_text=f"\nWebMCP tools:\n- login {secret}")
+    u = calls[0][1]["content"]
+    assert secret not in u and "<secret:pw>" in u
+
+
+def test_webmcp_block_with_no_sensitive_data_does_not_crash():
+    calls = _run_three_steps(webmcp=True, sensitive=None)
+    assert "WebMCP tools" in calls[0][1]["content"]

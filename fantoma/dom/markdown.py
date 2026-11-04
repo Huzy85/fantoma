@@ -63,7 +63,8 @@ _JS = r"""
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return true;
     if (parseFloat(cs.opacity) === 0) return true;
-    if (parseFloat(cs.fontSize) === 0) return true;
+    // font-size:0 and sub-pixel sizes render nothing a person can read.
+    if (parseFloat(cs.fontSize) < 1) return true;
     const clip = cs.clip || '';
     if (/rect\(\s*0(px)?[\s,]+0(px)?[\s,]+0(px)?[\s,]+0(px)?\s*\)/.test(clip)) return true;
     if (cs.clipPath && /inset\(\s*(50%|100%)/.test(cs.clipPath)) return true;
@@ -73,7 +74,15 @@ _JS = r"""
     if ((r.width === 0 || r.height === 0) && cs.overflow === 'hidden')
       return true;
     if (cs.position === 'absolute' || cs.position === 'fixed') {
-      if (r.right < -500 || r.bottom < -500 || r.left > 20000) return true;
+      // Fully outside the document: above or left of its origin, or right of
+      // its scrollable width. Document coordinates, so a scrolled page does
+      // not hide what is just above the fold. Skip-links that slide in on
+      // focus sit here too, and hiding them is fine.
+      const fx = cs.position === 'fixed' ? 0 : window.scrollX;
+      const fy = cs.position === 'fixed' ? 0 : window.scrollY;
+      const de = document.documentElement;
+      if (r.right + fx <= 0 || r.bottom + fy <= 0 ||
+          r.left + fx >= Math.max(de.scrollWidth, window.innerWidth) || r.left > 20000) return true;
     }
     if (parseFloat(cs.textIndent) < -500) return true;
     return false;

@@ -30,6 +30,7 @@ number from one read to the next. They are not used here.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -195,18 +196,76 @@ def ambiguous_message(number) -> str:
             "re-read the page")
 
 
+def _fold(text: str) -> str:
+    return " ".join((text or "").split()).casefold()
+
+
+def _folded_name(name: str):
+    """Regex for an accessible name equal to `name` after case and whitespace
+    folding. A substring match is not enough: "Undo delete" is not "Delete"."""
+    words = [re.escape(w) for w in (name or "").split()]
+    return re.compile(r"^\s*" + r"\s+".join(words) + r"\s*$", re.IGNORECASE)
+
+
+# Runs in the page on one candidate. True when the item the control sits in
+# carries `ctx`: the nearest preceding link (what the context label is taken
+# from) or the control's own row (the ancestor just below the first one that
+# also holds a look-alike).
+_CONTEXT_JS = """(el, ctx) => {
+  const fold = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const want = fold(ctx);
+  if (!want) return false;
+  const label = n => fold(n.getAttribute('aria-label') || n.innerText || n.textContent || '');
+  const links = Array.from(document.querySelectorAll('a,[role=link]'))
+    .filter(l => !l.contains(el) && (l.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING));
+  if (links.length && label(links[links.length - 1]) === want) return true;
+  const twin = n => n !== el && n.tagName === el.tagName
+    && fold(n.getAttribute('aria-label') || n.innerText) === fold(el.getAttribute('aria-label') || el.innerText);
+  let row = el.parentElement;
+  for (let i = 0; row && i < 8; i++) {
+    const up = row.parentElement;
+    if (!up || Array.from(up.querySelectorAll(el.tagName)).some(twin)) break;
+    row = up;
+  }
+  return !!row && fold(row.innerText || row.textContent).includes(want);
+}"""
+
+
+def _candidate_matches(cand, ref: Ref) -> bool:
+    """Does this live candidate still carry the stored link target and item
+    label? Only the ones the ref has are checked; an error counts as no."""
+    try:
+        if ref.href and cand.get_attribute("href") != ref.href:
+            return False
+        if ref.context and not cand.evaluate(_CONTEXT_JS, ref.context):
+            return False
+    except Exception:
+        return False
+    return True
+
+
 def resolve_ref(scope, ref: Ref, empty_name):
     """Find the live locator for ref. Returns (locator, status).
 
     status is None on success, else GONE or AMBIGUOUS. `scope` is a Page or
     Frame; `empty_name` is the regex that matches an unnamed control.
+
+    Residual risk: a ref with neither link target nor item label (a lone
+    "Remove" button with nothing to tell the rows apart) can only be found by
+    position, so a same-length reorder of such controls still lands on
+    whatever now sits at the stored position.
     """
     role, name = ref.role, ref.name
     saw_many = False
+    extras = bool(ref.href or ref.context)
     for exact in ((True, False) if name else (False,)):
         try:
-            loc = scope.get_by_role(role, name=name, exact=exact) if name \
-                else scope.get_by_role(role, name=empty_name)
+            if not name:
+                loc = scope.get_by_role(role, name=empty_name)
+            elif exact:
+                loc = scope.get_by_role(role, name=name, exact=True)
+            else:
+                loc = scope.get_by_role(role, name=_folded_name(name))
             n = loc.count()
         except Exception:
             continue
@@ -216,19 +275,16 @@ def resolve_ref(scope, ref: Ref, empty_name):
             # No stored count (an element list set by hand): stored position.
             return (loc.nth(ref.ordinal) if 0 < ref.ordinal < n else loc.first), None
         if n == ref.count and ref.ordinal < n:
-            return loc.nth(ref.ordinal), None      # the original, by position
-        if n == 1:
+            cand = loc.nth(ref.ordinal)
+            if not extras or _candidate_matches(cand, ref):
+                return cand, None                  # the original, by position
+        elif n == 1 and not (extras and ref.count > 1):
             return loc.first, None                 # role+name, one match
-        if ref.href:
-            same = []
-            for i in range(n):
-                try:
-                    if loc.nth(i).get_attribute("href") == ref.href:
-                        same.append(i)
-                except Exception:
-                    pass
+        if extras:
+            same = [i for i in range(n) if _candidate_matches(loc.nth(i), ref)]
             if len(same) == 1:
                 return loc.nth(same[0]), None
+            return None, (AMBIGUOUS if same else GONE)
         saw_many = True
         break
     if saw_many:

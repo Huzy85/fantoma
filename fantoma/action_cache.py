@@ -46,7 +46,7 @@ class ActionCache:
         if not enabled:
             return
         try:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            os.makedirs(os.path.dirname(self.db_path), mode=0o700, exist_ok=True)
             self._conn = sqlite3.connect(self.db_path)
             self._conn.execute(
                 """CREATE TABLE IF NOT EXISTS plans (

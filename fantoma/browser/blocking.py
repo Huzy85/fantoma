@@ -73,8 +73,9 @@ class ResourceBlocker:
         try:
             route.fallback()
         except Exception:
+            # Fail closed: continue_() would skip the domain-policy handler.
             try:
-                route.continue_()
+                route.abort()
             except Exception:
                 pass
 

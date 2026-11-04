@@ -66,9 +66,10 @@ def wrap_untrusted(text: str, source: str = "") -> str:
 def scan_for_injection(text: str, limit: int = 5) -> list[str]:
     """Return short excerpts of text that reads like an injection attempt."""
     hits = []
-    for m in _INJECTION.finditer(strip_invisible(text or "")):
+    clean = strip_invisible(text or "")
+    for m in _INJECTION.finditer(clean):
         start = max(0, m.start() - 40)
-        excerpt = " ".join(text[start:m.end() + 40].split())
+        excerpt = " ".join(clean[start:m.end() + 40].split())
         hits.append(excerpt)
         if len(hits) >= limit:
             break

@@ -20,6 +20,7 @@ from fantoma.planner import Planner, Subtask, Checkpoint
 from fantoma.navigator import Navigator, NavigatorResult
 from fantoma.state_tracker import StateTracker
 from fantoma.task_spec import parse_task, verify_outcome
+from fantoma.dom.page_reads import reset_stuck
 from fantoma.fast_path import run_fast_path
 from fantoma.secrets_scope import SecretStore, refusal_message
 from fantoma.validator import validate_answer
@@ -380,6 +381,7 @@ class Agent:
 
         Real secret values are masked out of everything returned.
         """
+        reset_stuck()
         return self._mask_result(self._run(task, start_url, deadline_s, keep_open))
 
     def _run(self, task: str, start_url: str = None, deadline_s: float = None,
@@ -702,6 +704,7 @@ class Agent:
 
     def login(self, url: str, **creds) -> AgentResult:
         """Log into a site. Delegates to Fantoma."""
+        reset_stuck()
         try:
             self.fantoma.start()
             result = self.fantoma.login(url, **creds)
@@ -717,6 +720,7 @@ class Agent:
 
     def extract(self, url: str, query: str, schema: dict = None):
         """Navigate to a URL and extract data. Delegates to Fantoma."""
+        reset_stuck()
         try:
             self.fantoma.start(url)
             return self.fantoma.extract(query, schema)

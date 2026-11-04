@@ -16,8 +16,15 @@ from fantoma.navigator import Navigator
 
 
 class El:
-    def __init__(self, role, name, href=None):
-        self.role, self.name, self.href = role, name, href
+    def __init__(self, role, name, href=None, context=None):
+        self.role, self.name, self.href, self.context = role, name, href, context
+
+    def get_attribute(self, attr):
+        return self.href if attr == "href" else None
+
+    def evaluate(self, js, arg=None):
+        """Stands in for the in-page item-label check."""
+        return self.context == arg
 
     def element_handle(self):
         return self
@@ -109,7 +116,8 @@ def test_reorder_between_reads_keeps_number_on_same_element():
 def test_reorder_of_look_alikes_follows_their_labels():
     # Three "Add" buttons, told apart by the product each belongs to.
     items = [El("link", "Red hat", "/red"), El("link", "Blue hat", "/blue")]
-    a1, a2 = El("button", "Add to cart"), El("button", "Add to cart")
+    a1 = El("button", "Add to cart", context="Red hat")
+    a2 = El("button", "Add to cart", context="Blue hat")
     ex, page = AccessibilityExtractor(), Page([items[0], a1, items[1], a2])
     read(ex, page)
     blue = next(e["index"] for e in ex._last_interactive
@@ -280,3 +288,53 @@ def test_registry_ambiguous_group_gets_new_numbers():
            {"role": "button", "name": "Save", "_ordinal": 1, "_same": 2}]
     reg.assign(two)
     assert sorted(e["index"] for e in two) == [1, 2]
+
+
+# -- audit: look-alikes and same-length reorders --------------------------------
+
+def _ref(role, name, **kw):
+    from fantoma.dom.refs import Ref
+    return Ref(0, role, name, **kw)
+
+
+def test_lookalike_name_is_not_accepted_when_the_original_is_gone():
+    from fantoma.dom.refs import GONE, resolve_ref
+    page = Page([btn("Undo delete")])
+    loc, status = resolve_ref(page, _ref("button", "Delete", ordinal=0, count=1), re.compile("^$"))
+    assert loc is None and status == GONE
+
+
+def test_case_and_whitespace_differences_still_resolve():
+    from fantoma.dom.refs import resolve_ref
+    e = btn("  save   Draft ")
+    loc, status = resolve_ref(Page([e]), _ref("button", "Save draft", ordinal=0, count=1),
+                              re.compile("^$"))
+    assert status is None and loc is e
+
+
+def test_same_length_reorder_of_rows_does_not_hit_the_wrong_row():
+    from fantoma.dom.refs import resolve_ref
+    rows = [El("button", "Remove", context=f"Item {i}") for i in range(5)]
+    page = Page(rows)
+    ref = _ref("button", "Remove", ordinal=1, count=5, context="Item 1")
+    page.els = [rows[0], rows[2], rows[1], rows[3], rows[4]]   # rows 1 and 2 swapped
+    loc, status = resolve_ref(page, ref, re.compile("^$"))
+    assert status is None and loc is rows[1]
+
+
+def test_reorder_with_context_that_vanished_is_refused():
+    from fantoma.dom.refs import GONE, resolve_ref
+    rows = [El("button", "Remove", context=f"Item {i}") for i in range(5)]
+    ref = _ref("button", "Remove", ordinal=1, count=5, context="Item 1")
+    loc, status = resolve_ref(Page([rows[0], rows[2], rows[3], rows[4], El("button", "Remove", context="X")]),
+                              ref, re.compile("^$"))
+    assert loc is None and status == GONE
+
+
+def test_same_length_reorder_by_link_target():
+    from fantoma.dom.refs import resolve_ref
+    rows = [El("link", "Remove", href=f"/r/{i}") for i in range(3)]
+    ref = _ref("link", "Remove", ordinal=0, count=3, href="/r/0")
+    page = Page([rows[2], rows[1], rows[0]])
+    loc, status = resolve_ref(page, ref, re.compile("^$"))
+    assert status is None and loc is rows[0]
