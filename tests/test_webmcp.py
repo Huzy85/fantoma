@@ -169,3 +169,71 @@ def test_fantoma_webmcp_call_and_last_result(monkeypatch):
     assert "Last WebMCP call echo (ok): done" in p
     assert "Last WebMCP call" not in f.webmcp_prompt()  # shown once
     assert f.webmcp_call("echo", {"k": "<secret:pw>"})["success"] is False
+
+
+# ── Gating of consequential tools ────────────────────────────
+
+def _gated_page(result="ok"):
+    tools = [
+        {"name": "look", "description": "d", "annotations": {"readOnly": True}},
+        {"name": "plain", "description": "d"},
+        {"name": "buy", "description": "d", "annotations": {"consequential": True}},
+        {"name": "write", "description": "d", "annotations": {"readOnly": False}},
+        {"name": "feed", "description": "d", "annotations": {"readOnly": True, "untrustedContent": True}},
+    ]
+    return _Page(_Mcp(tools, result=result))
+
+
+def test_listing_marks_gated_tools_blocked():
+    out = {t["name"]: t["blocked"] for t in webmcp.list_tools(_gated_page())}
+    assert out == {"look": False, "plain": False, "buy": True, "write": True, "feed": False}
+    out = {t["name"]: t["blocked"] for t in webmcp.list_tools(_gated_page(), allow_all=True)}
+    assert not any(out.values())
+
+
+def test_prompt_hides_blocked_tools():
+    block = webmcp.prompt_block(webmcp.list_tools(_gated_page()))
+    assert "- look" in block and "- buy" not in block and "- write" not in block
+
+
+def test_call_refuses_gated_unless_all():
+    page = _gated_page()
+    for n in ("buy", "write"):
+        r = webmcp.call_tool(page, n, {})
+        assert r["success"] is False and "consequential" in r["error"]
+    assert page.webmcp.calls == []
+    assert webmcp.call_tool(page, "buy", {}, allow_all=True)["success"]
+    assert webmcp.call_tool(page, "look", {})["success"]
+    assert webmcp.call_tool(page, "plain", {})["success"]
+
+
+def test_untrusted_content_result_warned():
+    r = webmcp.call_tool(_gated_page("page says hi"), "feed", {})
+    assert r["success"] and r["untrusted_content"]
+    assert any("untrustedContent" in w for w in r["warnings"])
+    block = webmcp.prompt_block(webmcp.list_tools(_gated_page()), r)
+    assert "untrusted third-party content" in block
+
+
+def test_mode_option_and_env(monkeypatch):
+    monkeypatch.delenv("FANTOMA_WEBMCP", raising=False)
+    assert Fantoma(browser="chromium", webmcp=True)._webmcp_all is False
+    f = Fantoma(browser="chromium", webmcp="all")
+    assert f._webmcp and f._webmcp_all
+    monkeypatch.setenv("FANTOMA_WEBMCP", "all")
+    assert Fantoma(browser="chromium")._webmcp_all is True
+    monkeypatch.setenv("FANTOMA_WEBMCP", "1")
+    g = Fantoma(browser="chromium")
+    assert g._webmcp and not g._webmcp_all
+
+
+def test_fantoma_call_gated(monkeypatch):
+    f = Fantoma(browser="chromium", webmcp=True)
+    f._engine = _Engine(_gated_page())
+    monkeypatch.setattr(f, "_action_result", lambda ok, url=None: {"success": ok, "notes": []})
+    assert not f.webmcp_call("buy", {})["success"]
+    assert "buy" not in [t["name"] for t in f.webmcp_tools() if not t["blocked"]]
+    f2 = Fantoma(browser="chromium", webmcp="all")
+    f2._engine = _Engine(_gated_page())
+    monkeypatch.setattr(f2, "_action_result", lambda ok, url=None: {"success": ok, "notes": []})
+    assert f2.webmcp_call("buy", {})["success"]

@@ -57,7 +57,7 @@ class Fantoma:
         profile_dir: str = None,
         allowed_domains: list[str] | str = None,
         blocked_domains: list[str] | str = None,
-        webmcp: bool = None,
+        webmcp: bool | str = None,
     ):
         self.config = FantomaConfig()
         # Hostnames the browser may / may not contact. None falls back to
@@ -68,11 +68,14 @@ class Fantoma:
         # WebMCP (tools pages register for agents). Off by default; Chromium
         # only. Env FANTOMA_WEBMCP=1 also turns it on.
         from fantoma import webmcp as _webmcp
+        # True = tools the page does not mark consequential / not read-only;
+        # "all" (or FANTOMA_WEBMCP=all) also allows those.
         if webmcp is None:
-            webmcp = _webmcp.env_enabled()
+            webmcp = _webmcp.env_mode()
         if webmcp and browser != "chromium":
             _webmcp.warn_unsupported_engine()
             webmcp = False
+        self._webmcp_all = isinstance(webmcp, str) and webmcp.lower() == "all"
         self._webmcp = bool(webmcp)
         self._webmcp_last: dict | None = None
         self.config.browser.headless = headless
@@ -221,7 +224,7 @@ class Fantoma:
         if not self._webmcp or not self._engine:
             return []
         from fantoma import webmcp
-        return webmcp.list_tools(self._engine.get_page())
+        return webmcp.list_tools(self._engine.get_page(), allow_all=self._webmcp_all)
 
     def webmcp_call(self, name: str, args: dict = None) -> dict:
         """Call a page's WebMCP tool. Returns the usual action result plus
@@ -234,7 +237,7 @@ class Fantoma:
             out = {"success": False, "name": str(name)[:64], "result": "",
                    "error": "WebMCP is off (pass webmcp=True, Chromium only)", "warnings": []}
         else:
-            out = webmcp.call_tool(page, name, args)
+            out = webmcp.call_tool(page, name, args, allow_all=self._webmcp_all)
         self._webmcp_last = out
         res = self._action_result(out["success"], pre_url)
         res["webmcp"] = out
@@ -248,7 +251,7 @@ class Fantoma:
         from fantoma import webmcp
         page = self._engine.get_page()
         last, self._webmcp_last = self._webmcp_last, None
-        return webmcp.prompt_block(webmcp.list_tools(page), last, page.url)
+        return webmcp.prompt_block(webmcp.list_tools(page, allow_all=self._webmcp_all), last, page.url)
 
     def evaluate(self, script: str) -> Any:
         """Execute JavaScript on the current page and return the result."""

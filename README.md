@@ -142,7 +142,7 @@ A browser agent reads text written by strangers, and some of it is written for t
 
 ## WebMCP (experimental, off by default)
 
-Some pages register tools for agents through Chrome's WebMCP API (`document.modelContext.registerTool`). With `webmcp=True` (or `FANTOMA_WEBMCP=1`) Fantoma launches full Chrome with `--enable-features=WebMCP`, lists the page's tools to the model, and lets it call one with a line like `WEBMCP search {"q": "shoes"}`. Chromium only (`browser="chromium"`, Patchright 1.64+); with Camoufox the option is ignored with a warning.
+Some pages register tools for agents through Chrome's WebMCP API (`document.modelContext.registerTool`). With `webmcp=True` (or `FANTOMA_WEBMCP=1`; read-only and non-consequential tools only) Fantoma launches full Chrome with `--enable-features=WebMCP`, lists the page's tools to the model, and lets it call one with a line like `WEBMCP search {"q": "shoes"}`. Chromium only (`browser="chromium"`, Patchright 1.64+); with Camoufox the option is ignored with a warning.
 
 ```python
 f = Fantoma(browser="chromium", webmcp=True)
@@ -151,7 +151,7 @@ f.webmcp_tools()                         # [{"name", "description", "inputSchema
 f.webmcp_call("search", {"q": "shoes"})  # result["webmcp"]["result"] is the tool's text
 ```
 
-Tool names, descriptions and results are page text, so they are treated as untrusted: names must match `[A-Za-z0-9_.-]{1,64}`, text is stripped of control characters, capped (10 tools, 200 characters of description, 2000 of result), scanned for injection wording and fenced like other page text. A call whose arguments contain a `<secret:...>` placeholder is refused; secrets are never passed to a WebMCP tool. `python tools/webmcp_live.py` runs a live check.
+Tool names, descriptions and results are page text, so they are treated as untrusted: names must match `[A-Za-z0-9_.-]{1,64}`, text is stripped of control characters, capped (10 tools, 200 characters of description, 2000 of result), scanned for injection wording and fenced like other page text. A tool the page marks `consequential`, or `readOnly: false`, is hidden from the model and refused unless you opt in with `webmcp="all"` (`FANTOMA_WEBMCP=all`). Results from a tool marked `untrustedContent` carry an explicit warning. A call whose arguments contain a `<secret:...>` placeholder is refused; secrets are never passed to a WebMCP tool. `python tools/webmcp_live.py` runs a live check.
 
 ## Plugging Things In
 
