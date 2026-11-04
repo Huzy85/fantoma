@@ -11,6 +11,7 @@ Usage:
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -282,9 +283,12 @@ def cmd_setup():
         config["escalation"] = None
 
     # ── Save config ──────────────────────────────────────────────
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(config, indent=2))
-    os.chmod(CONFIG_FILE, 0o600)  # Restrict permissions (contains API keys)
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Created 0600 from the start (contains API keys); no window where it is world-readable.
+    fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(config, indent=2))
+    os.chmod(CONFIG_FILE, 0o600)  # also tightens a file that already existed
 
     print(f"""
 {_green('Setup complete!')}
@@ -639,7 +643,7 @@ def _add_history(task: str, success: bool, data: str = "", error: str = ""):
     })
     # Keep last 50 tasks
     history = history[-50:]
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     HISTORY_FILE.write_text(json.dumps(history, indent=2))
 
 
@@ -652,7 +656,7 @@ def _add_log(message: str):
         LOG_BUFFER.pop(0)
     # Persist to file
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
         with open(LOG_FILE, "a") as f:
             f.write(f"{ts} {message}\n")
         # Keep file under 1000 lines
@@ -778,7 +782,7 @@ def cmd_interactive():
                 print(f"  {_dim('Update with: pip install --upgrade fantoma')}")
 
         elif user_input == "/clear":
-            os.system("clear" if os.name != "nt" else "cls")
+            subprocess.run(["clear" if os.name != "nt" else "cls"], shell=(os.name == "nt"), check=False)
 
         elif user_input == "/history":
             if HISTORY_FILE.exists():
@@ -822,7 +826,7 @@ def cmd_interactive():
         elif user_input == "/monitor":
             monitor_path = Path(__file__).parent.parent / "weekly_monitor.py"
             if monitor_path.exists():
-                os.system(f"{sys.executable} {monitor_path} --quick")
+                subprocess.run([sys.executable, str(monitor_path), "--quick"], check=False)
             else:
                 print(_red("weekly_monitor.py not found"))
 
@@ -1165,7 +1169,7 @@ Examples:
     elif args.command == "monitor":
         monitor_path = Path(__file__).parent.parent / "weekly_monitor.py"
         if monitor_path.exists():
-            os.system(f"{sys.executable} {monitor_path} --quick")
+            subprocess.run([sys.executable, str(monitor_path), "--quick"], check=False)
         else:
             print(_red("weekly_monitor.py not found"))
 

@@ -367,8 +367,7 @@ class Navigator:
             webmcp_block = ""
             if getattr(fantoma, "_webmcp", False) is True:
                 webmcp_block = fantoma.webmcp_prompt()
-                for name, value in sensitive_data.items():
-                    webmcp_block = webmcp_block.replace(value, f"<secret:{name}>")
+                webmcp_block = store.mask(webmcp_block, current_url)
             user_msg = (f"{task_block}\n\n{prefix}{secrets_line}Change: {change_line}\n"
                         f"{webmcp_block}\nPage ({current_url}):\n"
                         f"{wrap_untrusted(aria, current_url)}")

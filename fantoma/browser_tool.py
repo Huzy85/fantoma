@@ -21,6 +21,7 @@ from fantoma.dom.accessibility import AccessibilityExtractor
 from fantoma.dom.markdown import page_to_markdown, aria_text_fallback
 from fantoma.browser.blocks import detect_block_page
 from fantoma.browser.domains import DomainBlocked
+from fantoma.dom.page_reads import reset_stuck
 from fantoma.prompt_parts import today_line
 from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted, scan_for_injection
 from fantoma.config import FantomaConfig
@@ -453,7 +454,8 @@ class Fantoma:
                 click_element(self._engine, element)
                 wait_for_dom_stable(page)
 
-            scope = page.locator(f"[id='{info['popup']}']") if info.get("popup") else page
+            scope = (page.locator(f"[id={_css_string(info['popup'])}]")
+                     if info.get("popup") else page)
             want = value.strip().lower()
             options = scope.locator("[role=option]:visible")
             target = None
@@ -523,6 +525,7 @@ class Fantoma:
 
     def navigate(self, url: str) -> dict:
         """Navigate to a URL."""
+        reset_stuck()
         pre_url = self._engine.get_page().url
         try:
             self._engine.navigate(url)
@@ -584,6 +587,7 @@ class Fantoma:
         Browser must be started first via start().
         Does NOT stop the browser after -- caller may want to continue browsing.
         """
+        reset_stuck()
         from fantoma.captcha.orchestrator import CaptchaOrchestrator
         from urllib.parse import urlparse
         from uuid import uuid4
@@ -689,6 +693,7 @@ class Fantoma:
         once scrolled into view is included. Raises RuntimeError when the page
         cannot be opened or read (for example an invalid selector).
         """
+        reset_stuck()
         if url:
             nav = self.navigate(url)
             # Reading on after a failed navigation would describe whatever
@@ -717,6 +722,7 @@ class Fantoma:
         type is a Python type or a type name. A JSON Schema of type object
         returns a dict; anything else returns a list of items.
         """
+        reset_stuck()
         if not self._llm:
             return self._dom.extract(self._engine.get_page())
 
@@ -824,6 +830,19 @@ class Fantoma:
 
 _TYPE_NAMES = {str: "string", int: "integer", float: "number", bool: "boolean",
                list: "array", dict: "object"}
+
+
+def _css_string(value: str) -> str:
+    """Quote value as a CSS string literal (page-controlled text, e.g. aria-controls)."""
+    out = []
+    for ch in str(value):
+        if ch in "\\\"'":
+            out.append("\\" + ch)
+        elif ord(ch) < 0x20 or ord(ch) == 0x7f:
+            out.append("\\%x " % ord(ch))
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
 def _schema_shape(schema: dict) -> dict | None:

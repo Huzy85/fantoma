@@ -28,6 +28,11 @@ log = logging.getLogger("fantoma.page_reads")
 step_log = logging.getLogger("fantoma.navigator")
 
 DEFAULT_READ_TIMEOUT_S = 15.0
+# A timeout only short-circuits the reads that follow within this window (the
+# rest of the same step). Past it the flag is stale, so a timeout in one call
+# can never poison later calls, even from entry points that never call
+# reset_stuck (server requests, Fantoma.read/extract/login).
+STUCK_WINDOW_S = 5.0
 
 
 def read_timeout_s() -> float:
@@ -63,9 +68,12 @@ def bounded(fn, timeout_s: float | None = None, label: str = "read"):
     Nested calls share the outer timer.
     """
     timeout_s = read_timeout_s() if timeout_s is None else timeout_s
-    if getattr(_local, "stuck", False):
-        # An earlier read in this step already timed out. Do not wait a full
-        # timeout again for every remaining read on the same stuck page.
+    stuck_at = getattr(_local, "stuck_at", None)
+    if stuck_at is not None and time.monotonic() - stuck_at > STUCK_WINDOW_S:
+        _local.stuck_at = stuck_at = None   # stale: belongs to an earlier call
+    if stuck_at is not None:
+        # A read a moment ago already timed out. Do not wait a full timeout
+        # again for every remaining read of the same step on the same page.
         raise ReadTimeout(f"{label} skipped: page not answering this step")
     in_main = threading.current_thread() is threading.main_thread()
     if (not in_main or timeout_s <= 0 or getattr(_local, "armed", False)
@@ -85,7 +93,7 @@ def bounded(fn, timeout_s: float | None = None, label: str = "read"):
         return fn()
     except ReadTimeout:
         _counts()["timeouts"] += 1
-        _local.stuck = True
+        _local.stuck_at = time.monotonic()
         log.warning("Page %s timed out after %gs; continuing with an empty result",
                     label, timeout_s)
         raise
@@ -96,8 +104,8 @@ def bounded(fn, timeout_s: float | None = None, label: str = "read"):
 
 
 def reset_stuck() -> None:
-    """Forget a timeout from an earlier step. Called when a step begins."""
-    _local.stuck = False
+    """Forget a timeout from an earlier step or call. Called when a step or a public entry point begins."""
+    _local.stuck_at = None
 
 
 def safe_evaluate(page, js: str, arg=None, label: str = "evaluate"):
