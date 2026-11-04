@@ -77,3 +77,4 @@ fantoma_demo.mp4
 .env
 .worktrees/
 benchmark/results/
+.stage-runs/

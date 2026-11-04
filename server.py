@@ -159,7 +159,17 @@ CLOUD_LLM_MODEL = os.environ.get("CLOUD_LLM_MODEL", "auto")
 CAPTCHA_API = os.environ.get("CAPTCHA_API", "capsolver")
 CAPTCHA_KEY = os.environ.get("CAPTCHA_KEY", "")
 PROXY_URL = os.environ.get("FANTOMA_PROXY", None)
-HEADLESS_MODE = os.environ.get("FANTOMA_HEADLESS", "virtual")
+def _headless_from_env(raw: str):
+    """FANTOMA_HEADLESS is text; the browser wants True, False or "virtual"."""
+    v = (raw or "virtual").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return "virtual"
+
+
+HEADLESS_MODE = _headless_from_env(os.environ.get("FANTOMA_HEADLESS", "virtual"))
 
 # ── Session state ────────────────────────────────────────────
 _fantoma: Fantoma | None = None
