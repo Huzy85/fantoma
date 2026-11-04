@@ -625,6 +625,21 @@ HISTORY_FILE = CONFIG_DIR / "history.json"
 LOG_BUFFER: list[str] = []  # In-memory log of recent errors/warnings
 
 
+def _write_private(path, text: str, append: bool = False) -> None:
+    """Write `text` to `path` readable by the owner only (0600), including
+    when the file already existed with looser permissions."""
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "a" if append else "w") as f:
+            fd = -1
+            f.write(text)
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
 def _add_history(task: str, success: bool, data: str = "", error: str = ""):
     """Add a task to the history file."""
     from datetime import datetime
@@ -644,7 +659,8 @@ def _add_history(task: str, success: bool, data: str = "", error: str = ""):
     # Keep last 50 tasks
     history = history[-50:]
     CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-    HISTORY_FILE.write_text(json.dumps(history, indent=2))
+    # Task text can carry credentials typed inline, so owner-only.
+    _write_private(HISTORY_FILE, json.dumps(history, indent=2))
 
 
 def _add_log(message: str):
@@ -657,12 +673,11 @@ def _add_log(message: str):
     # Persist to file
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with open(LOG_FILE, "a") as f:
-            f.write(f"{ts} {message}\n")
+        _write_private(LOG_FILE, f"{ts} {message}\n", append=True)
         # Keep file under 1000 lines
         if LOG_FILE.stat().st_size > 100_000:
             lines = LOG_FILE.read_text().splitlines()
-            LOG_FILE.write_text("\n".join(lines[-500:]) + "\n")
+            _write_private(LOG_FILE, "\n".join(lines[-500:]) + "\n")
     except Exception:
         pass
 

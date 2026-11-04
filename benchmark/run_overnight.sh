@@ -62,8 +62,8 @@ OPENAI_API_KEY="${OPENAI_API_KEY}" \
 echo "=== Overnight benchmark finished at $(date) ==="
 
 # Send Telegram notification
-TG_TOKEN=$(python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.nanobot/config.json'))); print(d['channels']['telegram']['token'])" 2>/dev/null || echo "")
-TG_CHAT=$(python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.nanobot/config.json'))); print(d['channels']['telegram']['allowFrom'][0])" 2>/dev/null || echo "")
+TG_TOKEN="${FANTOMA_BENCH_TELEGRAM_TOKEN:-}"
+TG_CHAT="${FANTOMA_BENCH_TELEGRAM_CHAT:-}"
 
 if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
     LATEST=$(ls -t benchmark/results/ 2>/dev/null | head -1)

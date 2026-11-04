@@ -30,22 +30,13 @@ STOP_FILE      = Path("/tmp/fantoma_benchmark_stop")
 # ---------------------------------------------------------------------------
 
 def _load_telegram_config() -> tuple[str, str] | None:
-    """Read bot token + chat_id from env vars or nanobot config."""
-    # Env vars take priority (set when running inside Docker)
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat  = os.environ.get("TELEGRAM_CHAT_ID")
+    """Bot token and chat id from FANTOMA_BENCH_TELEGRAM_TOKEN and
+    FANTOMA_BENCH_TELEGRAM_CHAT. None (no notification) when either is unset."""
+    token = os.environ.get("FANTOMA_BENCH_TELEGRAM_TOKEN", "").strip()
+    chat = os.environ.get("FANTOMA_BENCH_TELEGRAM_CHAT", "").strip()
     if token and chat:
         return token, chat
-    # Fallback: read from nanobot config (host only)
-    try:
-        cfg_path = Path.home() / ".nanobot/config.json"
-        d = json.loads(cfg_path.read_text())
-        tg = d["channels"]["telegram"]
-        if not tg.get("enabled"):
-            return None
-        return tg["token"], tg["allowFrom"][0]
-    except Exception:
-        return None
+    return None
 
 
 def _send_telegram(token: str, chat_id: str, text: str):

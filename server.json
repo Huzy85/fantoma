@@ -6,12 +6,12 @@
     "url": "https://github.com/Huzy85/fantoma",
     "source": "github"
   },
-  "version": "0.11.3",
+  "version": "0.12.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "fantoma",
-      "version": "0.11.3",
+      "version": "0.12.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

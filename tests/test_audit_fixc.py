@@ -274,3 +274,158 @@ class TestMultiHopInRealBrowsers:
             _check_chain(browser.new_context(), port, hits)
         finally:
             cm.__exit__(None, None, None)
+
+
+# ── 8. MCP HTTP auth ─────────────────────────────────────────
+
+def test_mcp_http_refuses_non_loopback_without_token(monkeypatch):
+    from fantoma import mcp_server
+    assert mcp_server._http_problem("0.0.0.0", "", False)
+    assert mcp_server._http_problem("0.0.0.0", "tok", False) is None
+    assert mcp_server._http_problem("0.0.0.0", "", True) is None
+    assert mcp_server._http_problem("127.0.0.1", "", False) is None
+    monkeypatch.setenv("FANTOMA_MCP_TRANSPORT", "http")
+    monkeypatch.setenv("FANTOMA_MCP_HOST", "0.0.0.0")
+    monkeypatch.delenv("FANTOMA_MCP_TOKEN", raising=False)
+    monkeypatch.delenv("FANTOMA_MCP_INSECURE", raising=False)
+    with pytest.raises(SystemExit):
+        mcp_server.main()
+
+
+def test_mcp_bearer_middleware():
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+    from fantoma.mcp_server import _BearerAuth
+    inner = Starlette(routes=[Route("/x", lambda r: PlainTextResponse("in"))])
+    c = TestClient(_BearerAuth(inner, "s3cret"))
+    assert c.get("/x").status_code == 401
+    assert c.get("/x", headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert c.get("/x", headers={"Authorization": "Bearer s3cret"}).text == "in"
+
+
+# ── 4. Version strings ───────────────────────────────────────
+
+def test_version_strings_match_pyproject():
+    import json
+    import re
+    import fantoma
+    root = os.path.dirname(os.path.dirname(__file__))
+    want = re.search(r'^version\s*=\s*"([^"]+)"', open(os.path.join(root, "pyproject.toml")).read(), re.M).group(1)
+    assert fantoma.__version__ == want
+    sj = json.load(open(os.path.join(root, "server.json")))
+    assert sj["version"] == want
+    assert all(p["version"] == want for p in sj.get("packages", []))
+
+
+# ── server: 5 (open remote guard, block_private at import), 6, L9 ─────
+
+@pytest.fixture
+def srv():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fantoma_server_fixc2", os.path.join(os.path.dirname(os.path.dirname(__file__)), "server.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.API_KEY = ""
+    mod.ALLOW_PRIVATE = False
+    mod.app.config["TESTING"] = True
+    mod._fantoma = MagicMock()
+    return mod
+
+
+def test_import_turns_block_private_on(monkeypatch):
+    import importlib.util
+    monkeypatch.delenv("FANTOMA_ALLOW_PRIVATE", raising=False)
+    monkeypatch.setenv("FANTOMA_BLOCK_PRIVATE", "")
+    spec = importlib.util.spec_from_file_location(
+        "fantoma_server_fixc3", os.path.join(os.path.dirname(os.path.dirname(__file__)), "server.py"))
+    importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    assert os.environ["FANTOMA_BLOCK_PRIVATE"] == "1"
+
+
+def test_keyless_remote_client_gets_503_but_loopback_and_health_pass(srv):
+    c = srv.app.test_client()
+    r = c.get("/state", environ_overrides={"REMOTE_ADDR": "10.1.2.3"})
+    assert r.status_code == 503
+    assert c.get("/health", environ_overrides={"REMOTE_ADDR": "10.1.2.3"}).status_code == 200
+    assert c.get("/health", environ_overrides={"REMOTE_ADDR": "127.0.0.1"}).status_code == 200
+    assert c.get("/state", environ_overrides={"REMOTE_ADDR": "127.0.0.1"}).status_code != 503
+    srv.INSECURE_NO_AUTH = True
+    assert c.get("/state", environ_overrides={"REMOTE_ADDR": "10.1.2.3"}).status_code != 503
+
+
+@pytest.mark.parametrize("proxy", ["http://127.0.0.1:3128", "socks5://10.0.0.5:1080", "http://box.lan:3128",
+                                   "http://100.64.1.1:3128", "ftp://proxy.example.org:21", "file:///etc/passwd"])
+def test_run_and_login_reject_bad_proxy(srv, proxy):
+    c = srv.app.test_client()
+    r = c.post("/run", json={"task": "x", "proxy": proxy})
+    assert r.status_code == 400 and "proxy" in r.get_json()["error"]
+    r = c.post("/login", json={"url": "https://shop.example.org/", "proxy": proxy})
+    assert r.status_code == 400 and "proxy" in r.get_json()["error"]
+
+
+def test_public_proxy_is_accepted_by_the_check(srv):
+    assert srv._proxy_problem("http://proxy.example.org:3128") is None
+    assert srv._proxy_problem("socks5://proxy.example.org:1080") is None
+    assert srv._proxy_problem(None) is None
+    srv.ALLOW_PRIVATE = True
+    assert srv._proxy_problem("http://127.0.0.1:3128") is None
+
+
+@pytest.mark.parametrize("route,body", [
+    ("/press_key", {}), ("/select", {"element_id": 1}), ("/click", {}), ("/type", {"element_id": 1}),
+    ("/press_key", [1, 2]), ("/scroll", [1]),
+])
+def test_handlers_answer_400_json_on_bad_bodies(srv, route, body):
+    r = srv.app.test_client().post(route, json=body)
+    assert r.status_code == 400 and r.is_json
+
+
+def test_unexpected_error_is_generic_json_500(srv):
+    srv._fantoma.press_key.side_effect = RuntimeError("secret path /etc/x")
+    r = srv.app.test_client().post("/press_key", json={"key": "Enter"})
+    assert r.status_code == 500 and r.is_json
+    assert "/etc/x" not in r.get_data(as_text=True) and "log id" in r.get_json()["error"]
+
+
+# ── 7. CLI history and log are owner-only ────────────────────
+
+def test_cli_history_and_log_are_0600(tmp_path, monkeypatch):
+    from fantoma import cli
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path / "cfg")
+    monkeypatch.setattr(cli, "HISTORY_FILE", tmp_path / "cfg" / "history.json")
+    monkeypatch.setattr(cli, "LOG_FILE", tmp_path / "cfg" / "fantoma.log")
+    old = os.umask(0o022)
+    try:
+        cli._add_history("log in with password hunter2", True)
+        cli._add_log("hello")
+    finally:
+        os.umask(old)
+    for f in (cli.HISTORY_FILE, cli.LOG_FILE):
+        assert (f.stat().st_mode & 0o777) == 0o600
+    # A file that already exists with loose permissions is tightened too.
+    os.chmod(cli.HISTORY_FILE, 0o644)
+    cli._add_history("again", True)
+    assert (cli.HISTORY_FILE.stat().st_mode & 0o777) == 0o600
+
+
+# ── 10. Benchmark notification config ────────────────────────
+
+def test_benchmark_telegram_comes_only_from_env(monkeypatch, tmp_path):
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(__file__))
+    spec = importlib.util.spec_from_file_location("bench_runner_fixc", os.path.join(root, "benchmark", "runner.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for k in ("FANTOMA_BENCH_TELEGRAM_TOKEN", "FANTOMA_BENCH_TELEGRAM_CHAT"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert mod._load_telegram_config() is None
+    monkeypatch.setenv("FANTOMA_BENCH_TELEGRAM_TOKEN", "t")
+    monkeypatch.setenv("FANTOMA_BENCH_TELEGRAM_CHAT", "c")
+    assert mod._load_telegram_config() == ("t", "c")
+    for name in ("runner.py", "run_docker.sh", "run_overnight.sh"):
+        assert "nanobot" not in open(os.path.join(root, "benchmark", name)).read()

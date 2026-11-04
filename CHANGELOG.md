@@ -29,6 +29,14 @@
 
 ### Security
 
+- **Names are resolved under `block_private`.** `127.0.0.1.nip.io`, `localtest.me` and rebinding names looked public to the textual check and reached the local network and cloud metadata. With `block_private` on (the HTTP server's default), `DomainPolicy.permits()`, `/start`, `/navigate`, `/read`, `/run`, `/login` and `allowed_domains` cleaning now resolve the name (3 s timeout, cached 60 s per policy) and refuse it if any address is private, CGNAT included, or if the lookup fails. Policies without `block_private` never resolve. Limit: the browser does its own lookup afterwards, so a rebinding answer that changes between the two lookups can still get through; closing that needs a proxy that pins our resolution and is out of scope.
+- **Every redirect hop is checked.** In strict mode only the first `Location` was checked; Chromium and Camoufox followed later hops without running the handler (measured: a three-hop chain reached a refused host, for navigations in both browsers and for subresources in Camoufox). The handler now follows up to 10 hops with redirects off, checks each, and hands the browser one redirect to the verified end. POST 307/308 chains are checked at the first hop only, so they are never replayed. Cookies and credentials are not forwarded to followed hops.
+- The carrier-grade NAT range 100.64.0.0/10 and the names `.lan`, `.home` and `.home.arpa` count as private in the domain policy, from one helper shared with the LLM client (`fantoma/netutil.py`).
+- The keyless-remote refusal and `FANTOMA_BLOCK_PRIVATE` now apply under gunicorn and `flask run`, not only `python server.py`: the browser-side block is set when `server.py` is imported, and without `FANTOMA_API_KEY` a client that is not on loopback gets 503 (unless `FANTOMA_INSECURE_NO_AUTH=1`). `/health` stays open.
+- `/run` and `/login` check a request `proxy`: http, https or socks5 only, and not a private or loopback host unless `FANTOMA_ALLOW_PRIVATE=1`.
+- CLI `history.json` and `fantoma.log` are created owner-only (0600), and tightened if they already exist.
+- MCP over HTTP: a non-loopback `FANTOMA_MCP_HOST` is refused unless `FANTOMA_MCP_TOKEN` is set (every request then needs `Authorization: Bearer <token>`) or `FANTOMA_MCP_INSECURE=1`. The HTTP transport also failed to start before (`FastMCP.run` takes no host or port); it now runs through uvicorn.
+- Benchmark scripts no longer read a bot token from a personal config file; notifications use `FANTOMA_BENCH_TELEGRAM_TOKEN` and `FANTOMA_BENCH_TELEGRAM_CHAT` and are skipped when unset.
 - **Non-network schemes are always refused.** `file:`, `chrome:`, `view-source:`, `resource:`, `javascript:` and `about:` other than `about:blank` are refused by `DomainPolicy.permits()` with or without a policy. `data:`, `blob:` and `about:blank` still pass.
 - **The HTTP server refuses private hosts by default.** `/start`, `/navigate`, `/read`, `/run`, `/login` and `/manual/open` reject loopback, private, link-local and cloud metadata URLs, and the browser's own requests and redirects are blocked too (`FANTOMA_BLOCK_PRIVATE`, set by the server). `FANTOMA_ALLOW_PRIVATE=1` lifts it. Direct Python use is unchanged apart from the scheme rule.
 - `/run` and `/start` accept a validated `allowed_domains` list.
@@ -60,6 +68,9 @@
 - The dropdown popup selector built from the page's `aria-controls` is quoted as a CSS string.
 
 ### Fixed
+
+- `fantoma.__version__` and `server.json` said 0.11.3; both now match `pyproject.toml` (0.12.0), and a test keeps them in step.
+- The HTTP server answers a missing JSON field or a wrong-shaped body with a 400, and any other unexpected error with the generic JSON 500, on every endpoint (`/press_key`, `/select`, `/scroll` and others returned Flask's HTML 500).
 
 - A timed-out page read no longer makes every later read fail. The "page not answering" flag now expires after 5 seconds and is cleared at the start of each public call (`navigate`, `read`, `extract`, `login`, `Agent.run`), so one timeout cannot poison later calls in the same thread or server process.
 

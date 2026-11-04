@@ -540,21 +540,71 @@ def fantoma_health() -> dict:
     }
 
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _http_problem(host: str, token: str, insecure: bool):
+    """Reason the HTTP transport must not start, or None. Listening beyond
+    loopback with no bearer token lets anything that can reach the port drive
+    the browser."""
+    if token or insecure or host in _LOOPBACK_HOSTS:
+        return None
+    return (f"refusing to start: FANTOMA_MCP_HOST={host} is not loopback and FANTOMA_MCP_TOKEN is "
+            "empty. Set FANTOMA_MCP_TOKEN (clients send 'Authorization: Bearer <token>'), bind to "
+            "127.0.0.1, or set FANTOMA_MCP_INSECURE=1 to serve without authentication.")
+
+
+class _BearerAuth:
+    """ASGI wrapper: every HTTP request needs 'Authorization: Bearer <token>'."""
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            import hmac
+            supplied = ""
+            for k, v in scope.get("headers", []):
+                if k == b"authorization":
+                    supplied = v.decode("latin-1")
+                    break
+            ok = supplied.startswith("Bearer ") and hmac.compare_digest(
+                supplied[7:].encode(), self.token.encode())
+            if not ok:
+                body = b'{"error":"unauthorized"}'
+                await send({"type": "http.response.start", "status": 401, "headers": [
+                    (b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
+                    (b"www-authenticate", b"Bearer")]})
+                await send({"type": "http.response.body", "body": body})
+                return
+        elif scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        await self.app(scope, receive, send)
+
+
 def main() -> None:
     transport = os.environ.get("FANTOMA_MCP_TRANSPORT", "stdio").lower()
     if transport in ("http", "streamable-http"):
+        import logging
+        log = logging.getLogger("fantoma")
         host = os.environ.get("FANTOMA_MCP_HOST", "127.0.0.1")
-        if host not in ("127.0.0.1", "localhost", "::1"):
-            import logging
-            logging.getLogger("fantoma").warning(
-                "MCP over HTTP on %s has no authentication: anything that can "
-                "reach the port can drive the browser. Put it behind a proxy "
-                "that checks a token, or keep it on 127.0.0.1.", host)
-        mcp.run(
-            transport="streamable-http",
-            host=host,
-            port=int(os.environ.get("FANTOMA_MCP_PORT", "8767")),
-        )
+        port = int(os.environ.get("FANTOMA_MCP_PORT", "8767"))
+        token = os.environ.get("FANTOMA_MCP_TOKEN", "")
+        insecure = os.environ.get("FANTOMA_MCP_INSECURE", "").lower() in ("1", "true", "yes")
+        problem = _http_problem(host, token, insecure)
+        if problem:
+            log.error(problem)
+            raise SystemExit(1)
+        if not token and host not in _LOOPBACK_HOSTS:
+            log.warning("FANTOMA_MCP_INSECURE is on: MCP over HTTP on %s has no authentication.", host)
+        import uvicorn
+        mcp.settings.host, mcp.settings.port = host, port
+        app = mcp.streamable_http_app()
+        if token:
+            app = _BearerAuth(app, token)
+        uvicorn.run(app, host=host, port=port, log_level="info")
     else:
         mcp.run()
 

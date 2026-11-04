@@ -32,8 +32,8 @@ CAPSOLVER_KEY_VAL="${CAPSOLVER_KEY:-}"
 if [ -z "$CAPSOLVER_KEY_VAL" ] && [ -f "$HOME/.config/capsolver/config.json" ]; then
     CAPSOLVER_KEY_VAL=$(python3 -c "import json; print(json.load(open('$HOME/.config/capsolver/config.json'))['api_key'])" 2>/dev/null || echo "")
 fi
-TG_TOKEN=$(python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.nanobot/config.json'))); print(d['channels']['telegram']['token'])" 2>/dev/null || echo "")
-TG_CHAT=$(python3 -c "import json,os; d=json.load(open(os.path.expanduser('~/.nanobot/config.json'))); print(d['channels']['telegram']['allowFrom'][0])" 2>/dev/null || echo "")
+TG_TOKEN="${FANTOMA_BENCH_TELEGRAM_TOKEN:-}"
+TG_CHAT="${FANTOMA_BENCH_TELEGRAM_CHAT:-}"
 
 # Default agent LLM to OpenAI GPT-4o when key is available and no explicit override
 LLM_URL="${BENCHMARK_LLM_URL:-}"
@@ -59,8 +59,8 @@ docker exec \
     -e BENCHMARK_ESCALATION_MODELS="$ESC_MODELS" \
     -e CAPSOLVER_KEY="$CAPSOLVER_KEY_VAL" \
     -e BENCHMARK_CAPTCHA_API="capsolver" \
-    -e TELEGRAM_BOT_TOKEN="$TG_TOKEN" \
-    -e TELEGRAM_CHAT_ID="$TG_CHAT" \
+    -e FANTOMA_BENCH_TELEGRAM_TOKEN="$TG_TOKEN" \
+    -e FANTOMA_BENCH_TELEGRAM_CHAT="$TG_CHAT" \
     -w /app \
     "$CONTAINER" \
     python3 -m benchmark "$@"

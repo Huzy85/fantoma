@@ -45,3 +45,10 @@ def _offline_dns(request, monkeypatch):
             return [_ipaddress.ip_address("93.184.216.34")]
 
     monkeypatch.setattr(domains, "_resolve_all", fake)
+
+
+@pytest.fixture(autouse=True)
+def _no_block_private_leak(monkeypatch):
+    """server.py turns FANTOMA_BLOCK_PRIVATE on when imported; keep that out of
+    unrelated tests. Restored after each test."""
+    monkeypatch.setenv("FANTOMA_BLOCK_PRIVATE", "")

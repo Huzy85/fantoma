@@ -13,6 +13,7 @@ import re
 import threading
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import Flask, request, jsonify, send_file
 from io import BytesIO
@@ -147,6 +148,26 @@ def _server_error(e, *secrets, **extra):
     return jsonify(body), 500
 
 
+def _json_object() -> dict:
+    """The request body, which must be a JSON object. Anything else raises
+    TypeError, which the 400 handler below turns into a clean answer."""
+    data = request.get_json(force=True)
+    if not isinstance(data, dict):
+        raise TypeError("body must be a JSON object")
+    return data
+
+
+def _apply_block_private_env() -> None:
+    """Make the browser itself refuse private hosts (subrequests, redirects)
+    unless FANTOMA_ALLOW_PRIVATE=1. Runs when this module is imported, so it
+    holds under gunicorn and `flask run` as well as `python server.py`."""
+    if not ALLOW_PRIVATE:
+        os.environ["FANTOMA_BLOCK_PRIVATE"] = "1"
+
+
+_apply_block_private_env()
+
+
 def _bind_host(api_key: str, env_host: str | None) -> str:
     """Where the server listens. FANTOMA_HOST wins; otherwise an open
     (keyless) server stays on loopback and a keyed one serves all interfaces."""
@@ -166,6 +187,29 @@ def _safe_profile_dir(value) -> str | None:
     return None
 
 
+def _proxy_problem(proxy):
+    """Why a request-supplied proxy is refused, or None. Only http, https and
+    socks5 proxies, and not one on a private or loopback host (it would let a
+    caller aim the browser's traffic at the local network) unless
+    FANTOMA_ALLOW_PRIVATE=1."""
+    if proxy is None or proxy == "":
+        return None
+    if not isinstance(proxy, str) or len(proxy) > 2048:
+        return "'proxy' must be a URL string"
+    try:
+        parsed = urlparse(proxy if "://" in proxy else "http://" + proxy)
+        host = parsed.hostname or ""
+        parsed.port  # noqa: B018 (raises ValueError on a bad port)
+    except ValueError:
+        return "'proxy' is not a valid URL"
+    if parsed.scheme.lower() not in ("http", "https", "socks5", "socks5h") or not host:
+        return "'proxy' must be an http, https or socks5 URL with a host"
+    if not ALLOW_PRIVATE and (_is_private_host(host) or _resolves_private(host)):
+        return ("'proxy' may not point at a private or loopback host "
+                "(set FANTOMA_ALLOW_PRIVATE=1 to allow it)")
+    return None
+
+
 def _request_proxy(data: dict):
     proxy = data.get("proxy")
     if proxy and not ALLOW_REQUEST_PROXY:
@@ -173,6 +217,20 @@ def _request_proxy(data: dict):
                     "FANTOMA_ALLOW_REQUEST_PROXY=1 to allow it")
         return PROXY_URL
     return proxy if proxy else PROXY_URL
+
+
+@app.before_request
+def _refuse_open_remote():
+    """The start-up refusal only runs under `python server.py`. This covers
+    gunicorn and `flask run`: with no API key, a client that is not on
+    loopback gets 503 unless FANTOMA_INSECURE_NO_AUTH=1."""
+    if API_KEY or INSECURE_NO_AUTH or request.path == "/health":
+        return None
+    if _is_loopback_host(request.remote_addr or ""):
+        return None
+    return jsonify({"error": "server misconfigured: FANTOMA_API_KEY is not set and the request "
+                             "is not from loopback (set FANTOMA_API_KEY, or "
+                             "FANTOMA_INSECURE_NO_AUTH=1 to allow it)"}), 503
 
 
 @app.before_request
@@ -356,6 +414,28 @@ def _release_session() -> None:
 
 # ── Lifecycle endpoints ──────────────────────────────────────
 
+@app.errorhandler(KeyError)
+def _missing_key(e):
+    return jsonify({"error": f"missing field {e.args[0]!r}" if e.args else "missing field"}), 400
+
+
+@app.errorhandler(TypeError)
+@app.errorhandler(ValueError)
+def _bad_input(e):
+    # A JSON body of the wrong shape (a list, a number) or a wrong-typed
+    # field. Generic text: the exception message may carry internals.
+    log.info("bad request %s: %s", request.path, str(e)[:200])
+    return jsonify({"error": "invalid request body"}), 400
+
+
+@app.errorhandler(Exception)
+def _unhandled(e):
+    from werkzeug.exceptions import HTTPException
+    if isinstance(e, HTTPException):
+        return e
+    return _server_error(e)
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "session_active": _fantoma is not None,
@@ -456,7 +536,7 @@ def evaluate():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True)
+    data = _json_object()
     script = data.get("script", "")
     if not script:
         return jsonify({"error": "Missing 'script'"}), 400
@@ -473,7 +553,7 @@ def fill():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True)
+    data = _json_object()
     selector = data.get("selector")
     value = data.get("value", "")
     if not selector:
@@ -497,7 +577,7 @@ def click():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True)
+    data = _json_object()
     return jsonify(_fantoma.click(data["element_id"]))
 
 
@@ -506,7 +586,7 @@ def type_text():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True)
+    data = _json_object()
     return jsonify(_fantoma.type_text(data["element_id"], data["text"]))
 
 
@@ -527,7 +607,7 @@ def select():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True)
+    data = _json_object()
     return jsonify(_fantoma.select(data["element_id"], data["value"]))
 
 
@@ -536,7 +616,7 @@ def scroll():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True)
+    data = _json_object()
     return jsonify(_fantoma.scroll(data.get("direction", "down")))
 
 
@@ -545,7 +625,7 @@ def press_key():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True)
+    data = _json_object()
     return jsonify(_fantoma.press_key(data["key"]))
 
 
@@ -597,6 +677,9 @@ def login():
     bad = _bad_url(url, required=True)
     if bad:
         return bad
+    proxy_problem = _proxy_problem(data.get("proxy"))
+    if proxy_problem:
+        return jsonify({"error": proxy_problem}), 400
 
     secrets = {k: data.get(k) for k in ("email", "username", "password")}
     guard = _login_guard(url, secrets)
@@ -621,7 +704,7 @@ def extract():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True)
+    data = _json_object()
     query = data.get("query")
     if not query:
         return jsonify({"error": "Missing 'query'"}), 400
@@ -694,6 +777,9 @@ def run_task():
     allowed, problem = _clean_allowed_domains(data.get("allowed_domains"))
     if problem:
         return jsonify({"error": problem}), 400
+    proxy_problem = _proxy_problem(data.get("proxy"))
+    if proxy_problem:
+        return jsonify({"error": proxy_problem}), 400
 
     # The Agent owns its own browser, so any session left open by /start or
     # A bad sensitive_data pattern is the caller's mistake: say so plainly,
@@ -873,10 +959,6 @@ if __name__ == "__main__":
         raise SystemExit(1)
     if INSECURE_NO_AUTH and not API_KEY and not _is_loopback_host(host):
         log.warning("FANTOMA_INSECURE_NO_AUTH is on: open API on %s.", host)
-    # Make the browser itself refuse private hosts too (subrequests and
-    # redirects), not just the URLs named in requests.
-    if not ALLOW_PRIVATE:
-        os.environ["FANTOMA_BLOCK_PRIVATE"] = "1"
     if not API_KEY and host != "127.0.0.1":
         log.warning("Serving without a key on %s — every host that can reach the port can drive the browser.", host)
     log.info("Fantoma server starting on %s:%d (auth=%s)", host, port, "on" if API_KEY else "OFF")
