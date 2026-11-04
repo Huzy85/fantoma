@@ -86,9 +86,12 @@ class TestInstall:
     def test_strict_follows_a_relative_same_site_redirect(self):
         _, handler = self._handler(strict=True)
         route = self._route("https://example.com/a")
-        route.fetch.return_value = MagicMock(status=301, headers={"location": "/b"})
+        route.request.method = "GET"
+        route.fetch.side_effect = [MagicMock(status=301, headers={"location": "/b"}),
+                                   MagicMock(status=200, headers={})]
         handler(route)
         route.fulfill.assert_called_once()
+        assert route.fulfill.call_args.kwargs["headers"]["location"] == "https://example.com/b"
 
     def test_loose_mode_uses_the_browsers_own_networking(self):
         _, handler = self._handler(strict=False)

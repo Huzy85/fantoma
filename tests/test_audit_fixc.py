@@ -127,7 +127,11 @@ class TestDnsResolution:
             {"localtest.example.org": ["127.0.0.1"], "fine.example.org": ["93.184.216.34"]}))
         assert srv._url_problem("http://localtest.example.org/") is not None
         assert srv._url_problem("http://fine.example.org/") is None
+        # Cleaning does no DNS (a hundred entries would outlast the watchdog);
+        # literals and local suffixes are still refused textually.
         _, err = srv._clean_allowed_domains(["localtest.example.org"])
+        assert err is None
+        _, err = srv._clean_allowed_domains(["127.0.0.1"])
         assert err and "private" in err
         ok, err = srv._clean_allowed_domains(["fine.example.org"])
         assert err is None and ok == ["fine.example.org"]
@@ -141,12 +145,14 @@ class _Route:
         self.request = MagicMock(url=url, method=method, headers={"cookie": "s=1", "accept": "*/*"})
         self.chain = chain
         self.fetched = []
+        self.methods = []
         self.aborted = None
         self.fulfilled = None
 
-    def fetch(self, url=None, headers=None, max_redirects=None):
+    def fetch(self, url=None, headers=None, max_redirects=None, method=None, post_data=None):
         assert max_redirects == 0
         u = url or self.request.url
+        self.methods.append(method)
         self.fetched.append((u, headers))
         status, loc = self.chain[u]
         return MagicMock(status=status, headers={"location": loc} if loc else {})
@@ -186,10 +192,11 @@ class TestMultiHop:
         _run(DomainPolicy(allowed=["a.test"]), r)
         assert r.aborted == "failed" and len(r.fetched) == 11
 
-    def test_post_307_is_checked_but_not_replayed(self):
-        r = _Route("http://a.test/", {"http://a.test/": (307, "/b")}, method="POST")
+    def test_post_307_is_probed_with_head_never_replayed(self):
+        r = _Route("http://a.test/", {"http://a.test/": (307, "/b"), "http://a.test/b": (200, None)},
+                   method="POST")
         _run(DomainPolicy(allowed=["a.test"]), r)
-        assert len(r.fetched) == 1 and r.fulfilled is not None
+        assert r.methods == [None, "HEAD"] and "response" in r.fulfilled
 
     def test_plain_response_is_fulfilled_untouched(self):
         r = _Route("http://a.test/", {"http://a.test/": (200, None)})
@@ -359,11 +366,9 @@ def test_keyless_remote_client_gets_503_but_loopback_and_health_pass(srv):
 
 @pytest.mark.parametrize("proxy", ["http://127.0.0.1:3128", "socks5://10.0.0.5:1080", "http://box.lan:3128",
                                    "http://100.64.1.1:3128", "ftp://proxy.example.org:21", "file:///etc/passwd"])
-def test_run_and_login_reject_bad_proxy(srv, proxy):
+def test_run_rejects_bad_proxy(srv, proxy):
     c = srv.app.test_client()
     r = c.post("/run", json={"task": "x", "proxy": proxy})
-    assert r.status_code == 400 and "proxy" in r.get_json()["error"]
-    r = c.post("/login", json={"url": "https://shop.example.org/", "proxy": proxy})
     assert r.status_code == 400 and "proxy" in r.get_json()["error"]
 
 

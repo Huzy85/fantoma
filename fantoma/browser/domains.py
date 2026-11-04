@@ -49,6 +49,7 @@ import re
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from urllib.parse import urljoin, urlparse
 
 from fantoma.netutil import is_private_address, is_private_name
@@ -59,16 +60,53 @@ _NETWORK_SCHEMES = {"http", "https", "ws", "wss", "ftp"}
 
 _WS_GUARD = """
 (() => {
-  const allowed = %s, blocked = %s;
+  const allowed = __ALLOWED__, blocked = __BLOCKED__, blockPrivate = __BLOCK_PRIVATE__;
   const Native = window.WebSocket;
   if (!Native) return;
   const matches = (host, p) => p.startsWith('*.') ? host.endsWith(p.slice(1))
       : host === p || host.endsWith('.' + p);
+  const NAMES = ['localhost', 'ip6-localhost', 'ip6-loopback', 'metadata',
+                 'metadata.google.internal', 'instance-data', 'host.docker.internal'];
+  const SUFFIXES = ['.localhost', '.internal', '.local', '.lan', '.home', '.home.arpa'];
+  const v4Private = (a, b) => a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127)
+      || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+      || a >= 224;
+  const v6Private = (h) => {
+    let t = h.toLowerCase();
+    if (t.includes('.')) {  // trailing dotted quad: turn it into two hex groups
+      const i = t.lastIndexOf(':'), q = t.slice(i + 1).split('.').map(Number);
+      if (q.length !== 4 || q.some(n => !(n >= 0 && n <= 255))) return true;
+      t = t.slice(0, i + 1) + ((q[0] << 8) | q[1]).toString(16) + ':' + ((q[2] << 8) | q[3]).toString(16);
+    }
+    const halves = t.split('::');
+    if (halves.length > 2) return true;
+    const head = halves[0] ? halves[0].split(':') : [];
+    const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+    const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+    if (fill < 0) return true;
+    const g = head.concat(Array(fill).fill('0'), tail).map(x => parseInt(x || '0', 16));
+    if (g.length !== 8 || g.some(n => isNaN(n))) return true;
+    const zero5 = g.slice(0, 5).every(n => n === 0);
+    if (zero5 && g[5] === 0 && g[6] === 0 && g[7] <= 1) return true;           // :: and ::1
+    if (zero5 && (g[5] === 0xffff || g[5] === 0)) return v4Private(g[6] >> 8, g[6] & 255); // mapped, compatible
+    if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every(n => n === 0))
+      return v4Private(g[6] >> 8, g[6] & 255);                                // NAT64
+    if ((g[0] & 0xfe00) === 0xfc00 || (g[0] & 0xffc0) === 0xfe80) return true; // unique-local, link-local
+    return false;
+  };
+  const isPrivate = (host) => {
+    if (host.startsWith('[') && host.endsWith(']')) return v6Private(host.slice(1, -1));
+    // The URL parser has already turned 127.1, 0x7f000001 and 2130706433 into dotted decimal.
+    const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
+    if (m) return v4Private(+m[1], +m[2]);
+    return NAMES.includes(host) || SUFFIXES.some(x => host.endsWith(x));
+  };
   const permits = (url) => {
     let host;
-    try { host = new URL(url, location.href).hostname.toLowerCase().replace(/\\.$/, ''); }
+    try { host = new URL(url, location.href).hostname.toLowerCase().replace(/\.$/, ''); }
     catch (e) { return false; }
     if (blocked.some(p => matches(host, p))) return false;
+    if (blockPrivate && isPrivate(host) && !allowed.some(p => matches(host, p))) return false;
     return !allowed.length || allowed.some(p => matches(host, p));
   };
   const Guarded = function WebSocket(url, protocols) {
@@ -82,6 +120,12 @@ _WS_GUARD = """
   window.WebSocket = Guarded;
 })();
 """
+
+
+def _ws_guard_script(allowed, blocked, block_private) -> str:
+    return (_WS_GUARD.replace("__ALLOWED__", json.dumps(allowed))
+            .replace("__BLOCKED__", json.dumps(blocked))
+            .replace("__BLOCK_PRIVATE__", "true" if block_private else "false"))
 
 
 class DomainBlocked(Exception):
@@ -153,27 +197,40 @@ _RESOLVE_TIMEOUT = 3.0
 _RESOLVE_TTL = 60.0
 
 
+# Lookups run on a small shared pool. A resolver that hangs ties up one worker
+# until it answers; it can never add threads, so a stream of dead names costs
+# four threads at most. When all four are busy a new lookup is refused (the
+# caller treats that as a failed lookup and fails closed).
+_RESOLVE_WORKERS = 4
+_resolve_pool = ThreadPoolExecutor(max_workers=_RESOLVE_WORKERS, thread_name_prefix="fantoma-dns")
+_resolve_slots = threading.BoundedSemaphore(_RESOLVE_WORKERS)
+
+
+def _lookup(host: str):
+    try:
+        return socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    finally:
+        _resolve_slots.release()
+
+
 def _resolve_all(host: str, timeout: float = _RESOLVE_TIMEOUT):
     """Every address `host` resolves to, as ipaddress objects. Raises OSError
-    on failure or timeout. The lookup runs in a daemon thread so a hung
-    resolver cannot stall the caller past `timeout`."""
-    box: dict = {}
-
-    def _work():
-        try:
-            box["infos"] = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-        except Exception as e:  # noqa: BLE001
-            box["err"] = e
-
-    t = threading.Thread(target=_work, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
-        raise OSError(f"DNS lookup for {host} timed out")
-    if "err" in box:
-        raise OSError(str(box["err"]))
+    on failure, on timeout, or when the lookup pool is saturated."""
+    if not _resolve_slots.acquire(blocking=False):
+        raise OSError(f"DNS lookup for {host} refused: resolver pool is busy")
+    try:
+        future = _resolve_pool.submit(_lookup, host)
+    except Exception:
+        _resolve_slots.release()
+        raise
+    try:
+        infos = future.result(timeout=timeout)
+    except FutureTimeout:
+        raise OSError(f"DNS lookup for {host} timed out") from None
+    except Exception as e:  # noqa: BLE001
+        raise OSError(str(e)) from None
     out = []
-    for info in box.get("infos", []):
+    for info in infos or []:
         try:
             out.append(ipaddress.ip_address(info[4][0].split("%")[0]))
         except ValueError:
@@ -289,6 +346,36 @@ class DomainPolicy:
 
     _MAX_HOPS = 10
     _DROP_ON_HOP = {"cookie", "authorization", "proxy-authorization", "host", "content-length"}
+    _DROP_WITH_BODY = {"content-type", "content-encoding", "content-language", "origin"}
+
+    @staticmethod
+    def _location(response) -> str:
+        if not 300 <= response.status < 400:
+            return ""
+        return response.headers.get("location", "") or ""
+
+    def _walk(self, route, start: str, method: str, headers: dict):
+        """Follow redirects from `start` (a URL already checked, reached by
+        one redirect) with `method`, checking every hop. Returns the last URL
+        in the chain, or None after aborting the route because a hop was
+        refused or the chain ran past _MAX_HOPS redirects in total."""
+        hops, current = 1, start
+        while True:
+            response = route.fetch(url=current, method=method, headers=headers, max_redirects=0)
+            location = self._location(response)
+            if not location:
+                return current
+            hops += 1
+            if hops > self._MAX_HOPS:
+                log.info("domain policy: too many redirects from %s", start[:200])
+                route.abort("failed")
+                return None
+            nxt = urljoin(current, location)
+            if not self.permits(nxt):
+                log.info("domain policy: blocked redirect %s -> %s", current[:200], location[:200])
+                route.abort("blockedbyclient")
+                return None
+            current = nxt
 
     def _strict_fetch(self, route, url: str) -> None:
         """Fetch with redirects off and walk the whole chain ourselves.
@@ -296,44 +383,48 @@ class DomainPolicy:
         The browser does not run the route handler again for every hop it
         follows on its own (measured in Chromium and Camoufox: a second
         redirect reached a host the policy refuses). So each Location is
-        checked here, up to _MAX_HOPS hops, before anything is handed back.
-        A chain that passes is returned to the browser as a single redirect
-        to the last verified URL, so the page keeps the right address. Only
-        GET and HEAD are followed: replaying a POST (307/308) just to check
-        it would send it twice, so for those the first Location is checked
-        and nothing more.
+        checked here, up to _MAX_HOPS redirects, before anything is handed
+        back, and a chain that passes is returned to the browser as a single
+        redirect to the last verified URL, so the page keeps the right address.
+
+        GET and HEAD follow the chain as themselves. A POST answered 301, 302
+        or 303 is followed with GET from the first Location on, which is what
+        the browser does. A POST answered 307 or 308 must not be replayed just
+        to look at it, so the checked Location is probed with HEAD and, if it
+        redirects again, the rest of the chain is walked with HEAD; any refused
+        hop aborts the request, otherwise the original 307/308 goes back.
         """
         response = route.fetch(max_redirects=0)
-        method = (route.request.method or "GET").upper()
-        follow = method in ("GET", "HEAD")
-        current, final = url, None
-        for _ in range(self._MAX_HOPS):
-            if not 300 <= response.status < 400:
-                break
-            location = response.headers.get("location", "")
-            if not location:
-                break
-            nxt = urljoin(current, location)
-            if not self.permits(nxt):
-                log.info("domain policy: blocked redirect %s -> %s", current[:200], location[:200])
-                route.abort("blockedbyclient")
-                return
-            if not follow:
-                break
-            headers = {k: v for k, v in route.request.headers.items()
-                       if k.lower() not in self._DROP_ON_HOP}
-            current = nxt
-            response = route.fetch(url=nxt, headers=headers, max_redirects=0)
-            final = nxt
-        else:
-            log.info("domain policy: too many redirects from %s", url[:200])
-            route.abort("failed")
+        location = self._location(response)
+        if not location:
+            route.fulfill(response=response)
             return
-        if final is None:
+        method = (route.request.method or "GET").upper()
+        nxt = urljoin(url, location)
+        if not self.permits(nxt):
+            log.info("domain policy: blocked redirect %s -> %s", url[:200], location[:200])
+            route.abort("blockedbyclient")
+            return
+        headers = {k: v for k, v in route.request.headers.items()
+                   if k.lower() not in self._DROP_ON_HOP}
+        if method in ("GET", "HEAD"):
+            follow, raw_ok = method, False
+        elif response.status in (301, 302, 303):
+            follow, raw_ok = "GET", True
+        else:
+            follow, raw_ok = "HEAD", True
+        if follow != method:
+            headers = {k: v for k, v in headers.items() if k.lower() not in self._DROP_WITH_BODY}
+        end = self._walk(route, nxt, follow, headers)
+        if end is None:
+            return
+        if raw_ok and (end == nxt or response.status in (307, 308)):
+            # Nothing to rewrite: the browser takes the answer it would have
+            # had, and every hop after it has been looked at.
             route.fulfill(response=response)
             return
         # Hand the browser one redirect to the verified end of the chain.
-        route.fulfill(status=302, headers={"location": final, "cache-control": "no-store"}, body="")
+        route.fulfill(status=302, headers={"location": end, "cache-control": "no-store"}, body="")
 
     def install(self, context) -> None:
         """Enforce the policy on every request `context` makes."""
@@ -367,6 +458,6 @@ class DomainPolicy:
         # constructor is guarded in the page instead. It throws the same
         # SecurityError a browser throws for a forbidden port.
         try:
-            context.add_init_script(_WS_GUARD % (json.dumps(self.allowed), json.dumps(self.blocked)))
+            context.add_init_script(_ws_guard_script(self.allowed, self.blocked, self.block_private))
         except Exception as e:
             log.warning("domain policy: could not guard websockets: %s", e)
