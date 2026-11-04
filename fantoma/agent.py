@@ -21,6 +21,7 @@ from fantoma.navigator import Navigator, NavigatorResult
 from fantoma.state_tracker import StateTracker
 from fantoma.task_spec import parse_task, verify_outcome
 from fantoma.fast_path import run_fast_path
+from fantoma.secrets_scope import SecretStore, refusal_message
 from fantoma.validator import validate_answer
 
 log = logging.getLogger("fantoma")
@@ -177,6 +178,8 @@ class Agent:
         self._max_steps = max_steps
         self._flat_budget = min(flat_budget, max_steps)
         self._sensitive_data = sensitive_data or {}
+        # Raises ValueError now, not mid-run, if a domain pattern is invalid.
+        SecretStore.from_any(self._sensitive_data)
 
         endpoints = escalation or [llm_url]
         keys = escalation_keys or [api_key] + [""] * (len(endpoints) - 1)
@@ -271,11 +274,40 @@ class Agent:
         except Exception:
             pass
 
+    def _store(self) -> SecretStore:
+        return SecretStore.from_any(getattr(self, "_sensitive_data", None))
+
+    def _live_url(self) -> str:
+        try:
+            return self.fantoma._engine.get_page().url or ""
+        except Exception:
+            return ""
+
     def _sub_secrets(self, text: str) -> str:
-        """Substitute <secret:name> placeholders with real sensitive values."""
-        for name, value in self._sensitive_data.items():
-            text = text.replace(f"<secret:{name}>", value)
-        return text
+        """Substitute <secret:name> placeholders with real sensitive values.
+
+        Reads the page URL now; a scoped secret is left as its placeholder
+        unless the page is on its site.
+        """
+        return self._store().reveal(text, self._live_url())[0]
+
+    def _mask_result(self, result: "AgentResult") -> "AgentResult":
+        """Replace real secret values in anything returned to the caller."""
+        store = self._store()
+        if not store:
+            return result
+        for field in ("data", "error", "final_title", "verify_reason"):
+            v = getattr(result, field, None)
+            if isinstance(v, str):
+                setattr(result, field, store.mask(v))
+        try:
+            result.steps_detail = [
+                {k: (store.mask(v) if isinstance(v, str) else v) for k, v in st.items()}
+                if isinstance(st, dict) else st
+                for st in (result.steps_detail or [])]
+        except Exception:
+            pass
+        return result
 
     def _replay_steps(self, steps: list, start_url: str) -> bool:
         """Replay a cached plan with no navigation LLM calls.
@@ -305,7 +337,12 @@ class Agent:
                     if act == "click":
                         r = self.fantoma.click(idx)
                     elif act == "type_text":
-                        r = self.fantoma.type_text(idx, self._sub_secrets(st.get("value") or ""))
+                        value, refused = self._store().reveal(
+                            st.get("value") or "", self._live_url())
+                        if refused:
+                            log.info("Replay stopped: %s", refusal_message(refused))
+                            return False
+                        r = self.fantoma.type_text(idx, value)
                     else:
                         r = self.fantoma.select(idx, st.get("value") or "")
                 else:
@@ -340,6 +377,14 @@ class Agent:
     def run(self, task: str, start_url: str = None, deadline_s: float = None,
             keep_open: bool = False) -> AgentResult:
         """Run a browser task described in English.
+
+        Real secret values are masked out of everything returned.
+        """
+        return self._mask_result(self._run(task, start_url, deadline_s, keep_open))
+
+    def _run(self, task: str, start_url: str = None, deadline_s: float = None,
+             keep_open: bool = False) -> AgentResult:
+        """The run itself (see run()).
 
         Two-phase execution:
         - Phase 1: flat reactive loop with a single catch-all subtask
@@ -651,7 +696,7 @@ class Agent:
             if headings:
                 parts.append(f"Headings: {'; '.join(headings[:10])}")
             parts.append(f"Content: {content}")
-            return "\n".join(parts)
+            return self._store().mask("\n".join(parts), url)
         except Exception:
             return "Page not loaded"
 
@@ -714,7 +759,7 @@ class _Session:
                 instruction=instruction, done_when="Task complete",
                 untrusted_note=UNTRUSTED_NOTE)},
             {"role": "user", "content": f"Page ({state['url']}):\n"
-                                        f"{wrap_untrusted(state['aria_tree'], state['url'])}"},
+                                        f"{wrap_untrusted(self.agent._store().mask(state['aria_tree'], state['url']), state['url'])}"},
         ]
         raw = self.agent._llm.chat(messages, max_tokens=200)
         actions = _parse_actions(raw or "")

@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from fantoma.dom.markdown import page_to_markdown, aria_text_fallback
 from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
+from fantoma.secrets_scope import SecretStore, refusal_message
 from fantoma.dom.aria_diff import aria_diff, aria_snapshot
 from fantoma.browser.page_state import classify_blocker
 from fantoma.planner import Planner, Subtask
@@ -234,7 +235,8 @@ class Navigator:
         spec=None,
     ) -> NavigatorResult:
         steps_detail = []
-        sensitive_data = sensitive_data or {}
+        store = SecretStore.from_any(sensitive_data)
+        self._secrets = store  # read by _extract_answer to mask page text
         dom_mode = MODE_MAP.get(subtask.mode, "navigate")
         # Orchestrator-injected fallback subtasks (the Google search escape
         # hatch) legitimately leave the start domain. Disable drift detection
@@ -301,8 +303,8 @@ class Navigator:
 
             # Get filtered DOM
             aria = fantoma._dom.extract(page, task=subtask.instruction, mode=dom_mode)
-            for name, value in sensitive_data.items():
-                aria = aria.replace(value, f"<secret:{name}>")
+            aria = store.mask(aria, current_url)
+            usable = store.names_for(current_url)
 
             # Get page content for state tracking
             try:
@@ -318,7 +320,11 @@ class Navigator:
             )
             prefix = f"{nudge}\n\n" if nudge else ""
             nudge = ""  # shown once; the model gets a fresh look at the page
-            user_msg = (f"{prefix}Change: {change_line}\n\nPage ({current_url}):\n"
+            # Only the placeholders usable on this site are named; secrets
+            # scoped to other sites are not listed at all.
+            secrets_line = ("Secrets you may type here: "
+                            + ", ".join(f"<secret:{n}>" for n in usable) + "\n\n") if usable else ""
+            user_msg = (f"{prefix}{secrets_line}Change: {change_line}\n\nPage ({current_url}):\n"
                         f"{wrap_untrusted(aria, current_url)}")
 
             messages = [
@@ -458,18 +464,30 @@ class Navigator:
                     or params.get("url")
                 )
 
-                for name, value in sensitive_data.items():
-                    if "text" in params:
-                        params["text"] = params["text"].replace(f"<secret:{name}>", value)
+                # Re-read the URL right now: a redirect since the step began
+                # must not let a secret be typed on the wrong site.
+                refused = []
+                if "text" in params:
+                    try:
+                        fill_url = fantoma._engine.get_page().url
+                    except Exception:
+                        fill_url = ""
+                    params["text"], refused = store.reveal(params["text"], fill_url)
 
                 method = getattr(fantoma, action_type)
-                try:
-                    result = method(**params)
-                    outcome = "OK" if result["success"] else "FAILED"
-                except Exception as e:
-                    log.warning("Action %s failed: %s", action_desc, e)
-                    result = {"success": False}
-                    outcome = "ERROR"
+                if refused:
+                    msg = refusal_message(refused)
+                    log.warning("Action %s refused: %s", action_desc, msg)
+                    result = {"success": False, "notes": [msg]}
+                    outcome = "REFUSED"
+                else:
+                    try:
+                        result = method(**params)
+                        outcome = "OK" if result["success"] else "FAILED"
+                    except Exception as e:
+                        log.warning("Action %s failed: %s", action_desc, store.mask(str(e)))
+                        result = {"success": False}
+                        outcome = "ERROR"
 
                 steps_detail.append({
                     "step": step_num, "action": action_desc,
@@ -656,6 +674,7 @@ class Navigator:
             rendered = page_to_markdown(page, main_only=False, include_links=False,
                                         max_chars=12000)
             body = rendered["markdown"] or aria_text_fallback(page)[:12000]
+            body = getattr(self, "_secrets", SecretStore()).mask(body, page.url)
             title = rendered["title"]
             content = wrap_untrusted(f"Page title: {title}\nURL: {page.url}\n\n{body}", page.url)
             log.info(
