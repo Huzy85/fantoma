@@ -54,7 +54,7 @@ def test_start_while_active_returns_error(client):
 def test_stop_clears_session(client):
     c, mock_f = client
     c.post("/start", json={"url": "https://example.com"})
-    r = c.post("/stop")
+    r = c.post("/stop", json={})
     assert r.status_code == 200
     mock_f.stop.assert_called_once()
 

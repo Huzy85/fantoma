@@ -26,6 +26,8 @@ class _Route:
     def __init__(self, url, chain, method="GET"):
         self.request = MagicMock(url=url, method=method,
                                  headers={"cookie": "s=1", "accept": "*/*", "content-type": "text/plain"})
+        self.request.is_navigation_request.return_value = False  # subresource unless a test says otherwise
+        self.posts = []
         self.chain = chain
         self.fetched = []
         self.methods = []
@@ -37,6 +39,7 @@ class _Route:
         u = url or self.request.url
         self.fetched.append((u, headers))
         self.methods.append(method)
+        self.posts.append(post_data)
         status, loc = self.chain[u]
         return MagicMock(status=status, headers={"location": loc} if loc else {})
 
@@ -54,6 +57,8 @@ def _run(policy, route):
 # ── 1. Redirect chains behind a POST ─────────────────────────
 
 class TestPostChains:
+    """Subresource requests: the handler walks the chain itself."""
+
     @pytest.mark.parametrize("status", [301, 302, 303])
     def test_post_chain_to_forbidden_host_is_blocked(self, status):
         r = _Route("http://a.test/", {"http://a.test/": (status, "/b"),
@@ -61,42 +66,68 @@ class TestPostChains:
                    method="POST")
         _run(DomainPolicy(allowed=["a.test"]), r)
         assert r.aborted == "blockedbyclient" and r.fulfilled is None
-        # followed as GET, without the body headers
+        # followed as GET, without the body or its headers
         assert r.methods == [None, "GET"]
-        assert "content-type" not in {k.lower() for k in r.fetched[1][1]}
+        assert r.posts[1] == b""
+        assert not {"content-type", "content-length", "transfer-encoding"} & {k.lower() for k in r.fetched[1][1]}
 
-    def test_post_303_chain_is_returned_as_one_redirect(self):
+    def test_post_303_chain_is_answered_with_the_final_response(self):
         r = _Route("http://a.test/", {"http://a.test/": (303, "/b"), "http://a.test/b": (302, "/c"),
                                       "http://a.test/c": (200, None)}, method="POST")
         _run(DomainPolicy(allowed=["a.test"]), r)
-        assert r.fulfilled["status"] == 302 and r.fulfilled["headers"]["location"] == "http://a.test/c"
-
-    def test_post_303_single_hop_keeps_the_original_answer(self):
-        r = _Route("http://a.test/", {"http://a.test/": (303, "/b"), "http://a.test/b": (200, None)},
-                   method="POST")
-        _run(DomainPolicy(allowed=["a.test"]), r)
-        assert "response" in r.fulfilled
+        assert list(r.fulfilled) == ["response"] and r.methods == [None, "GET", "GET"]
 
     @pytest.mark.parametrize("status", [307, 308])
-    def test_post_307_chain_behind_a_probe_is_checked(self, status):
-        r = _Route("http://a.test/", {"http://a.test/": (status, "/b"),
-                                      "http://a.test/b": (302, "http://evil.test/"),
-                                      }, method="POST")
+    def test_post_307_cross_origin_is_refused(self, status):
+        r = _Route("http://a.test/", {"http://a.test/": (status, "http://b.a.test/")}, method="POST")
+        r.request.post_data_buffer = b"secret=1"
         _run(DomainPolicy(allowed=["a.test"]), r)
-        assert r.aborted == "blockedbyclient"
-        assert r.methods == [None, "HEAD"]
+        assert r.aborted == "blockedbyclient" and len(r.fetched) == 1
 
-    def test_post_307_clean_chain_hands_back_the_307(self):
-        r = _Route("http://a.test/", {"http://a.test/": (307, "/b"), "http://a.test/b": (302, "/c"),
-                                      "http://a.test/c": (200, None)}, method="POST")
-        _run(DomainPolicy(allowed=["a.test"]), r)
-        assert "response" in r.fulfilled and r.methods == [None, "HEAD", "HEAD"]
-
-    def test_post_307_endless_chain_aborts(self):
-        r = _Route("http://a.test/", {"http://a.test/": (307, "/b"), "http://a.test/b": (302, "/b")},
+    def test_post_307_endless_same_origin_chain_aborts(self):
+        r = _Route("http://a.test/", {"http://a.test/": (307, "/b"), "http://a.test/b": (307, "/b")},
                    method="POST")
+        r.request.post_data_buffer = b"x"
         _run(DomainPolicy(allowed=["a.test"]), r)
         assert r.aborted == "failed"
+
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_navigation_redirect_is_answered_with_a_hop_page(self, status):
+        r = _Route("http://a.test/", {"http://a.test/": (status, "/b")})
+        r.request.is_navigation_request.return_value = True
+        r.request.frame.parent_frame = None
+        _run(DomainPolicy(allowed=["a.test"]), r)
+        assert r.fulfilled["status"] == 200 and len(r.fetched) == 1   # the browser makes the next request
+        body = r.fulfilled["body"]
+        assert "data-fantoma-hop" in body and 'location.replace("http://a.test/b")' in body
+        assert r.fulfilled["headers"]["x-fantoma-hop"] == "1" and "no-store" in r.fulfilled["headers"]["cache-control"]
+        assert "'none'" in r.fulfilled["headers"]["content-security-policy"]
+
+    def test_navigation_redirect_to_a_forbidden_host_is_aborted(self):
+        r = _Route("http://a.test/", {"http://a.test/": (302, "http://evil.test/")})
+        r.request.is_navigation_request.return_value = True
+        _run(DomainPolicy(allowed=["a.test"]), r)
+        assert r.aborted == "blockedbyclient" and r.fulfilled is None
+
+    @pytest.mark.parametrize("status", [307, 308])
+    def test_post_307_navigation_is_refused(self, status):
+        r = _Route("http://a.test/", {"http://a.test/": (status, "/b")}, method="POST")
+        r.request.is_navigation_request.return_value = True
+        _run(DomainPolicy(allowed=["a.test"]), r)
+        assert r.aborted == "blockedbyclient" and r.fulfilled is None
+
+    def test_non_http_location_is_refused(self):
+        r = _Route("http://a.test/", {"http://a.test/": (302, "data:text/html,hi")})
+        r.request.is_navigation_request.return_value = True
+        _run(DomainPolicy(allowed=["a.test"]), r)
+        assert r.aborted == "blockedbyclient"
+
+    def test_hop_page_escapes_the_location(self):
+        r = _Route("http://a.test/", {"http://a.test/": (302, "/x?a=</script><script>alert(1)//\"&b")})
+        r.request.is_navigation_request.return_value = True
+        _run(DomainPolicy(allowed=["a.test"]), r)
+        body = r.fulfilled["body"]
+        assert "</script><script>" not in body and "alert(1)" not in body.split("<script", 1)[1].split("</script>")[1]
 
 
 # ── 11. Hop limit ────────────────────────────────────────────
@@ -113,7 +144,7 @@ def _chain(n):
 def test_exactly_ten_redirects_pass():
     r = _Route("http://a.test/", _chain(10))
     _run(DomainPolicy(allowed=["a.test"]), r)
-    assert r.aborted is None and r.fulfilled["headers"]["location"] == "http://a.test/h10"
+    assert r.aborted is None and "response" in r.fulfilled
 
 
 def test_eleven_redirects_abort():
@@ -186,7 +217,7 @@ def _post_check(ctx, port, hits):
         page.goto(f"http://localhost:{port}/form?t=bad", timeout=10000)
     except Exception:
         pass
-    time.sleep(2)
+    page.wait_for_timeout(2500)  # not time.sleep: route handlers only run while Playwright waits
     assert not [h for h in hits if h[1].startswith("127.0.0.2")], hits
     assert "landed" not in page.content() or page.url.endswith("/form?t=bad")
 
@@ -256,8 +287,8 @@ class TestKeylessCsrf:
         r = srv.app.test_client().post("/run", data='{"task":"x"}', environ_overrides=LOOP)
         assert r.status_code == 415
 
-    def test_empty_post_still_works(self, srv):
-        assert srv.app.test_client().post("/stop", environ_overrides=LOOP).status_code == 200
+    def test_empty_json_post_works(self, srv):
+        assert srv.app.test_client().post("/stop", json={}, environ_overrides=LOOP).status_code == 200
 
     def test_json_content_type_with_charset_is_fine(self, srv):
         r = srv.app.test_client().post("/run", data='{}', content_type="application/json; charset=utf-8",
@@ -401,7 +432,7 @@ def test_hung_lookups_cannot_add_threads(monkeypatch):
     before = threading.active_count()
     errors = []
     try:
-        for i in range(12):
+        for i in range(domains._RESOLVE_WORKERS + 4):
             try:
                 domains._resolve_all(f"slow{i}.example.org", timeout=0.05)
             except OSError as e:
@@ -430,7 +461,7 @@ const vm = require('vm');
 const script = %s, urls = %s;
 class WS { constructor(u) { this.u = u; } }
 WS.CONNECTING = 0; WS.OPEN = 1; WS.CLOSING = 2; WS.CLOSED = 3;
-const win = {WebSocket: WS};
+const win = {WebSocket: WS, location: {href: 'http://page.example/'}};
 const ctx = vm.createContext({window: win, location: {href: 'http://page.example/'}, URL, DOMException});
 vm.runInContext(script, ctx);
 const out = {};

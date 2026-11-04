@@ -143,9 +143,11 @@ class _Route:
     """Minimal Playwright route: scripted responses by URL."""
     def __init__(self, url, chain, method="GET"):
         self.request = MagicMock(url=url, method=method, headers={"cookie": "s=1", "accept": "*/*"})
+        self.request.is_navigation_request.return_value = False  # subresource: the handler walks the chain
         self.chain = chain
         self.fetched = []
         self.methods = []
+        self.posts = []
         self.aborted = None
         self.fulfilled = None
 
@@ -153,6 +155,7 @@ class _Route:
         assert max_redirects == 0
         u = url or self.request.url
         self.methods.append(method)
+        self.posts.append(post_data)
         self.fetched.append((u, headers))
         status, loc = self.chain[u]
         return MagicMock(status=status, headers={"location": loc} if loc else {})
@@ -176,11 +179,11 @@ class TestMultiHop:
         assert r.aborted == "blockedbyclient" and r.fulfilled is None
         assert [u for u, _ in r.fetched] == ["http://a.test/", "http://a.test/b"]
 
-    def test_verified_chain_is_returned_as_one_redirect_to_the_end(self):
+    def test_verified_chain_is_answered_with_the_final_response_never_a_3xx(self):
         r = _Route("http://a.test/", {"http://a.test/": (301, "/b"), "http://a.test/b": (302, "/c"),
                                       "http://a.test/c": (200, None)})
         _run(DomainPolicy(allowed=["a.test"]), r)
-        assert r.fulfilled["status"] == 302 and r.fulfilled["headers"]["location"] == "http://a.test/c"
+        assert list(r.fulfilled) == ["response"] and r.fulfilled["response"].status == 200
 
     def test_cookie_is_not_forwarded_on_followed_hops(self):
         r = _Route("http://a.test/", {"http://a.test/": (302, "/b"), "http://a.test/b": (200, None)})
@@ -192,11 +195,13 @@ class TestMultiHop:
         _run(DomainPolicy(allowed=["a.test"]), r)
         assert r.aborted == "failed" and len(r.fetched) == 11
 
-    def test_post_307_is_probed_with_head_never_replayed(self):
+    def test_post_307_same_origin_subresource_replays_the_body(self):
         r = _Route("http://a.test/", {"http://a.test/": (307, "/b"), "http://a.test/b": (200, None)},
                    method="POST")
+        r.request.post_data_buffer = b"x=1"
         _run(DomainPolicy(allowed=["a.test"]), r)
-        assert r.methods == [None, "HEAD"] and "response" in r.fulfilled
+        assert r.methods == [None, "POST"] and r.posts == [None, b"x=1"]
+        assert r.fulfilled["response"].status == 200
 
     def test_plain_response_is_fulfilled_untouched(self):
         r = _Route("http://a.test/", {"http://a.test/": (200, None)})
@@ -243,10 +248,12 @@ def _check_chain(ctx, port, hits):
     DomainPolicy(allowed=["localhost"], strict=True).install(ctx)
     page = ctx.new_page()
     page.goto(f"http://localhost:{port}/page", timeout=8000)
-    time.sleep(1.5)
-    with pytest.raises(Exception):
-        page.goto(f"http://localhost:{port}/a", timeout=8000)
-    time.sleep(0.5)
+    page.wait_for_timeout(1500)  # not time.sleep: the sync API only runs route handlers while waiting
+    try:
+        page.goto(f"http://localhost:{port}/a", timeout=8000)  # a hop page now, so no error here
+    except Exception:
+        pass
+    page.wait_for_timeout(1500)
     assert not [h for h in hits if h.startswith("127.0.0.2")], hits
 
 

@@ -17,7 +17,7 @@ _log = logging.getLogger("fantoma.browser")
 _IGNORE_HTTPS_ERRORS = os.environ.get("FANTOMA_IGNORE_HTTPS_ERRORS", "").lower() in ("1", "true", "yes")
 
 
-from fantoma.browser.domains import DomainBlocked, DomainPolicy
+from fantoma.browser.domains import DomainBlocked, DomainPolicy, settle_hops
 
 _ATTACH_WARNED = False
 
@@ -632,6 +632,21 @@ class BrowserEngine:
         return response
 
     def _after_navigation(self, url, response):
+        hopped = False
+        try:
+            hopped = response is not None and response.headers.get("x-fantoma-hop") == "1"
+        except Exception:
+            pass
+        if hopped:
+            # A redirect is answered with a hop page that navigates on (see
+            # domains.settle_hops); wait for the end of the chain, then read the
+            # real status from the policy, since the browser only saw the 200.
+            settle_hops(self._page)
+            if hopped:
+                status = self.domain_policy.nav_status.get(self._page.url)
+                response = None
+                if status is not None:
+                    self.last_status, self._last_status_url = status, self._page.url
         if response is not None:
             try:
                 self.last_status, self._last_status_url = response.status, self._page.url
@@ -669,6 +684,7 @@ class BrowserEngine:
         self._popup_count = max(0, self._popup_count - 1)  # opened by us, not the site
         if url:
             new_page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            settle_hops(new_page)
             if self.humanizer:
                 self.humanizer.reading_pause()
         self._page = new_page

@@ -35,12 +35,30 @@ their TLS/HTTP fingerprint is not the browser's. strict=False (or
 FANTOMA_DOMAIN_STRICT=0) keeps the browser's own networking and accepts that
 a redirect from an allowed host to another host is not stopped.
 
-WebSockets opened from pages and frames are checked too. Ones opened from
-inside a web worker are not.
+WebSockets opened from pages and frames are checked too, by a constructor
+guard that is locked in place (window.WebSocket cannot be reassigned or
+deleted, and WebSocket.prototype.constructor is the guard). The check is on
+the URL text only: a name that resolves to a loopback or private address
+(127.0.0.1.nip.io) passes, because page JavaScript cannot resolve names.
+Ones opened from inside a web worker are not checked at all.
+
+Redirects, strict mode, in detail. The browser is never allowed to follow a
+3xx itself. A navigation that is answered with a permitted redirect gets a
+tiny page (data-fantoma-hop, no-store, locked-down CSP) that starts a fresh
+navigation to the Location; that is a new request, so it comes back through
+the handler and is checked again, at the moment the browser really asks. A
+POST answered 307 or 308 on a navigation is refused. Subresources are
+walked by the handler (every hop checked, redirects off) and the final
+answer is returned in place of the first. Fantoma's own navigation helpers
+wait for the extra hop with settle_hops(); code driving the page directly
+sees the hop page first (page.goto resolves on it) and must wait for the
+URL to change.
 """
 
 from __future__ import annotations
 
+import base64
+import html
 import json
 import logging
 import ipaddress
@@ -58,9 +76,10 @@ log = logging.getLogger("fantoma.domains")
 
 _NETWORK_SCHEMES = {"http", "https", "ws", "wss", "ftp"}
 
-_WS_GUARD = """
+_WS_GUARD = r"""
 (() => {
   const allowed = __ALLOWED__, blocked = __BLOCKED__, blockPrivate = __BLOCK_PRIVATE__;
+  const install = (window) => {
   const Native = window.WebSocket;
   if (!Native) return;
   const matches = (host, p) => p.startsWith('*.') ? host.endsWith(p.slice(1))
@@ -103,7 +122,7 @@ _WS_GUARD = """
   };
   const permits = (url) => {
     let host;
-    try { host = new URL(url, location.href).hostname.toLowerCase().replace(/\.$/, ''); }
+    try { host = new URL(url, window.location.href).hostname.toLowerCase().replace(/\.$/, ''); }
     catch (e) { return false; }
     if (blocked.some(p => matches(host, p))) return false;
     if (blockPrivate && isPrivate(host) && !allowed.some(p => matches(host, p))) return false;
@@ -114,10 +133,38 @@ _WS_GUARD = """
     return protocols === undefined ? new Native(url) : new Native(url, protocols);
   };
   Guarded.prototype = Native.prototype;
+  // Without this, new (WebSocket.prototype.constructor)(url) is the native one.
+  Object.defineProperty(Native.prototype, 'constructor',
+      {value: Guarded, writable: true, configurable: true, enumerable: false});
   for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'])
     Object.defineProperty(Guarded, k, {value: Native[k]});
   Guarded.toString = Native.toString.bind(Native);
-  window.WebSocket = Guarded;
+  // Locked: a page cannot delete or reassign window.WebSocket to get Native back.
+  Object.defineProperty(window, 'WebSocket',
+      {value: Guarded, writable: false, configurable: false, enumerable: false});
+  };
+  install(window);
+  // Init scripts run in every frame, but Firefox-based browsers hand a script
+  // a blank same-origin iframe before the init script has run in it, so
+  // frame.contentWindow.WebSocket is native for a moment. Guard such a window
+  // when the page first reaches for it.
+  const fix = (w) => {
+    try {
+      const d = Object.getOwnPropertyDescriptor(w, 'WebSocket');
+      if (d && d.configurable) install(w);
+    } catch (e) { /* cross-origin: its own init script covers it */ }
+    return w;
+  };
+  for (const C of [window.HTMLIFrameElement, window.HTMLFrameElement, window.HTMLObjectElement]) {
+    if (!C) continue;
+    const win = Object.getOwnPropertyDescriptor(C.prototype, 'contentWindow');
+    const doc = Object.getOwnPropertyDescriptor(C.prototype, 'contentDocument');
+    if (win && win.get) Object.defineProperty(C.prototype, 'contentWindow', {
+      configurable: true, enumerable: win.enumerable, get() { const w = win.get.call(this); return w ? fix(w) : w; }});
+    if (doc && doc.get) Object.defineProperty(C.prototype, 'contentDocument', {
+      configurable: true, enumerable: doc.enumerable,
+      get() { const d = doc.get.call(this); if (d) fix(d.defaultView); return d; }});
+  }
 })();
 """
 
@@ -126,6 +173,37 @@ def _ws_guard_script(allowed, blocked, block_private) -> str:
     return (_WS_GUARD.replace("__ALLOWED__", json.dumps(allowed))
             .replace("__BLOCKED__", json.dumps(blocked))
             .replace("__BLOCK_PRIVATE__", "true" if block_private else "false"))
+
+
+def settle_hops(page, timeout_ms: int = 15000) -> bool:
+    """Wait out redirect hop pages (see DomainPolicy._hop_page).
+
+    A strict-mode redirect on a navigation is answered with a page that
+    navigates on to the real target. page.goto and click-then-wait resolve on
+    that page, not on the target. Call this after them to get to the end of the
+    chain. Returns True when the page is not on a hop page (nothing to do, or
+    settled), False when it was still waiting at the timeout. Cheap: one
+    evaluate when there is nothing to wait for.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while True:
+        try:
+            hopping = page.evaluate("() => document.documentElement.hasAttribute('data-fantoma-hop')")
+        except Exception:
+            hopping = True  # context destroyed: a navigation is under way
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+            except Exception:
+                pass
+            try:
+                hopping = page.evaluate("() => document.documentElement.hasAttribute('data-fantoma-hop')")
+            except Exception:
+                hopping = False
+        if not hopping:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        page.wait_for_timeout(40)
 
 
 class DomainBlocked(Exception):
@@ -199,11 +277,15 @@ _RESOLVE_TTL = 60.0
 
 # Lookups run on a small shared pool. A resolver that hangs ties up one worker
 # until it answers; it can never add threads, so a stream of dead names costs
-# four threads at most. When all four are busy a new lookup is refused (the
-# caller treats that as a failed lookup and fails closed).
-_RESOLVE_WORKERS = 4
+# sixteen threads at most. Lookups for the same host in flight at the same time
+# share one future, so a page that asks for one slow name a hundred times uses
+# one worker, not the whole pool. When all sixteen are busy a new lookup is
+# refused (the caller treats that as a failed lookup and fails closed).
+_RESOLVE_WORKERS = 16
 _resolve_pool = ThreadPoolExecutor(max_workers=_RESOLVE_WORKERS, thread_name_prefix="fantoma-dns")
 _resolve_slots = threading.BoundedSemaphore(_RESOLVE_WORKERS)
+_resolve_inflight: dict = {}
+_resolve_lock = threading.Lock()
 
 
 def _lookup(host: str):
@@ -213,16 +295,33 @@ def _lookup(host: str):
         _resolve_slots.release()
 
 
+def _lookup_future(host: str):
+    """The in-flight lookup for `host`, started if there is none."""
+    with _resolve_lock:
+        future = _resolve_inflight.get(host)
+        if future is not None:
+            return future
+        if not _resolve_slots.acquire(blocking=False):
+            raise OSError(f"DNS lookup for {host} refused: resolver pool is busy")
+        try:
+            future = _resolve_pool.submit(_lookup, host)
+        except Exception:
+            _resolve_slots.release()
+            raise
+        _resolve_inflight[host] = future
+
+    def _done(_f, host=host, future=future):
+        with _resolve_lock:
+            if _resolve_inflight.get(host) is future:
+                del _resolve_inflight[host]
+    future.add_done_callback(_done)
+    return future
+
+
 def _resolve_all(host: str, timeout: float = _RESOLVE_TIMEOUT):
     """Every address `host` resolves to, as ipaddress objects. Raises OSError
     on failure, on timeout, or when the lookup pool is saturated."""
-    if not _resolve_slots.acquire(blocking=False):
-        raise OSError(f"DNS lookup for {host} refused: resolver pool is busy")
-    try:
-        future = _resolve_pool.submit(_lookup, host)
-    except Exception:
-        _resolve_slots.release()
-        raise
+    future = _lookup_future(host)
     try:
         infos = future.result(timeout=timeout)
     except FutureTimeout:
@@ -273,6 +372,9 @@ class DomainPolicy:
         self.strict = bool(strict)
         self._dns_cache: dict[str, tuple[float, bool]] = {}
         self._dns_lock = threading.Lock()
+        # Final status of recent top-level navigations, by URL: the browser only
+        # sees a 200 hop page for a redirect, so the real status is kept here.
+        self.nav_status: dict[str, int] = {}
 
     def _dns_private(self, host: str) -> bool:
         """_resolves_private with a short per-policy cache (60 s)."""
@@ -346,85 +448,141 @@ class DomainPolicy:
 
     _MAX_HOPS = 10
     _DROP_ON_HOP = {"cookie", "authorization", "proxy-authorization", "host", "content-length"}
-    _DROP_WITH_BODY = {"content-type", "content-encoding", "content-language", "origin"}
+    _BODY_HEADERS = {"content-type", "content-encoding", "content-language", "content-length",
+                     "transfer-encoding", "origin"}
+    _FOLLOWED = (301, 302, 303, 307, 308)  # the codes a browser follows on its own
 
     @staticmethod
     def _location(response) -> str:
-        if not 300 <= response.status < 400:
+        if response.status not in DomainPolicy._FOLLOWED:
             return ""
         return response.headers.get("location", "") or ""
 
-    def _walk(self, route, start: str, method: str, headers: dict):
-        """Follow redirects from `start` (a URL already checked, reached by
-        one redirect) with `method`, checking every hop. Returns the last URL
-        in the chain, or None after aborting the route because a hop was
-        refused or the chain ran past _MAX_HOPS redirects in total."""
-        hops, current = 1, start
-        while True:
-            response = route.fetch(url=current, method=method, headers=headers, max_redirects=0)
-            location = self._location(response)
-            if not location:
-                return current
-            hops += 1
-            if hops > self._MAX_HOPS:
-                log.info("domain policy: too many redirects from %s", start[:200])
-                route.abort("failed")
-                return None
-            nxt = urljoin(current, location)
-            if not self.permits(nxt):
-                log.info("domain policy: blocked redirect %s -> %s", current[:200], location[:200])
-                route.abort("blockedbyclient")
-                return None
-            current = nxt
+    @staticmethod
+    def _origin(url: str):
+        p = urlparse(url)
+        return (p.scheme.lower(), (p.hostname or "").lower(), p.port or {"http": 80, "https": 443}.get(p.scheme.lower()))
+
+    def _remember_status(self, url: str, status: int) -> None:
+        with self._dns_lock:
+            if len(self.nav_status) > 256:
+                self.nav_status.clear()
+            self.nav_status[url] = status
+
+    def _hop_page(self, route, location: str) -> None:
+        """Answer a navigation redirect with a page that makes the browser
+        start a fresh top-level navigation to `location`.
+
+        The browser never follows a 3xx here: it is handed a 200, and the next
+        request is a new one that goes through the route handler again, so
+        every hop is checked at the moment the browser actually asks (a server
+        that answers the checker one way and the browser another gains nothing).
+        location.replace keeps history clean; <noscript> covers a context with
+        JavaScript off. The page carries data-fantoma-hop so Fantoma can tell it
+        is waiting for the next hop (see settle_hops)."""
+        nonce = base64.b64encode(os.urandom(12)).decode()
+        target = json.dumps(location).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        body = ('<!doctype html><html data-fantoma-hop="1"><head><meta charset="utf-8">'
+                '<title>Redirecting</title><noscript><meta http-equiv="refresh" content="0;url='
+                + html.escape(location, quote=True) + '"></noscript></head><body>'
+                '<script nonce="' + nonce + '">location.replace(' + target + ')</script></body></html>')
+        route.fulfill(status=200, body=body, headers={
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "x-fantoma-hop": "1",
+            "content-security-policy": f"default-src 'none'; script-src 'nonce-{nonce}'",
+        })
+
+    def _refuse(self, route, why: str, src: str, dst: str = "") -> None:
+        log.info("domain policy: %s %s%s", why, src[:200], f" -> {dst[:200]}" if dst else "")
+        route.abort("blockedbyclient")
 
     def _strict_fetch(self, route, url: str) -> None:
-        """Fetch with redirects off and walk the whole chain ourselves.
+        """Fetch with redirects off. The browser is never handed a 3xx.
 
-        The browser does not run the route handler again for every hop it
-        follows on its own (measured in Chromium and Camoufox: a second
-        redirect reached a host the policy refuses). So each Location is
-        checked here, up to _MAX_HOPS redirects, before anything is handed
-        back, and a chain that passes is returned to the browser as a single
-        redirect to the last verified URL, so the page keeps the right address.
+        Playwright runs the route handler only for the first request of a
+        chain, so a redirect the browser follows itself is not checked. Two
+        cases, because they need different answers.
 
-        GET and HEAD follow the chain as themselves. A POST answered 301, 302
-        or 303 is followed with GET from the first Location on, which is what
-        the browser does. A POST answered 307 or 308 must not be replayed just
-        to look at it, so the checked Location is probed with HEAD and, if it
-        redirects again, the rest of the chain is walked with HEAD; any refused
-        hop aborts the request, otherwise the original 307/308 goes back.
+        Navigations (a page or frame loading): a permitted redirect is
+        answered with a small page that starts a fresh navigation to the
+        Location (_hop_page). That is a new request, routed and checked again,
+        and the address bar ends on the right URL. A POST answered 307 or 308
+        is refused: the browser would have to replay the body, which a
+        follow-up page cannot do, and following it unrouted is the hole.
+
+        Subresources (images, scripts, fetch, XHR): the chain is walked here,
+        every hop checked, up to _MAX_HOPS redirects, and the final answer is
+        fulfilled in place of the first. 307 and 308 replay the body only to
+        the same origin; cross-origin POST replays are refused.
         """
+        request = route.request
         response = route.fetch(max_redirects=0)
         location = self._location(response)
+        nav = False
+        try:
+            nav = bool(request.is_navigation_request())
+        except Exception:
+            nav = False
         if not location:
+            if 300 <= response.status < 400 and response.headers.get("location"):
+                # A 3xx the browser would not follow (300, 304, 305...): hand it
+                # back without its Location so nothing can act on it.
+                headers = {k: v for k, v in response.headers.items() if k.lower() != "location"}
+                route.fulfill(response=response, headers=headers)
+                return
+            if nav and request.frame is not None and request.frame.parent_frame is None:
+                self._remember_status(url, response.status)
             route.fulfill(response=response)
             return
-        method = (route.request.method or "GET").upper()
+        method = (request.method or "GET").upper()
         nxt = urljoin(url, location)
-        if not self.permits(nxt):
-            log.info("domain policy: blocked redirect %s -> %s", url[:200], location[:200])
-            route.abort("blockedbyclient")
+        if urlparse(nxt).scheme.lower() not in ("http", "https") or not self.permits(nxt):
+            self._refuse(route, "blocked redirect", url, location)
             return
-        headers = {k: v for k, v in route.request.headers.items()
-                   if k.lower() not in self._DROP_ON_HOP}
-        if method in ("GET", "HEAD"):
-            follow, raw_ok = method, False
-        elif response.status in (301, 302, 303):
-            follow, raw_ok = "GET", True
-        else:
-            follow, raw_ok = "HEAD", True
-        if follow != method:
-            headers = {k: v for k, v in headers.items() if k.lower() not in self._DROP_WITH_BODY}
-        end = self._walk(route, nxt, follow, headers)
-        if end is None:
+        if nav:
+            if response.status in (307, 308) and method not in ("GET", "HEAD"):
+                self._refuse(route, f"refused {response.status} redirect of a {method} navigation "
+                             "(the body cannot be replayed through a checked hop)", url, location)
+                return
+            self._hop_page(route, nxt)
             return
-        if raw_ok and (end == nxt or response.status in (307, 308)):
-            # Nothing to rewrite: the browser takes the answer it would have
-            # had, and every hop after it has been looked at.
-            route.fulfill(response=response)
-            return
-        # Hand the browser one redirect to the verified end of the chain.
-        route.fulfill(status=302, headers={"location": end, "cache-control": "no-store"}, body="")
+        self._walk_subresource(route, url, nxt, response, method)
+
+    def _walk_subresource(self, route, url: str, nxt: str, response, method: str) -> None:
+        request = route.request
+        body = request.post_data_buffer if method not in ("GET", "HEAD") else None
+        base = {k: v for k, v in request.headers.items() if k.lower() not in self._DROP_ON_HOP}
+        origin = self._origin(url)
+        current, hops = url, 1
+        while True:
+            status = response.status
+            if status in (301, 302) and method == "POST" or status == 303 and method != "HEAD":
+                method, body = "GET", None
+            elif status in (307, 308) and body is not None and self._origin(nxt) != origin:
+                self._refuse(route, f"refused cross-origin {status} redirect of a {method} request",
+                             current, nxt)
+                return
+            if hops > self._MAX_HOPS:
+                log.info("domain policy: too many redirects from %s", url[:200])
+                route.abort("failed")
+                return
+            headers = base if body is not None else {
+                k: v for k, v in base.items() if k.lower() not in self._BODY_HEADERS}
+            # post_data is passed on every hop: Playwright reuses the original
+            # request's body when it is left out, even for a GET.
+            response = route.fetch(url=nxt, method=method, headers=headers, max_redirects=0,
+                                   post_data=body if body is not None else b"")
+            current = nxt
+            location = self._location(response)
+            if not location:
+                route.fulfill(response=response)
+                return
+            hops += 1
+            nxt = urljoin(current, location)
+            if urlparse(nxt).scheme.lower() not in ("http", "https") or not self.permits(nxt):
+                self._refuse(route, "blocked redirect", current, location)
+                return
 
     def install(self, context) -> None:
         """Enforce the policy on every request `context` makes."""

@@ -87,11 +87,12 @@ class TestInstall:
         _, handler = self._handler(strict=True)
         route = self._route("https://example.com/a")
         route.request.method = "GET"
+        route.request.is_navigation_request.return_value = False
         route.fetch.side_effect = [MagicMock(status=301, headers={"location": "/b"}),
                                    MagicMock(status=200, headers={})]
         handler(route)
         route.fulfill.assert_called_once()
-        assert route.fulfill.call_args.kwargs["headers"]["location"] == "https://example.com/b"
+        assert route.fulfill.call_args.kwargs["response"].status == 200
 
     def test_loose_mode_uses_the_browsers_own_networking(self):
         _, handler = self._handler(strict=False)

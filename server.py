@@ -274,6 +274,19 @@ def _refuse_open_remote():
                              "FANTOMA_INSECURE_NO_AUTH=1 to allow it)"}), 503
 
 
+_LOOPBACK_HOST_NAMES = ("localhost", "127.0.0.1", "::1")
+
+
+def _host_name(host: str) -> str:
+    """The host part of a Host header, port removed, lower-cased, no brackets."""
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    if host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    return host
+
+
 _PROXY_HEADERS = ("X-Forwarded-For", "Forwarded", "X-Real-IP", "Via")
 
 
@@ -294,6 +307,13 @@ def _keyless_guard():
     non-loopback address."""
     if API_KEY or request.path == "/health":
         return None
+    if not INSECURE_NO_AUTH and _host_name(request.host) not in _LOOPBACK_HOST_NAMES:
+        # DNS rebinding: a page on attacker.example whose name later resolves
+        # to 127.0.0.1 is same-origin to the browser, so no Origin and no
+        # cross-site Sec-Fetch-Site. Its Host header still says attacker.example.
+        return jsonify({"error": "Host header is not a loopback name; the keyless server only "
+                                 "answers localhost, 127.0.0.1 and [::1] (set FANTOMA_API_KEY "
+                                 "to use another name)"}), 403
     if request.headers.get("Origin") is not None or \
             request.headers.get("Sec-Fetch-Site", "none").lower() not in ("none", "same-origin"):
         return jsonify({"error": "browser-originated requests are refused when FANTOMA_API_KEY "
@@ -323,10 +343,11 @@ def _require_api_key():
 def _require_json_body():
     """Every body must be declared as application/json. A page cannot send
     that cross-origin without a CORS preflight, which this server never
-    answers, so a text/plain "simple" request is refused (415)."""
+    answers, so a text/plain "simple" request is refused (415). That holds
+    for an empty POST too: a form post with no body is also a "simple"
+    request, and /stop would run on it."""
     if request.method in ("POST", "PUT", "PATCH", "DELETE") and request.path != "/health":
-        if (request.content_length or request.headers.get("Transfer-Encoding")) \
-                and request.mimetype != "application/json":
+        if request.mimetype != "application/json":
             return jsonify({"error": "Content-Type must be application/json"}), 415
     return None
 
