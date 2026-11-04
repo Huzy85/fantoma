@@ -12,6 +12,8 @@ import logging
 
 log = logging.getLogger("fantoma.validator")
 
+from fantoma.prompt_parts import today_line
+
 _SYSTEM = """\
 You are checking whether a browser-task answer satisfies the original task.
 
@@ -28,7 +30,7 @@ def validate_answer(task: str, answer: str, llm) -> tuple[bool, str]:
 
     messages = [
         {"role": "system", "content": _SYSTEM},
-        {"role": "user", "content": f"Task: {task}\n\nAnswer: {answer}"},
+        {"role": "user", "content": f"Task: {task}\n{today_line()}\n\nAnswer: {answer}"},
     ]
     try:
         raw = llm.chat(messages, max_tokens=80)

@@ -5,6 +5,7 @@ import logging
 import re
 from dataclasses import dataclass
 
+from fantoma.prompt_parts import today_line
 from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
 
 log = logging.getLogger("fantoma.planner")
@@ -61,8 +62,6 @@ Failure reason: {failure_reason}
 Last actions: {last_actions}
 Completed so far: {completed_summary}
 Previously visited URLs (avoid revisiting as a dead-end): {visited_urls}
-Current page: {page_summary}
-
 {failure_guidance}
 
 Previously failed strategies: {failed_strategies}"""
@@ -164,7 +163,7 @@ class Planner:
     def decompose(self, task: str, page_summary: str) -> list[Subtask]:
         messages = [
             {"role": "system", "content": DECOMPOSE_SYSTEM},
-            {"role": "user", "content": f"Task: {task}\n\nCurrent page:\n{wrap_untrusted(page_summary)}"},
+            {"role": "user", "content": f"Task: {task}\n{today_line()}\n\nCurrent page:\n{wrap_untrusted(page_summary)}"},
         ]
         raw = self._llm.chat(messages, max_tokens=500)
         subtasks = _parse_subtasks(raw)
@@ -192,14 +191,14 @@ class Planner:
             last_actions=actions_str,
             completed_summary=completed_summary,
             visited_urls=urls_str,
-            page_summary=wrap_untrusted(page_summary),
             failure_guidance=guidance,
             failed_strategies="; ".join(self._failed_strategies),
         )
 
         messages = [
-            {"role": "system", "content": DECOMPOSE_SYSTEM + "\n\n" + addition},
-            {"role": "user", "content": f"Task: {task}\n\nCurrent page:\n{wrap_untrusted(page_summary)}"},
+            {"role": "system", "content": DECOMPOSE_SYSTEM},
+            {"role": "user", "content": f"Task: {task}\n{today_line()}\n\n{addition}\n\n"
+                                        f"Current page:\n{wrap_untrusted(page_summary)}"},
         ]
         raw = self._llm.chat(messages, max_tokens=500)
         subtasks = _parse_subtasks(raw)
@@ -215,7 +214,7 @@ class Planner:
 
         messages = [
             {"role": "system", "content": SUMMARISE_SYSTEM},
-            {"role": "user", "content": f"Task: {task}\n\nData gathered:\n{all_data}"},
+            {"role": "user", "content": f"Task: {task}\n{today_line()}\n\nData gathered:\n{all_data}"},
         ]
         return self._llm.chat(messages, max_tokens=1000) or ""
 

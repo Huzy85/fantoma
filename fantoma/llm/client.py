@@ -150,6 +150,13 @@ class LLMClient:
             if response_format:
                 payload["response_format"] = response_format
 
+        # Opt-in prompt-cache pinning for llama.cpp servers with several slots:
+        # FANTOMA_LLM_SLOT_HINT=<slot number> sends id_slot with every request.
+        # Cloud APIs reject unknown fields, so self-hosted endpoints only.
+        hint = os.environ.get("FANTOMA_LLM_SLOT_HINT", "").strip()
+        if hint.isdigit() and is_self_hosted(self.base_url):
+            payload["id_slot"] = int(hint)
+
         # Single retry on transient failures (timeout, connection error)
         for attempt in range(2):
             try:

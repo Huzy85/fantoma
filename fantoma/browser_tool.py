@@ -21,6 +21,7 @@ from fantoma.dom.accessibility import AccessibilityExtractor
 from fantoma.dom.markdown import page_to_markdown, aria_text_fallback
 from fantoma.browser.blocks import detect_block_page
 from fantoma.browser.domains import DomainBlocked
+from fantoma.prompt_parts import today_line
 from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted, scan_for_injection
 from fantoma.config import FantomaConfig
 from fantoma.session import SessionManager
@@ -740,7 +741,7 @@ class Fantoma:
 
         response = self._llm.chat(
             [{"role": "system", "content": system},
-             {"role": "user", "content": f"Extract: {query}\n\nPage content:\n"
+             {"role": "user", "content": f"Extract: {query}\n{today_line()}\n\nPage content:\n"
                                          f"{wrap_untrusted(content, page.url if isinstance(page.url, str) else '')}"}],
             max_tokens=2000,
         )

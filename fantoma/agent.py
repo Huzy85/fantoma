@@ -751,18 +751,18 @@ class _Session:
 
     def act(self, instruction: str) -> dict:
         """Execute one instruction. Sends to LLM, executes result via Fantoma."""
-        from fantoma.navigator import _parse_actions, NAVIGATOR_SYSTEM
-        from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
+        from fantoma.navigator import _parse_actions, NAVIGATOR_SYSTEM, navigator_task_block
+        from fantoma.safety import wrap_untrusted
         state = self.agent.fantoma.get_state()
+        webmcp_block = ""
+        if getattr(self.agent.fantoma, "_webmcp", False) is True:
+            webmcp_block = self.agent.fantoma.webmcp_prompt()
         messages = [
-            {"role": "system", "content": NAVIGATOR_SYSTEM.format(
-                instruction=instruction, done_when="Task complete",
-                untrusted_note=UNTRUSTED_NOTE)},
-            {"role": "user", "content": f"Page ({state['url']}):\n"
+            {"role": "system", "content": NAVIGATOR_SYSTEM},
+            {"role": "user", "content": f"{navigator_task_block(instruction, 'Task complete')}\n\n"
+                                        f"{webmcp_block}\nPage ({state['url']}):\n"
                                         f"{wrap_untrusted(self.agent._store().mask(state['aria_tree'], state['url']), state['url'])}"},
         ]
-        if getattr(self.agent.fantoma, "_webmcp", False) is True:
-            messages[-1]["content"] += self.agent.fantoma.webmcp_prompt()
         raw = self.agent._llm.chat(messages, max_tokens=200)
         actions = _parse_actions(raw or "")
         result = state

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from fantoma.dom.markdown import page_to_markdown, aria_text_fallback
+from fantoma.prompt_parts import today_line
 from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
 from fantoma.secrets_scope import SecretStore, refusal_message
 from fantoma.dom.aria_diff import aria_diff, aria_snapshot
@@ -68,11 +69,12 @@ class NavigatorResult:
     replay_steps: list = None   # successful actions as {action, role, name, value} for the action cache (None = not cacheable)
 
 
+# Fixed for the whole run: no subtask text, date, URL or step number in here,
+# so a server that caches prompt prefixes reuses it on every step (and across
+# subtasks). The subtask, the date and the page follow in the user message.
 NAVIGATOR_SYSTEM = """\
-You control a browser to complete one specific task.
-
-Subtask: {instruction}
-Done when: {done_when}
+You control a browser to complete one specific task. The user message gives
+the subtask, what counts as done, today's date and the current page.
 
 Pick 1-5 actions (one per line):
 CLICK [number]
@@ -97,7 +99,7 @@ Rules:
 - NAVIGATE, BACK, and DONE end the sequence.
 - Read the Content section first -- if it contains the answer, say DONE immediately.
 - Reply with ONLY action lines, nothing else.
-- {untrusted_note}
+- """ + UNTRUSTED_NOTE + """
 
 Before saying DONE, verify:
 - The user's asked-for values have evidence in the current page or in prior data.
@@ -111,6 +113,11 @@ Before saying DONE, verify:
   search results themselves.
 - If no evidence supports the goal, do NOT say DONE. Take more actions instead.\
 """
+
+def navigator_task_block(instruction: str, done_when: str) -> str:
+    """Per-task part of the step prompt: subtask, done condition and the date."""
+    return f"Subtask: {instruction}\nDone when: {done_when}\n{today_line()}"
+
 
 EXTRACT_ON_DONE = """\
 You are extracting the answer from a web page.
@@ -348,24 +355,23 @@ class Navigator:
                 last_content = ""
 
             # Build prompt
-            system = NAVIGATOR_SYSTEM.format(
-                instruction=subtask.instruction,
-                done_when=subtask.done_when,
-                untrusted_note=UNTRUSTED_NOTE,
-            )
+            system = NAVIGATOR_SYSTEM
+            task_block = navigator_task_block(subtask.instruction, subtask.done_when)
             prefix = f"{nudge}\n\n" if nudge else ""
             nudge = ""  # shown once; the model gets a fresh look at the page
             # Only the placeholders usable on this site are named; secrets
             # scoped to other sites are not listed at all.
             secrets_line = ("Secrets you may type here: "
                             + ", ".join(f"<secret:{n}>" for n in usable) + "\n\n") if usable else ""
-            user_msg = (f"{prefix}{secrets_line}Change: {change_line}\n\nPage ({current_url}):\n"
-                        f"{wrap_untrusted(aria, current_url)}")
+            # Order: task, per-step notes, WebMCP tools, page last.
+            webmcp_block = ""
             if getattr(fantoma, "_webmcp", False) is True:
-                block = fantoma.webmcp_prompt()
+                webmcp_block = fantoma.webmcp_prompt()
                 for name, value in sensitive_data.items():
-                    block = block.replace(value, f"<secret:{name}>")
-                user_msg += block
+                    webmcp_block = webmcp_block.replace(value, f"<secret:{name}>")
+            user_msg = (f"{task_block}\n\n{prefix}{secrets_line}Change: {change_line}\n"
+                        f"{webmcp_block}\nPage ({current_url}):\n"
+                        f"{wrap_untrusted(aria, current_url)}")
 
             messages = [
                 {"role": "system", "content": system},
@@ -779,7 +785,7 @@ class Navigator:
             )
             messages = [
                 {"role": "system", "content": EXTRACT_ON_DONE},
-                {"role": "user", "content": f"Task: {subtask.instruction}\n\nPage content:\n{content}"},
+                {"role": "user", "content": f"Task: {subtask.instruction}\n{today_line()}\n\nPage content:\n{content}"},
             ]
             answer = llm.chat(messages, max_tokens=1000) or ""
             log.info("Extract: answer=%d chars, preview=%r", len(answer), answer[:150])
