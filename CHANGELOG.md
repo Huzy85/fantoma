@@ -8,9 +8,12 @@
 - Placeholders scoped to other sites are not listed to the model, and their real values are masked out of page text, planner summaries, extracted answers and the returned result.
 - Fast-path `login()` re-checks the page URL before each fill (username and password separately). `POST /run` answers a bad `sensitive_data` pattern with a clean 400 and no secret values in the text.
 - `tools/secrets_scope_live.py`: local two-site check, no model.
+- `BrowserEngine.supports_aria_refs()` and `supports_webmcp()` report whether the live page object offers `aria_snapshot(mode="ai")` with `get_by_ref`, and a `webmcp` API. True on Chromium with Patchright 1.64.3, false on Camoufox. `supports_webmcp()` checks the client API only; WebMCP is not enabled yet.
+- Chromium option `chromium_full_headless` (env `FANTOMA_CHROMIUM_FULL_HEADLESS=1`), off by default. Headless runs use the full Chrome build instead of chrome-headless-shell, which lacks features such as WebMCP.
 
 ### Changed
 
+- The `chromium` extra pins Patchright to `>=1.64.3,<1.65`. Camoufox and Playwright 1.58 are unchanged and import alongside it in one environment.
 - Listed for the official MCP Registry: `server.json` and the `mcp-name` line in the README. The headline now says small local models can drive the read path, matching what the measurements show.
 - Added `llms.txt`.
 
