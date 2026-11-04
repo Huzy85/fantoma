@@ -357,3 +357,15 @@ class TestRealBrowsers:
         page.goto(f"http://localhost:{port}/fake", timeout=10000)
         t0 = time.monotonic()
         assert settle_hops(page) is True and time.monotonic() - t0 < 1.5
+
+
+def test_navigation_under_way_counts_as_still_hopping():
+    p = DomainPolicy(allowed=["a.test"])
+    r = _Route("http://a.test/", {"http://a.test/": (302, "/b")}, nav=True)
+    _run(p, r)
+    page = MagicMock(url="http://a.test/")
+    page.context = MagicMock()
+    from fantoma.browser import domains
+    domains._POLICIES[page] = p
+    page.evaluate.side_effect = Exception("Execution context was destroyed")
+    assert on_hop_page(page) is True

@@ -212,9 +212,12 @@ def on_hop_page(page) -> bool:
     try:
         if not policy.is_hop_url(page.url):
             return False
-        return bool(page.evaluate("() => document.documentElement.hasAttribute('data-fantoma-hop')"))
     except Exception:
         return False
+    try:
+        return bool(page.evaluate("() => document.documentElement.hasAttribute('data-fantoma-hop')"))
+    except Exception:
+        return True  # the policy served a hop page here and the document is being replaced: still hopping
 
 
 def settle_hops(page, timeout_ms: int = 5000) -> bool:
