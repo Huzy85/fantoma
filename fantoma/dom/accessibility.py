@@ -13,6 +13,8 @@ from typing import Optional, Any
 
 log = logging.getLogger("fantoma.accessibility")
 
+from fantoma.dom.page_reads import PageSnapshot, read_aria, safe_evaluate
+
 
 def page_title(page) -> str:
     """The page's title, read safely across a navigation.
@@ -155,7 +157,7 @@ def get_scroll_info(page) -> dict | None:
     Returns None on any error (JS eval failure, headless quirks, etc.).
     """
     try:
-        return page.evaluate("""() => {
+        return safe_evaluate(page, """() => {
             const vh = window.innerHeight;
             const ph = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight || 0);
             const sy = window.scrollY || window.pageYOffset || 0;
@@ -536,7 +538,7 @@ def _apply_aria_attrs(result: dict, attrs_str: str) -> None:
             result[attr] = True
 
 
-def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate", _shown_out: list = None, element_filter=None) -> str:
+def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate", _shown_out: list = None, element_filter=None, snapshot: "PageSnapshot | None" = None) -> str:
     """Extract page content via ARIA accessibility tree.
 
     Returns a numbered element map similar to DOMExtractor but using
@@ -558,15 +560,15 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
 
     # Content mode: delegate entirely to the content extractor
     if mode == "content":
-        return extract_aria_content(page)
+        return extract_aria_content(page, snapshot=snapshot)
 
-    title = page_title(page)
+    title = snapshot.title() if snapshot else page_title(page)
     url = page.url
 
     try:
         # A crashed page never answers; without the timeout get_state hung
         # until the task deadline. 20 s is far above any real snapshot.
-        snapshot = page.locator("body").aria_snapshot(timeout=20000)
+        aria_text = snapshot.aria() if snapshot else read_aria(page)
     except Exception as e:
         if "different thread" in str(e):
             # Playwright's sync API is single-threaded. Falling back to the
@@ -580,7 +582,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
         return ""
 
     # Parse snapshot into elements
-    lines = snapshot.split("\n")
+    lines = aria_text.split("\n")
     interactive = []
     headings = []
 
@@ -849,7 +851,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
     return "\n".join(output)
 
 
-def extract_aria_content(page) -> str:
+def extract_aria_content(page, snapshot: "PageSnapshot | None" = None) -> str:
     """Extract page content for data extraction — strips navigation UI, keeps content.
 
     Used when the goal is to READ data from the page (extract emails, products, etc.)
@@ -861,19 +863,19 @@ def extract_aria_content(page) -> str:
     - Includes all text nodes, not just short ones
     - Groups content by ARIA regions/landmarks when available
     """
-    title = page_title(page)
+    title = snapshot.title() if snapshot else page_title(page)
     url = page.url
 
     try:
-        snapshot = page.locator("body").aria_snapshot()
+        aria_text = snapshot.aria() if snapshot else read_aria(page, timeout_ms=30000)
     except Exception as e:
         log.warning("ARIA content snapshot failed: %s", e)
         return ""
 
-    if not snapshot or len(snapshot.strip()) < 10:
+    if not aria_text or len(aria_text.strip()) < 10:
         return ""
 
-    lines = snapshot.split("\n")
+    lines = aria_text.split("\n")
     content_items = []
     current_region = None
 
@@ -972,6 +974,31 @@ class AccessibilityExtractor:
         self._last_interactive: list[dict] = []
         self._max_elements = max_elements
         self._max_headings = max_headings
+        self._step: PageSnapshot | None = None
+
+    # -- step-scoped read cache -------------------------------------------
+    # The navigator arms a snapshot at the start of a step and invalidates it
+    # after every action. Outside a step nothing is cached, so other callers
+    # (agent.py, fast path, tools) behave exactly as before.
+
+    def begin_step(self, page) -> PageSnapshot:
+        """Start a fresh step snapshot for page."""
+        self._step = PageSnapshot(page)
+        return self._step
+
+    def invalidate(self) -> None:
+        """Drop cached reads. Call before and after any action or navigation."""
+        if self._step is not None:
+            self._step.invalidate()
+
+    def end_step(self) -> None:
+        self._step = None
+
+    def _snap_for(self, page) -> "PageSnapshot | None":
+        snap = self._step
+        if snap is not None and snap.is_valid_for(page):
+            return snap
+        return None
 
     def extract(self, page, task: str = "", mode: str = "navigate") -> str:
         """Extract page via ARIA tree. Falls back to DOM if empty.
@@ -984,16 +1011,21 @@ class AccessibilityExtractor:
 
         previous = list(self._last_interactive)  # copy before overwriting
         shown: list = []
+        snap = self._snap_for(page)
         result = extract_aria(page, self._max_elements, self._max_headings,
                               task=task, previous_elements=previous, mode=mode,
-                              _shown_out=shown,
+                              _shown_out=shown, snapshot=snap,
                               element_filter=lambda els: self._filter_occluded(page, els))
         from fantoma.dom.frames import collect_all_frame_elements
         main_empty = not result or "Elements: none found" in result
         # A page whose only controls sit inside an iframe (embedded login,
         # card form, consent widget) used to fall to the DOM extractor
         # before the frames were looked at, and reported nothing to click.
-        iframe_elements = collect_all_frame_elements(page) if (not main_empty or page.frames[1:]) else []
+        if not main_empty or page.frames[1:]:
+            iframe_elements = (snap.memo("frames", lambda: collect_all_frame_elements(page))
+                               if snap else collect_all_frame_elements(page))
+        else:
+            iframe_elements = []
         if main_empty and not iframe_elements:
             log.debug("ARIA tree empty — falling back to DOM extraction")
             self._last_interactive = []
@@ -1040,7 +1072,7 @@ class AccessibilityExtractor:
         # or a zero-size native input behind a custom widget, is NOT hidden
         # from a keyboard user, and dropping it would remove the only control.
         _JS = """
-        ([role, name, ordinal]) => {
+        (queries) => {
             const IMPLICIT = {A: 'link', BUTTON: 'button', SELECT: 'combobox',
                               TEXTAREA: 'textbox', SUMMARY: 'button'};
             const INPUT = {checkbox: 'checkbox', radio: 'radio', button: 'button',
@@ -1051,50 +1083,59 @@ class AccessibilityExtractor:
             const nameOf = (el) => (el.getAttribute('aria-label') ||
                 (el.labels && el.labels[0] ? el.labels[0].textContent : '') ||
                 el.textContent || el.value || '').replace(/\\s+/g, ' ').trim();
-            const matches = [];
+            // One pass over the document for every query, instead of one
+            // full scan per element.
+            const wanted = new Set(queries.map(q => q[0] + '\\u0000' + q[1]));
+            const buckets = new Map();
             for (const el of document.querySelectorAll('*')) {
-                if (roleOf(el) === role && nameOf(el) === name) matches.push(el);
+                const role = roleOf(el);
+                if (!role) continue;
+                const key = role + '\\u0000' + nameOf(el);
+                if (!wanted.has(key)) continue;
+                if (!buckets.has(key)) buckets.set(key, []);
+                buckets.get(key).push(el);
             }
-            const el = matches[ordinal] || null;
-            if (!el) return true;
-            const rect = el.getBoundingClientRect();
-            if (rect.width === 0 || rect.height === 0) return true;
-            const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
-            if (cx < 0 || cy < 0 || cx > innerWidth || cy > innerHeight) return true;
-            const top = document.elementFromPoint(cx, cy);
-            if (!top || el === top || el.contains(top) || top.contains(el)) return true;
-            for (let n = top; n && n !== document.body; n = n.parentElement) {
-                const cs = getComputedStyle(n);
-                const layer = cs.position === 'fixed' || cs.position === 'sticky'
-                    || n.getAttribute('aria-modal') === 'true' || n.tagName === 'DIALOG';
-                if (layer) return n.contains(el);
-            }
-            return true;
+            const onTop = (el) => {
+                if (!el) return true;
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) return true;
+                const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+                if (cx < 0 || cy < 0 || cx > innerWidth || cy > innerHeight) return true;
+                const top = document.elementFromPoint(cx, cy);
+                if (!top || el === top || el.contains(top) || top.contains(el)) return true;
+                for (let n = top; n && n !== document.body; n = n.parentElement) {
+                    const cs = getComputedStyle(n);
+                    const layer = cs.position === 'fixed' || cs.position === 'sticky'
+                        || n.getAttribute('aria-modal') === 'true' || n.tagName === 'DIALOG';
+                    if (layer) return n.contains(el);
+                }
+                return true;
+            };
+            return queries.map(q => {
+                try {
+                    const list = buckets.get(q[0] + '\\u0000' + q[1]) || [];
+                    return onTop(list[q[2]] || null);
+                } catch (e) { return true; }
+            });
         }
         """
+        # All named elements are checked in ONE evaluate. Any failure keeps
+        # every element: hiding a real control is worse than showing one.
         try:
-            visible = []
-            for el in elements:
-                try:
-                    if not el.get("name"):
-                        # Unnamed controls cannot be found by name; keep them.
-                        visible.append(el)
-                        continue
-                    is_on_top = page.evaluate(
-                        _JS, [el["role"], el["name"], el.get("_ordinal", 0)])
-                    # Only an explicit "covered" hides an element. Anything
-                    # else (no answer, an odd return) means we do not know,
-                    # and hiding a real control is worse than showing one.
-                    if is_on_top is not False:
-                        visible.append(el)
-                    else:
-                        log.debug(
-                            "paint-order: hiding occluded %s %r", el["role"], el["name"]
-                        )
-                except Exception as inner:
-                    log.debug("paint-order check failed for %r: %s — keeping", el, inner)
-                    visible.append(el)
-            return visible
+            named = [el for el in elements if el.get("name")]
+            if not named:
+                return elements
+            answers = safe_evaluate(
+                page, _JS,
+                [[el["role"], el["name"], el.get("_ordinal", 0)] for el in named],
+                label="occlusion check")
+            if not isinstance(answers, list) or len(answers) != len(named):
+                return elements
+            covered = {id(el) for el, ok in zip(named, answers) if ok is False}
+            for el in named:
+                if id(el) in covered:
+                    log.debug("paint-order: hiding occluded %s %r", el["role"], el["name"])
+            return [el for el in elements if id(el) not in covered]
         except Exception as e:
             log.warning("paint-order filtering failed: %s — returning all elements", e)
             return elements
@@ -1108,6 +1149,12 @@ class AccessibilityExtractor:
         3. ARIA content extraction
         4. Raw page inner_text fallback
         """
+        snap = self._snap_for(page)
+        if snap is not None:
+            return snap.memo("content", lambda: self._extract_content_uncached(page, snap))
+        return self._extract_content_uncached(page, None)
+
+    def _extract_content_uncached(self, page, snap) -> str:
         # 1. Try JSON-LD structured data
         structured = self._extract_jsonld(page)
         if structured:
@@ -1119,7 +1166,7 @@ class AccessibilityExtractor:
             return cards
 
         # 3. ARIA content extraction
-        result = extract_aria_content(page)
+        result = extract_aria_content(page, snapshot=snap)
         if result and "(no content found)" not in result:
             return result
 
@@ -1133,7 +1180,7 @@ class AccessibilityExtractor:
     def _extract_jsonld(self, page) -> str:
         """Extract and summarise schema.org JSON-LD from the page."""
         try:
-            items = page.evaluate("""() => {
+            items = safe_evaluate(page, """() => {
                 const scripts = document.querySelectorAll('script[type="application/ld+json"]');
                 return Array.from(scripts).map(s => {
                     try { return JSON.parse(s.textContent); } catch(e) { return null; }
@@ -1251,7 +1298,7 @@ class AccessibilityExtractor:
             if not any(x in url for x in ["/search", "/recipes/", "?q=", "category", "collection"]):
                 return ""
 
-            cards = page.evaluate("""() => {
+            cards = safe_evaluate(page, """() => {
                 const results = [];
                 const seen = new Set();
                 document.querySelectorAll('a[href*="/recipe/"]').forEach(a => {

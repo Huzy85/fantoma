@@ -14,6 +14,8 @@ Limitations:
 import logging
 import re
 
+from fantoma.dom.page_reads import read_aria
+
 log = logging.getLogger("fantoma.frames")
 
 # ARIA roles that represent interactive elements (same as accessibility.py)
@@ -36,7 +38,7 @@ def extract_frame_elements(frame) -> list[dict]:
     Returns list of element dicts with role, name, state, and _frame (frame name).
     """
     try:
-        snapshot = frame.locator("body").aria_snapshot()
+        snapshot = read_aria(frame, timeout_ms=30000, label="frame aria snapshot")
     except Exception as e:
         log.debug("Frame ARIA snapshot failed for '%s': %s", frame.name, e)
         return []

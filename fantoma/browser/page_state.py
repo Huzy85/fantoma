@@ -11,6 +11,8 @@ All checks are code-only — no LLM calls.
 import hashlib
 import logging
 
+from fantoma.dom.page_reads import safe_evaluate
+
 log = logging.getLogger("fantoma.page_state")
 
 # JS that scans the page for visible error messages.
@@ -80,7 +82,7 @@ _ERROR_DETECTION_JS = """() => {
 def detect_errors(page) -> list[str]:
     """Scan the page for visible error messages. Returns up to 3 error strings."""
     try:
-        errors = page.evaluate(_ERROR_DETECTION_JS)
+        errors = safe_evaluate(page, _ERROR_DETECTION_JS)
         if isinstance(errors, list):
             return errors[:3]
         return []
@@ -95,7 +97,7 @@ def classify_blocker(page) -> str | None:
     Returns "rate_limit", "login_wall", "captcha", or None.
     """
     try:
-        return page.evaluate("""() => {
+        return safe_evaluate(page, """() => {
             const text = document.body?.innerText?.toLowerCase() || '';
             // Real blocker pages are minimal. Requiring a short page stops the
             // heuristics from matching the same words inside a long article

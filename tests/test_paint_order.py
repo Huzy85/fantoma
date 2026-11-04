@@ -26,7 +26,18 @@ def _make_page_with_evaluate(evaluate_fn=None, side_effect=None):
     if side_effect is not None:
         page.evaluate.side_effect = side_effect
     elif evaluate_fn is not None:
-        page.evaluate.side_effect = evaluate_fn
+        # The filter sends every element in ONE evaluate and gets a list of
+        # answers. evaluate_fn answers one (role, name, ordinal) query; as in
+        # the page script, a query that raises counts as "on top".
+        def batch(js, queries):
+            answers = []
+            for q in queries:
+                try:
+                    answers.append(evaluate_fn(js, q))
+                except Exception:
+                    answers.append(True)
+            return answers
+        page.evaluate.side_effect = batch
     return page
 
 
@@ -175,7 +186,7 @@ class TestFilterOccludedRemovesHidden:
         extractor = AccessibilityExtractor()
         page = _make_page_with_evaluate(lambda js, *args: True)
         extractor._filter_occluded(page, [{"role": "button", "name": "Buy", "_ordinal": 2}])
-        assert page.evaluate.call_args[0][1:] == (["button", "Buy", 2],)
+        assert page.evaluate.call_args[0][1:] == ([["button", "Buy", 2]],)
 
     def test_unnamed_elements_are_kept_without_a_check(self):
         extractor = AccessibilityExtractor()
@@ -184,13 +195,13 @@ class TestFilterOccludedRemovesHidden:
         assert len(result) == 1
         page.evaluate.assert_not_called()
 
-    def test_evaluate_called_once_per_element(self):
-        """evaluate() is called exactly once for each element."""
+    def test_evaluate_called_once_for_all_elements(self):
+        """One evaluate answers for every element, however many there are."""
         extractor = AccessibilityExtractor()
         page = _make_page_with_evaluate(lambda js, *args: True)
         elements = _make_elements("X", "Y", "Z")
         extractor._filter_occluded(page, elements)
-        assert page.evaluate.call_count == 3
+        assert page.evaluate.call_count == 1
 
 
 # ---------------------------------------------------------------------------

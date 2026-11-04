@@ -14,6 +14,8 @@ Usage in navigator:
 import re
 import logging
 
+from fantoma.dom.page_reads import read_aria
+
 log = logging.getLogger("fantoma.aria_diff")
 
 # Roles worth tracking — skip structural noise (text, generic, paragraph)
@@ -62,15 +64,23 @@ def _parse_line(line: str) -> tuple[str, str, str] | None:
     return role, name, value
 
 
-def aria_snapshot(page) -> dict[tuple[str, str], str]:
+def aria_snapshot(page, snapshot=None) -> dict[tuple[str, str], str]:
     """
     Return {(role, name): value} for all tracked interactive elements.
     Empty dict on any error (safe fallback).
+
+    snapshot, a PageSnapshot, supplies the already-read ARIA text so no
+    second read is made.
     """
     try:
-        raw = page.locator("body").aria_snapshot()
+        raw = snapshot.aria() if snapshot is not None else read_aria(page)
     except Exception:
         return {}
+    return parse_aria_text(raw)
+
+
+def parse_aria_text(raw: str) -> dict[tuple[str, str], str]:
+    """The {(role, name): value} map for ARIA snapshot text."""
 
     result: dict[tuple[str, str], str] = {}
     seen: dict[tuple[str, str], int] = {}

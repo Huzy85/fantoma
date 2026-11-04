@@ -11,6 +11,7 @@ from fantoma.dom.markdown import page_to_markdown, aria_text_fallback
 from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
 from fantoma.secrets_scope import SecretStore, refusal_message
 from fantoma.dom.aria_diff import aria_diff, aria_snapshot
+from fantoma.dom.page_reads import StepMeter
 from fantoma.browser.page_state import classify_blocker
 from fantoma.planner import Planner, Subtask
 from fantoma.state_tracker import StateTracker
@@ -229,7 +230,23 @@ def _parse_actions(raw: str) -> list[tuple[str, dict]]:
 class Navigator:
     """Executes a single subtask against the browser."""
 
-    def execute(
+    def execute(self, subtask: Subtask, fantoma, llm, tracker: StateTracker,
+                max_steps: int = 15, start_domain: str = "",
+                sensitive_data: dict = None, deadline: float = None,
+                target: str = "", spec=None) -> NavigatorResult:
+        self._meter = StepMeter()
+        try:
+            return self._execute(subtask, fantoma, llm, tracker, max_steps,
+                                 start_domain, sensitive_data, deadline,
+                                 target, spec)
+        finally:
+            self._meter.flush()
+            # Disarm the step cache so later callers read the live page.
+            end = getattr(getattr(fantoma, "_dom", None), "end_step", None)
+            if callable(end):
+                end()
+
+    def _execute(
         self,
         subtask: Subtask,
         fantoma,
@@ -305,9 +322,13 @@ class Navigator:
                 )
             visited_urls.add(_norm_url(current_url))
 
-            # Snapshot ARIA before actions — used to compute the change_line diff
-            # that will appear in the NEXT step's "Change:" header.
-            snap_before = aria_snapshot(page)
+            self._meter.start(step_num)
+
+            # One ARIA read per step, shared by the before-snapshot used for
+            # the change_line diff, the element list and the content summary.
+            # Invalidated after every action below.
+            step_snap = fantoma._dom.begin_step(page)
+            snap_before = aria_snapshot(page, step_snap)
 
             # Get filtered DOM
             aria = fantoma._dom.extract(page, task=subtask.instruction, mode=dom_mode)
@@ -344,6 +365,7 @@ class Navigator:
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_msg},
             ]
+            self._meter.prompt_chars = len(system) + len(user_msg)
 
             raw = llm.chat(messages, max_tokens=300)
             actions = _parse_actions(raw) if raw else []
@@ -494,6 +516,7 @@ class Navigator:
                     result = {"success": False, "notes": [msg]}
                     outcome = "REFUSED"
                 else:
+                    fantoma._dom.invalidate()
                     try:
                         result = method(**params)
                         outcome = "OK" if result["success"] else "FAILED"
@@ -530,8 +553,11 @@ class Navigator:
                 # Produces a semantic change summary the LLM already speaks
                 # (role/name/value), replacing the raw MutationObserver output.
                 structure_changed = False
+                # The action may have changed the page: drop every cached read.
+                fantoma._dom.invalidate()
                 try:
-                    snap_after = aria_snapshot(fantoma._engine.get_page())
+                    snap_after = aria_snapshot(fantoma._engine.get_page(),
+                                               fantoma._dom._snap_for(fantoma._engine.get_page()))
                     diff = aria_diff(snap_before, snap_after)
                     change_line = diff if diff else "No visible changes"
                     # Elements appearing or disappearing means the numbering the

@@ -373,3 +373,33 @@ class TestEmptyResponseBailout:
 
         assert result.status == "done"
         assert result.failure_reason == ""
+
+
+class TestStepReadLog:
+    """Each step logs its read cost, and the step cache is armed and disarmed."""
+
+    def test_step_line_and_cache_lifecycle(self, caplog):
+        nav = Navigator()
+        subtask = Subtask("look", "find", "done")
+        fantoma = MagicMock()
+        page = MagicMock()
+        page.url = "https://example.com"
+        fantoma._engine.get_page.return_value = page
+        fantoma._dom.extract.return_value = "[0] button 'Go'"
+        fantoma._dom.extract_content.return_value = "content"
+        fantoma.scroll.return_value = {"success": True}
+        llm = MagicMock()
+        llm.chat.side_effect = ["SCROLL down", "DONE", "answer"]
+
+        with caplog.at_level("INFO", logger="fantoma.navigator"):
+            with patch("fantoma.navigator.aria_snapshot", return_value={}), \
+                 patch("fantoma.navigator.classify_blocker", return_value=None):
+                nav.execute(subtask, fantoma, llm, StateTracker(), max_steps=5)
+
+        import re
+        lines = [r for r in caplog.messages
+                 if re.match(r"step \d+: reads=\d+ evals=\d+ secs=[\d.]+ prompt_chars=\d+", r)]
+        assert len(lines) == 2
+        assert fantoma._dom.begin_step.call_count == 2
+        fantoma._dom.invalidate.assert_called()
+        fantoma._dom.end_step.assert_called_once()
