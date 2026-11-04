@@ -1216,3 +1216,6 @@ Security and reliability fixes, see CHANGELOG 0.11.2. Next candidates (secret-to
 - 0.11.2 pushed to GitHub (3e9cd2e).
 - Local, not pushed: 8f1c684 keeps a page that already shows text when a script stalls navigation; 4ae3657 live check reads scrapethissite.com/pages/forms/ (herokuapp tables stalls 30 s in every browser). Suite 898 pass, live check 10/10 in camoufox and chromium.
 - Next: secret-to-site binding, fewer page reads per step, CDP attach, stable element refs, opt-in resource blocking, cache-friendly prompt order, fresh WebVoyager run, skill/CLI packaging, WebMCP.
+
+## 2026-10-23: weekly_monitor.py ProtonMail Login check tightened
+PASS now needs final URL on mail.proton.me with /inbox (was: page text containing "mail", which the login page also has, so a wrong password still passed). Backup weekly_monitor.py.bak-20261023. PROTON_PASS in ~/.config/fantoma/monitor.env updated after the Proton website password change and live-tested. Run 23 Oct 02:00 was 22/22 before the change.

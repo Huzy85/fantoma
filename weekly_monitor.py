@@ -209,6 +209,7 @@ def run_login_test(agent_cls, llm_url: str, model: str) -> dict:
         return {"test": "ProtonMail Login", "type": "login", "status": "SKIP", "error": "No PROTON_PASS"}
 
     start = time.time()
+    browser = None
     try:
         from fantoma.browser.engine import BrowserEngine
         browser = BrowserEngine(headless=True)
@@ -216,16 +217,25 @@ def run_login_test(agent_cls, llm_url: str, model: str) -> dict:
         browser.navigate("https://account.proton.me/mail")
         time.sleep(5)
         page = browser.get_page()
+        # Proton is two-step: username, Continue, then the password screen.
         page.get_by_label("Email or username").fill(email)
-        page.get_by_label("Password").fill(password)
+        page.get_by_role("button", name="Continue").click()
+        pw_box = page.locator("input#password")
+        pw_box.wait_for(state="visible", timeout=30000)
+        pw_box.fill(password)
         page.get_by_role("button", name="Sign in").click()
-        page.wait_for_load_state("networkidle", timeout=30000)
-        time.sleep(10)
+        try:
+            page.wait_for_url("**/inbox**", timeout=60000)
+        except Exception:
+            pass
+        time.sleep(5)
         text = page.inner_text("body")[:1000]
-        browser.stop()
+        url = page.url
         elapsed = time.time() - start
 
-        success = "inbox" in text.lower() or "mail" in text.lower() or "conversation" in text.lower()
+        # Logged in = we left the login page and landed in the mail app. The word
+        # "mail" alone is not proof: the login page itself says "Email or username".
+        success = "mail.proton.me" in url and "/inbox" in url
         return {
             "test": "ProtonMail Login",
             "type": "login",
@@ -241,6 +251,12 @@ def run_login_test(agent_cls, llm_url: str, model: str) -> dict:
             "time_s": round(time.time() - start, 1),
             "error": str(e)[:100],
         }
+    finally:
+        if browser is not None:
+            try:
+                browser.stop()
+            except Exception:
+                pass
 
 
 def run_multitab_test(agent_cls, llm_url: str, model: str) -> dict:
