@@ -65,6 +65,8 @@ ENV DISPLAY=:99
 # Inside a container loopback is unreachable from the published port, so the
 # server listens on all interfaces. Set FANTOMA_API_KEY on any shared network.
 ENV FANTOMA_HOST=0.0.0.0
+# Every browser in the container is ours; also reap orphans re-parented to PID 1.
+ENV FANTOMA_REAP_ALL=1
 
 # Create dirs Fantoma expects
 RUN mkdir -p /root/.local/share/fantoma/traces \

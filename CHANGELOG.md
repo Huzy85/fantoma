@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- **Fantoma no longer kills other programs' browsers.** Clearing a wedged driver ran `pkill -f playwright/driver/node` (and the same for `camoufox-bin` and the glxtest Xvfb), which matched every Playwright browser on the machine, including a second Fantoma. Only processes started by this Fantoma are touched now. The Docker image sets `FANTOMA_REAP_ALL=1` to keep the old container-wide clean-up, since every browser there is Fantoma's.
 - **A page that has arrived is read even when a script stalls.** A script at the end of a page that never finishes loading used to time out the navigation, and the retry in a new tab timed out the same way. When the page already has text on screen, Fantoma now reads it. A page with nothing drawn yet still fails as before.
 - The live check reads its table page from scrapethissite.com. the-internet.herokuapp.com now holds scripts in the page head back for 30 seconds, so no browser could draw that page in time.
 
