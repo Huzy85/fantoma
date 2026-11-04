@@ -512,30 +512,22 @@ class BrowserEngine:
                 # The watchdog kills the driver processes if __exit__ blocks
                 # longer than 10 s (crashed/wedged driver); severing the
                 # connection unblocks the main thread.
-                import subprocess
+                import signal
                 import threading
+                from fantoma.browser import reap
 
                 def _kill_driver():
                     _log.warning(
                         "Camoufox __exit__ hung for 10 s — force-killing playwright driver"
                     )
-                    subprocess.run(
-                        ["pkill", "-9", "-f", "playwright/driver/node"],
-                        capture_output=True, timeout=5,
-                    )
-                    subprocess.run(
-                        ["pkill", "-9", "-f", "camoufox-bin"],
-                        capture_output=True, timeout=5,
-                    )
+                    reap.kill(reap.DRIVER, signal.SIGKILL)
+                    reap.kill(reap.CAMOUFOX, signal.SIGKILL)
 
                 # If the driver process is already dead (the 2026-06-30 crash
                 # case), __exit__ busy-waits forever trying to reach it and no
                 # amount of pkill unblocks the loop — skip the graceful path
                 # entirely and go straight to cleanup.
-                driver_alive = subprocess.run(
-                    ["pgrep", "-f", "playwright/driver/node"],
-                    capture_output=True, timeout=5,
-                ).returncode == 0
+                driver_alive = reap.any_alive(reap.DRIVER)
 
                 exit_ok = False
                 if driver_alive:
@@ -556,14 +548,8 @@ class BrowserEngine:
 
                 if not exit_ok:
                     # Graceful shutdown failed — make sure nothing leaks.
-                    subprocess.run(
-                        ["pkill", "-9", "-f", "playwright/driver/node"],
-                        capture_output=True, timeout=5,
-                    )
-                    subprocess.run(
-                        ["pkill", "-9", "-f", "camoufox-bin"],
-                        capture_output=True, timeout=5,
-                    )
+                    reap.kill(reap.DRIVER, signal.SIGKILL)
+                    reap.kill(reap.CAMOUFOX, signal.SIGKILL)
 
                 # Playwright's sync wrapper can leave the thread's running-loop
                 # pointer set after an abnormal shutdown, which makes the next
@@ -580,11 +566,8 @@ class BrowserEngine:
             # The main supervisord-managed Xvfb runs on :99 with a 1920×1080 screen,
             # so "-screen 0 1x1x24" is unique to the glxtest children.
             try:
-                import subprocess
-                subprocess.run(
-                    ["pkill", "-f", r"Xvfb :[0-9]+ -screen 0 1x1x24"],
-                    capture_output=True, timeout=3,
-                )
+                from fantoma.browser import reap
+                reap.kill(reap.GLXTEST_XVFB)
             except Exception:
                 pass
 

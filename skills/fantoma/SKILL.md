@@ -64,12 +64,13 @@ claude mcp add fantoma \
   -- fantoma-mcp
 ```
 
-Tools: `fantoma_read`, `fantoma_login`, `fantoma_extract`, `fantoma_run`, `fantoma_health`. In the built-in browser mode, read, extract and login share one session, so a login carries into the next read. Other env vars: `FANTOMA_BROWSER=chromium`, `FANTOMA_HEADLESS=false`, `FANTOMA_PROXY`, `FANTOMA_ALLOWED_DOMAINS`, `FANTOMA_BLOCKED_DOMAINS`.
+Tools: `fantoma_read`, `fantoma_login`, `fantoma_extract`, `fantoma_run`, `fantoma_health`. In the built-in browser mode, read, extract and login share one session, so a login carries into the next read. Other env vars: `FANTOMA_BROWSER=chromium`, `FANTOMA_HEADLESS=false`, `FANTOMA_PROXY`, `FANTOMA_ALLOWED_DOMAINS`, `FANTOMA_BLOCKED_DOMAINS`, `FANTOMA_CDP_URL` (attach to a Chrome you already run, Chromium only), `FANTOMA_WEBMCP=1` (use tools a page publishes, Chromium only).
 
 ## Secrets
 
 - Put the LLM key in `FANTOMA_LLM_API_KEY` or `fantoma setup`, never on a command line you share or commit.
 - In Python, pass credentials as `Agent(sensitive_data={"email": ..., "password": ...})`. The model sees `<secret:email>` and the real value is filled in at execution time, so it stays out of prompts and logs.
+- Tie each secret to its site: `sensitive_data={"https://*.example.com": {"password": ...}}`. It is typed only if the page is on that site at the moment of typing, and hidden from the model elsewhere. Prefer this over the flat form.
 - `fantoma_login` takes the password as a tool argument, so it appears in your own tool-call history. Prefer a throwaway or scoped account.
 - Restrict where a browser can go: `FANTOMA_ALLOWED_DOMAINS=example.com`. This is enforced by the browser, not by the model.
 - Never read secrets out of a file just to paste them into a prompt.

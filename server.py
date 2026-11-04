@@ -271,8 +271,9 @@ def start():
     # Don't nuke browser processes while a manual noVNC session is live — that
     # session is a separate Chrome holding the user's real logins.
     if _manual_fantoma is None:
-        subprocess.run(["pkill", "-f", "playwright/driver/node"], capture_output=True, timeout=5)
-        subprocess.run(["pkill", "-f", "camoufox-bin"], capture_output=True, timeout=5)
+        from fantoma.browser import reap
+        reap.kill(reap.DRIVER)
+        reap.kill(reap.CAMOUFOX)
         time.sleep(1)
     try:
         loop = asyncio.get_event_loop()
