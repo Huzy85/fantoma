@@ -4,6 +4,7 @@
 
 ### Added
 
+- Optional blocking of fonts and media: `Fantoma(block_resources=True)` / `FANTOMA_BLOCK_RESOURCES=1`, off by default. Blocks only resource types `font` and `media` and URLs ending .woff .woff2 .ttf .otf .mp4 .webm .mp3 .m4a .ogg; never images, stylesheets, scripts or xhr/fetch. Runs before the domain policy and hands everything it does not block on, so the policy still applies. Skipped with one warning when attached to your own Chrome. The count is `engine.blocked_requests` and is logged at stop. Patterns borrowed from Crawlee for Python's `BlockRequestsFunction` (Apache-2.0). New module `fantoma/browser/blocking.py`.
 - **Secrets tied to their site.** `sensitive_data` now also takes `{"https://*.example.com": {"password": "..."}}`. A scoped value is typed only if the page URL, read again right before the fill, matches the pattern; otherwise the action fails with "secret 'name' is not allowed on this site" and nothing is typed. The flat format is unchanged. Invalid patterns raise `ValueError` when the `Agent` is built. The matcher is in `fantoma/secrets_scope.py` (design after browser-use's `match_url_with_domain_pattern`, MIT).
 - Placeholders scoped to other sites are not listed to the model, and their real values are masked out of page text, planner summaries, extracted answers and the returned result.
 - Fast-path `login()` re-checks the page URL before each fill (username and password separately). `POST /run` answers a bad `sensitive_data` pattern with a clean 400 and no secret values in the text.

@@ -143,6 +143,10 @@ A browser agent reads text written by strangers, and some of it is written for t
 - **Credentials stay out of prompts.** `sensitive_data={"password": "..."}` shows the model `<secret:password>` and substitutes the real value only when typing.
 - **Block pages are named.** A "Just a moment..." interstitial, a captcha, a 403 or a login wall comes back as `blocked: "bot_challenge"` and so on, instead of being summarised as if it were the page you asked for.
 
+## Blocking fonts and media (optional, off by default)
+
+`Fantoma(block_resources=True)` or `FANTOMA_BLOCK_RESOURCES=1` aborts font and audio/video requests only (never images, stylesheets, scripts or fetch calls). It is off by default because the gain is small on a fast connection and blocking resources can change how bot protection treats a session (Camoufox issue #170 reports Cloudflare challenges after blocking images). Skipped when attached to your own Chrome. Request patterns follow Crawlee for Python (Apache-2.0).
+
 ## WebMCP (experimental, off by default)
 
 Some pages register tools for agents through Chrome's WebMCP API (`document.modelContext.registerTool`). With `webmcp=True` (or `FANTOMA_WEBMCP=1`; read-only and non-consequential tools only) Fantoma launches full Chrome with `--enable-features=WebMCP`, lists the page's tools to the model, and lets it call one with a line like `WEBMCP search {"q": "shoes"}`. Chromium only (`browser="chromium"`, Patchright 1.64+); with Camoufox the option is ignored with a warning.
