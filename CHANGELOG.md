@@ -4,6 +4,7 @@
 
 ### Added
 
+- Attach to a Chrome you already run: `Fantoma(cdp_url=...)`, `Agent(cdp_url=...)`, `cdp_url="auto"` (reads `DevToolsActivePort`, falls back to port 9222), CLI `--cdp-url` on `read` and `run`, env `FANTOMA_CDP_URL`. Chromium only (Camoufox raises `ValueError`). Fantoma works in its own tab, hides your tabs from the model, and on stop closes only the tabs it opened without closing the browser. Loopback hosts only unless `allow_remote_cdp=True`. Live check: `tools/cdp_attach_live.py`.
 - `BrowserEngine.supports_aria_refs()` and `supports_webmcp()` report whether the live page object offers `aria_snapshot(mode="ai")` with `get_by_ref`, and a `webmcp` API. True on Chromium with Patchright 1.64.3, false on Camoufox. `supports_webmcp()` checks the client API only; WebMCP is not enabled yet.
 - Chromium option `chromium_full_headless` (env `FANTOMA_CHROMIUM_FULL_HEADLESS=1`), off by default. Headless runs use the full Chrome build instead of chrome-headless-shell, which lacks features such as WebMCP.
 

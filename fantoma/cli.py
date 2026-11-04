@@ -513,7 +513,7 @@ def cmd_test_full():
 
 # ── Run command ──────────────────────────────────────────────────
 
-def cmd_run(task, start_url=None):
+def cmd_run(task, start_url=None, cdp_url=None, browser="camoufox"):
     """Run a browser task."""
     config = _load_config()
     if not config:
@@ -537,6 +537,8 @@ def cmd_run(task, start_url=None):
         escalation=escalation_endpoints,
         escalation_keys=escalation_keys,
         headless=True,
+        browser=browser,
+        cdp_url=cdp_url,
     )
 
     result = agent.run(task, start_url=start_url)
@@ -1012,14 +1014,14 @@ def cmd_logs_trace():
 # ── Main ─────────────────────────────────────────────────────────
 
 def cmd_read(url, full=False, as_json=False, selector="", browser="camoufox",
-             max_chars=0, no_links=False):
+             max_chars=0, no_links=False, cdp_url=None):
     """Print a page as Markdown. Needs no LLM and no setup."""
     from fantoma.browser_tool import Fantoma
 
     if "://" not in url:
         url = "https://" + url
-    f = Fantoma(headless=True, browser=browser)
     try:
+        f = Fantoma(headless=True, browser=browser, cdp_url=cdp_url)
         f.start()
         result = f.read(url, main_only=not full, include_links=not no_links,
                         selector=selector, max_chars=max_chars)
@@ -1087,10 +1089,16 @@ Examples:
                        help="read: plain text instead of Markdown links")
     parser.add_argument("--max-chars", type=int, default=0,
                        help="read: cut the output to this many characters")
-    parser.add_argument("--browser", default="camoufox", choices=["camoufox", "chromium"],
-                       help="read: browser engine (default camoufox)")
+    parser.add_argument("--browser", default=None, choices=["camoufox", "chromium"],
+                       help="read/run: browser engine (default camoufox, or chromium with --cdp-url)")
+    parser.add_argument("--cdp-url", default=None,
+                       help="read/run: attach to a Chrome you already run, e.g. "
+                            "http://127.0.0.1:9222 or 'auto' (Chromium only; also FANTOMA_CDP_URL)")
 
     args = parser.parse_args()
+    args.cdp_url = args.cdp_url or os.environ.get("FANTOMA_CDP_URL", "").strip() or None
+    if args.browser is None:
+        args.browser = "chromium" if args.cdp_url else "camoufox"
 
     if args.command is None:
         # No command = interactive mode
@@ -1108,13 +1116,13 @@ Examples:
         if not args.task:
             print(_red("Usage: fantoma run \"task description\""))
             sys.exit(1)
-        cmd_run(args.task, args.start_url)
+        cmd_run(args.task, args.start_url, cdp_url=args.cdp_url, browser=args.browser)
     elif args.command == "read":
         if not args.task:
             print(_red("Usage: fantoma read URL"))
             sys.exit(1)
         cmd_read(args.task, full=args.full, as_json=args.json, selector=args.selector,
-                 browser=args.browser, max_chars=args.max_chars, no_links=args.no_links)
+                 browser=args.browser, max_chars=args.max_chars, no_links=args.no_links, cdp_url=args.cdp_url)
     elif args.command == "logs":
         if args.task == "trace" or args.task == "--trace":
             cmd_logs_trace()
