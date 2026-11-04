@@ -57,6 +57,8 @@ class Fantoma:
         profile_dir: str = None,
         allowed_domains: list[str] | str = None,
         blocked_domains: list[str] | str = None,
+        cdp_url: str = None,
+        allow_remote_cdp: bool = False,
     ):
         self.config = FantomaConfig()
         # Hostnames the browser may / may not contact. None falls back to
@@ -64,6 +66,18 @@ class Fantoma:
         self._allowed_domains = allowed_domains
         self._blocked_domains = blocked_domains
         self._profile_dir = profile_dir
+        # Attach to a Chrome the user already runs. Env FANTOMA_CDP_URL is the
+        # fallback so the MCP server and CLI get it without code changes.
+        self._cdp_url = cdp_url or os.environ.get("FANTOMA_CDP_URL", "").strip() or None
+        self._allow_remote_cdp = allow_remote_cdp or os.environ.get(
+            "FANTOMA_ALLOW_REMOTE_CDP", "").lower() in ("1", "true", "yes")
+        if self._cdp_url and browser != "chromium":
+            raise ValueError(
+                "cdp_url needs browser='chromium': Camoufox (Firefox) cannot "
+                "attach to a running Chrome.")
+        if self._cdp_url and self._cdp_url.lower() != "auto":
+            from fantoma.browser.cdp import check_cdp_url
+            check_cdp_url(self._cdp_url, self._allow_remote_cdp)
         self.config.browser.headless = headless
         self.config.browser.browser_engine = browser
         self.config.browser.timeout = timeout
@@ -122,6 +136,8 @@ class Fantoma:
             trace=self.config.browser.trace,
             browser_engine=self.config.browser.browser_engine,
             profile_dir=self._profile_dir,
+            cdp_url=self._cdp_url,
+            allow_remote_cdp=self._allow_remote_cdp,
             allowed_domains=self._allowed_domains,
             blocked_domains=self._blocked_domains,
             # Was always on: the config flag never reached the engine, so
@@ -160,6 +176,15 @@ class Fantoma:
 
     # ── State ────────────────────────────────────────────────
 
+    def _tab_count(self) -> int:
+        if getattr(self._engine, "attached", False) is True:
+            try:
+                return len(self._engine.tabs()) or 1
+            except Exception:
+                pass
+        ctx = getattr(self._engine, '_context', None)
+        return len(ctx.pages) if ctx else 1
+
     def get_state(self, mode: str = "navigate", task: str = "") -> dict:
         """Get current page state: URL, title, ARIA tree, errors, tab count."""
         page = self._engine.get_page()
@@ -172,7 +197,7 @@ class Fantoma:
                 "url": getattr(page, "url", ""), "title": "",
                 "aria_tree": "Page crashed or was closed. Navigate again or switch_tab.",
                 "errors": ["Page crashed or closed — navigate again"],
-                "tab_count": len(ctx.pages) if ctx else 1,
+                "tab_count": self._tab_count(),
             }
         # Rank against the running task when none is given, so the state
         # returned after an action numbers elements the way the model's own
@@ -185,7 +210,7 @@ class Fantoma:
         if isinstance(status, int) and status >= 400 and getattr(self._engine, "_last_status_url", "") == page.url:
             errors.append(f"HTTP {status} response for this page")
         ctx = getattr(self._engine, '_context', None)
-        tab_count = len(ctx.pages) if ctx else 1
+        tab_count = self._tab_count()
         try:
             title = page.title()
         except Exception:
@@ -479,7 +504,10 @@ class Fantoma:
         if not ctx:
             page = self._engine.get_page()
             return [{"index": 0, "url": page.url}]
-        return [{"index": i, "url": p.url} for i, p in enumerate(ctx.pages)]
+        pages = ctx.pages
+        if getattr(self._engine, "attached", False) is True:
+            pages = self._engine.tabs()  # attached: never list the user's tabs
+        return [{"index": i, "url": p.url} for i, p in enumerate(pages)]
 
     # ── High-level operations ────────────────────────────────
 

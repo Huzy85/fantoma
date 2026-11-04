@@ -298,6 +298,28 @@ A consequence worth knowing: `/health` deliberately does not start a browser, so
 
 The local-model support is the point of the architecture, not a footnote. If a task can run on a 7B model on your own hardware, it costs nothing per run and no third party sees the page or the credentials.
 
+## Use Your Own Chrome (attach)
+
+Fantoma can drive a Chrome you already run, so it starts with your logins. Chromium only.
+
+```python
+Fantoma(browser="chromium", cdp_url="http://127.0.0.1:9222")
+Agent(llm_url=..., browser="chromium", cdp_url="auto")
+```
+
+```bash
+google-chrome --remote-debugging-port=9222        # start Chrome like this first
+fantoma read https://example.com --cdp-url auto    # or FANTOMA_CDP_URL=auto
+```
+
+- `"auto"` reads Chrome's `DevToolsActivePort` file from the usual profile folders (Linux `~/.config/google-chrome` and `~/.config/chromium`, macOS `~/Library/Application Support/Google/Chrome`, Windows `%LOCALAPPDATA%\Google\Chrome\User Data`), then tries `http://127.0.0.1:9222`.
+- Fantoma opens its own tab in your first window and leaves your tabs alone. It cannot see or close them. On stop it closes only the tabs it opened and disconnects. It never closes Chrome.
+- Chrome 144 and later asks you to approve remote debugging once when you use a real profile. Say yes in the Chrome prompt, and start Chrome with `--remote-debugging-port`.
+- CDP is full control of the browser and everything signed in to it. Only `127.0.0.1`, `localhost` and `::1` are accepted. `allow_remote_cdp=True` (or `FANTOMA_ALLOW_REMOTE_CDP=1`) lifts that; use it only on a network path you trust.
+- Camoufox raises `ValueError` with `cdp_url`. `profile_dir`, `proxy`, `chromium_full_headless` and the WebRTC/WebGL flags do not apply to a running browser; Fantoma warns once if they are set.
+
+Idea from the `--auto-connect` option in vercel-labs/agent-browser (Apache-2.0). The code here is new.
+
 ## Responsible Use
 
 Fantoma is general-purpose automation, in the same category as Playwright or Selenium. It can be pointed anywhere, and what you point it at is your responsibility.
@@ -786,6 +808,7 @@ print(result.validated)                      # True/False/None (None = not valid
 |---|---|---|
 | `FANTOMA_LLM_URL`, `FANTOMA_LLM_MODEL`, `FANTOMA_LLM_API_KEY` | MCP (built-in browser) | Model for `fantoma_run` and `fantoma_extract` |
 | `FANTOMA_BROWSER` | MCP (built-in browser) | `camoufox` (default) or `chromium` |
+| `FANTOMA_CDP_URL`, `FANTOMA_ALLOW_REMOTE_CDP` | everywhere (Chromium) | Attach to a running Chrome; see [Use Your Own Chrome](#use-your-own-chrome-attach) |
 | `FANTOMA_HEADLESS` | MCP (built-in browser), server | `true` (default), `false`, or `virtual` |
 | `FANTOMA_PROXY` | MCP (built-in browser), server | Proxy URL for all traffic |
 | `FANTOMA_MCP_BACKENDS` | MCP | Comma-separated HTTP backends, or `local` for the built-in browser |

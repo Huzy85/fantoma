@@ -18,6 +18,7 @@ Environment:
     FANTOMA_BROWSER      camoufox (default) or chromium
     FANTOMA_HEADLESS     true (default), false, or virtual
     FANTOMA_PROXY        proxy URL for all traffic
+    FANTOMA_CDP_URL      attach to a running Chrome (http://127.0.0.1:9222 or auto); needs chromium
 """
 
 from __future__ import annotations
@@ -56,6 +57,8 @@ def browser_settings() -> dict:
         "headless": _headless(),
         "browser": os.environ.get("FANTOMA_BROWSER", "camoufox").strip().lower() or "camoufox",
         "proxy": os.environ.get("FANTOMA_PROXY") or None,
+        # Attach to a running Chrome (needs FANTOMA_BROWSER=chromium).
+        "cdp_url": os.environ.get("FANTOMA_CDP_URL", "").strip() or None,
     }
 
 

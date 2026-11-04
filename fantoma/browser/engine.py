@@ -19,15 +19,32 @@ _IGNORE_HTTPS_ERRORS = os.environ.get("FANTOMA_IGNORE_HTTPS_ERRORS", "").lower()
 
 from fantoma.browser.domains import DomainBlocked, DomainPolicy
 
+_ATTACH_WARNED = False
+
+
 class BrowserEngine:
     """Manages a Camoufox browser session with anti-detection and human-like behaviour."""
 
+    _cdp_url = None  # class default: some tests build engines without __init__
     DEFAULT_TRACE_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "fantoma", "traces")
 
     def __init__(self, headless=True, profile_dir=None, humanize=True, accessibility=True, proxy=None,
                  trace=False, trace_dir=None, browser_engine="camoufox",
-                 allowed_domains=None, blocked_domains=None, chromium_full_headless=None):
+                 allowed_domains=None, blocked_domains=None, chromium_full_headless=None,
+                 cdp_url=None, allow_remote_cdp=False):
         self.headless = headless
+        # Attach to a Chrome the user already runs. Chromium only. Fantoma
+        # works in tabs it opens itself and never closes the browser.
+        self._cdp_url = None
+        self._owned: list = []
+        if cdp_url:
+            if browser_engine != "chromium":
+                raise ValueError(
+                    "cdp_url needs browser='chromium': Camoufox (Firefox) cannot "
+                    "attach to a running Chrome.")
+            from fantoma.browser.cdp import resolve_cdp_url
+            self._cdp_url = resolve_cdp_url(cdp_url, allow_remote_cdp)
+            self._warn_ignored(profile_dir, proxy, chromium_full_headless)
         # Chromium only. Headless runs default to chrome-headless-shell, which
         # lacks some features (WebMCP). True uses the full Chrome build with
         # --headless instead. Env FANTOMA_CHROMIUM_FULL_HEADLESS=1 also turns it on.
@@ -61,6 +78,39 @@ class BrowserEngine:
         self._crashed: set = set()
         self.last_status: int | None = None
         self._last_status_url: str = ""
+
+    @staticmethod
+    def _warn_ignored(profile_dir, proxy, full_headless):
+        global _ATTACH_WARNED
+        if _ATTACH_WARNED:
+            return
+        ignored = []
+        if profile_dir:
+            ignored.append("profile_dir")
+        if proxy:
+            ignored.append("proxy")
+        if full_headless:
+            ignored.append("chromium_full_headless")
+        for var in ("FANTOMA_BLOCK_WEBRTC", "FANTOMA_DISABLE_WEBGL"):
+            if os.environ.get(var, "").lower() in ("1", "true", "yes"):
+                ignored.append(var)
+        if ignored:
+            _ATTACH_WARNED = True
+            _log.warning("Attached to a running Chrome: ignoring %s (launch-time "
+                         "settings do not apply to a browser that is already open)",
+                         ", ".join(ignored))
+
+    @property
+    def attached(self) -> bool:
+        return self._cdp_url is not None
+
+    def _own(self, page):
+        """Record a tab Fantoma opened, so stop() can close exactly these."""
+        if page not in self._owned:
+            self._owned.append(page)
+        if self.attached and self.domain_policy.active:
+            # Scope the policy to our tabs; the user's own tabs stay untouched.
+            self.domain_policy.install(page)
 
     # Capability checks on the live page object, so callers can branch on
     # what the engine under them offers (Playwright 1.58 on Camoufox has
@@ -99,7 +149,7 @@ class BrowserEngine:
             self._start_chromium()
         else:
             self._start_camoufox()
-        if self.domain_policy.active:
+        if self.domain_policy.active and not self.attached:
             self.domain_policy.install(self._context)
             _log.info("Domain policy on: allowed=%s blocked=%s",
                       self.domain_policy.allowed or "any", self.domain_policy.blocked or "none")
@@ -110,6 +160,12 @@ class BrowserEngine:
     # presses OK on everything. Either way the text is recorded so the
     # action result can say what happened.
     def _on_dialog(self, dialog):
+        if self.attached:
+            try:
+                if dialog.page not in self._owned:
+                    return  # the user's tab; not ours to answer
+            except Exception:
+                return
         self.last_dialog = {"type": dialog.type, "message": dialog.message}
         policy = os.environ.get("FANTOMA_DIALOGS", "dismiss").strip().lower()
         try:
@@ -121,6 +177,16 @@ class BrowserEngine:
             pass
 
     def _on_page(self, page):
+        if self.attached:
+            # The context is the user's. Only popups opened by our own tabs
+            # count; a tab the user opens meanwhile is theirs.
+            try:
+                opener = page.opener()
+            except Exception:
+                opener = None
+            if opener is None or opener not in self._owned:
+                return
+            self._own(page)
         self._popup_count += 1
         try:
             page.on("crash", lambda p=page: self._crashed.add(p))
@@ -268,6 +334,9 @@ class BrowserEngine:
             )
 
         self._playwright = sync_playwright().start()
+        if self.attached:
+            self._attach_chromium()
+            return
         proxy = self._proxy_dict()
         launch_args = {"headless": self.headless}
         if self.headless and self.chromium_full_headless:
@@ -307,8 +376,56 @@ class BrowserEngine:
 
         _log.info("Chromium (Patchright) started, headless=%s", self.headless)
 
+    def _attach_chromium(self):
+        """Connect to a running Chrome and open our own tab in its first context."""
+        try:
+            self._browser = self._playwright.chromium.connect_over_cdp(self._cdp_url)
+            ctxs = self._browser.contexts
+            self._context = ctxs[0] if ctxs else self._browser.new_context()
+            self._page = self._context.new_page()
+        except Exception as e:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = self._browser = self._context = self._page = None
+            raise RuntimeError(
+                f"Could not attach to Chrome at {self._cdp_url}: {e}. Start Chrome "
+                "with --remote-debugging-port=9222 (Chrome 144+ also asks you to "
+                "approve remote debugging once on a real profile).") from e
+        self._own(self._page)
+        self._persistent = True
+        _log.info("Attached to Chrome at %s (own tab opened)", self._cdp_url)
+
+    def _detach(self):
+        """Close only the tabs Fantoma opened, then drop the connection."""
+        for page in list(self._owned):
+            try:
+                if not page.is_closed():
+                    page.close()
+            except Exception:
+                pass
+        self._owned = []
+        # playwright.stop() ends the CDP session. browser.close() is not
+        # called: it would act on the user's browser, and the browser is not ours.
+        if self._playwright:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+        self._page = self._context = self._browser = self._playwright = None
+
     def stop(self):
         """Close browser gracefully."""
+        if self.attached:
+            if self._trace_active and self._context:
+                try:
+                    self._context.tracing.stop()
+                except Exception:
+                    pass
+                self._trace_active = False
+            self._detach()
+            return
         # Save trace before closing browser
         if self._trace_active and self._context:
             try:
@@ -488,6 +605,8 @@ class BrowserEngine:
         old_page = self._page
         self._crashed.discard(old_page)
         self._page = self._context.new_page()
+        if self.attached:
+            self._own(self._page)
         self._popup_count = max(0, self._popup_count - 1)  # our own page, not a popup
         try:
             response = self._page.goto(url, wait_until=wait_until, timeout=timeout)
@@ -534,18 +653,27 @@ class BrowserEngine:
             self.domain_policy.check(url)
         ctx = self._context if self._context else self._page.context
         new_page = ctx.new_page()
+        if self.attached:
+            self._own(new_page)
         self._popup_count = max(0, self._popup_count - 1)  # opened by us, not the site
         if url:
             new_page.goto(url, wait_until="domcontentloaded", timeout=30000)
             if self.humanizer:
                 self.humanizer.reading_pause()
         self._page = new_page
-        return len(ctx.pages) - 1
+        return len(self.tabs()) - 1
+
+    def tabs(self) -> list:
+        """Tabs Fantoma can see. When attached, only the ones it opened."""
+        ctx = self._context if self._context else self._page.context
+        pages = list(ctx.pages) if ctx else []
+        if self.attached:
+            pages = [p for p in pages if p in self._owned]
+        return pages
 
     def switch_tab(self, index: int):
         """Switch to a tab by index. Tab 0 is the first tab opened."""
-        ctx = self._context if self._context else self._page.context
-        pages = ctx.pages
+        pages = self.tabs()
         if 0 <= index < len(pages):
             self._page = pages[index]
             self._page.bring_to_front()
@@ -553,23 +681,27 @@ class BrowserEngine:
     def close_tab(self, index: int = None):
         """Close a tab by index. Defaults to current tab. Switches to previous tab."""
         ctx = self._context if self._context else self._page.context
-        pages = ctx.pages
+        pages = self.tabs()
         if index is None:
             target = self._page
         elif 0 <= index < len(pages):
             target = pages[index]
         else:
             return
+        if self.attached and target not in self._owned:
+            _log.warning("Not closing a tab Fantoma did not open")
+            return
         target.close()
+        if target in self._owned:
+            self._owned.remove(target)
         # Switch to last remaining tab
-        remaining = ctx.pages
+        remaining = self.tabs()
         if remaining:
             self._page = remaining[-1]
 
     def tab_count(self) -> int:
         """Return the number of open tabs."""
-        ctx = self._context if self._context else self._page.context
-        return len(ctx.pages) if ctx else 1
+        return len(self.tabs()) or 1
 
     def get_page(self):
         """Return the Playwright page object (for DOM extractor)."""
