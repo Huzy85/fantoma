@@ -484,7 +484,8 @@ class Fantoma:
     # ── High-level operations ────────────────────────────────
 
     def login(self, url: str, email: str = "", username: str = "",
-              password: str = "", first_name: str = "", last_name: str = "") -> dict:
+              password: str = "", first_name: str = "", last_name: str = "",
+              value_guard=None) -> dict:
         """Log into a site. Navigates to url, fills form, handles CAPTCHA and verification.
 
         Browser must be started first via start().
@@ -537,7 +538,7 @@ class Fantoma:
             email=email, username=username, password=password,
             first_name=first_name, last_name=last_name,
             memory=memory, visit_id=visit_id,
-            config=self.config, llm=self._llm,
+            config=self.config, llm=self._llm, value_guard=value_guard,
         )
 
         page = self._engine.get_page()

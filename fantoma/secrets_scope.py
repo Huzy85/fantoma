@@ -123,6 +123,8 @@ class SecretStore:
         """Build from a flat dict, a scoped dict, a mix of both, or a store."""
         if isinstance(data, SecretStore):
             return data
+        if data and not isinstance(data, dict):
+            raise ValueError("sensitive_data must be an object of name: value pairs")
         entries = []
         for key, val in (data or {}).items():
             if isinstance(val, dict):

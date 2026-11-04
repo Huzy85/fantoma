@@ -6,6 +6,7 @@
 
 - **Secrets tied to their site.** `sensitive_data` now also takes `{"https://*.example.com": {"password": "..."}}`. A scoped value is typed only if the page URL, read again right before the fill, matches the pattern; otherwise the action fails with "secret 'name' is not allowed on this site" and nothing is typed. The flat format is unchanged. Invalid patterns raise `ValueError` when the `Agent` is built. The matcher is in `fantoma/secrets_scope.py` (design after browser-use's `match_url_with_domain_pattern`, MIT).
 - Placeholders scoped to other sites are not listed to the model, and their real values are masked out of page text, planner summaries, extracted answers and the returned result.
+- Fast-path `login()` re-checks the page URL before each fill (username and password separately). `POST /run` answers a bad `sensitive_data` pattern with a clean 400 and no secret values in the text.
 - `tools/secrets_scope_live.py`: local two-site check, no model.
 
 ### Changed

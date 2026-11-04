@@ -241,22 +241,109 @@ class TestAgentAndFastPath:
                                        steps_detail=[{"action": f"type({VALUE})"}]))
         assert VALUE not in repr(r)
 
+    @staticmethod
+    def _recording_login(f, typed):
+        def login(url, value_guard=None, **creds):
+            typed.append(value_guard(creds["password"]))
+            return {"success": True}
+        f.login.side_effect = login
+
     def test_fast_path_refuses_wrong_site_and_never_types(self):
         f = MagicMock()
         f._engine.get_page.return_value = _Page(["https://evil.test/login"])
         f.get_state.return_value = {"aria_tree": ""}
+        typed = []
+        self._recording_login(f, typed)
         r = run_fast_path("Log in with username 'bob' and password '<secret:pw>'.", f,
                           secrets={"https://site.test": {"pw": VALUE}})
         assert not r.complete
-        f.login.assert_not_called()
+        assert typed == []
         assert VALUE not in repr(r)
 
     def test_fast_path_flat_still_logs_in(self):
         f = MagicMock()
         f._engine.get_page.return_value = _Page(["https://any.test/login"])
-        f.login.return_value = {"success": True}
+        typed = []
+        self._recording_login(f, typed)
         with patch("fantoma.fast_path._password_box_visible", return_value=False):
             r = run_fast_path("Log in with username 'bob' and password '<secret:pw>'.", f,
                               secrets={"pw": VALUE})
-        assert f.login.call_args.kwargs["password"] == VALUE
+        assert typed == [VALUE]
         assert r.complete
+
+
+class TestFastPathLoginRedirect:
+    def test_redirect_between_username_and_password_fill_is_refused(self):
+        """The URL is re-read before EACH fill, not once per login call."""
+        pages = {"url": "https://site.test/login"}
+        typed = []
+
+        class Fake:
+            _engine = MagicMock()
+
+            def login(self, url, value_guard=None, **creds):
+                typed.append(value_guard(creds["username"]))
+                pages["url"] = "https://evil.test/next"  # redirect between steps
+                typed.append(value_guard(creds["password"]))
+                return {"success": True}
+
+        fake = Fake()
+        page = MagicMock()
+        type(page).url = PropertyMock(side_effect=lambda: pages["url"])
+        fake._engine.get_page.return_value = page
+        secrets = {"https://site.test": {"user": "alice-u", "pw": VALUE}}
+        from fantoma.fast_path import _Revealing, SecretRefused
+        with pytest.raises(SecretRefused):
+            _Revealing(fake, secrets).login(
+                "https://site.test/login", username="<secret:user>", password="<secret:pw>")
+        assert typed == ["alice-u"]  # username typed on the right site; password never
+
+
+class TestServerEntryPoint:
+    def _client(self, monkeypatch):
+        import server
+        monkeypatch.setattr(server, "API_KEY", "")
+        monkeypatch.setattr(server, "_release_session", lambda: None)
+        return server, server.app.test_client()
+
+    def test_bad_pattern_is_a_clean_400_without_values(self, monkeypatch):
+        server, c = self._client(monkeypatch)
+        monkeypatch.setattr(server, "Agent", MagicMock(side_effect=AssertionError("no agent")))
+        r = c.post("/run", json={"task": "t", "sensitive_data": {"*google.com": {"pw": VALUE}}})
+        assert r.status_code == 400
+        body = r.get_json()
+        assert body["success"] is False and "sensitive_data" in body["error"]
+        assert VALUE not in r.get_data(as_text=True)
+
+    def test_non_object_sensitive_data_is_400(self, monkeypatch):
+        server, c = self._client(monkeypatch)
+        r = c.post("/run", json={"task": "t", "sensitive_data": VALUE})
+        assert r.status_code == 400 and VALUE not in r.get_data(as_text=True)
+
+    def test_scoped_format_passes_through_unchanged(self, monkeypatch):
+        server, c = self._client(monkeypatch)
+        seen = {}
+
+        class FakeAgent:
+            def __init__(self, **kw):
+                seen.update(kw)
+                self.fantoma = MagicMock()
+
+            def run(self, *a, **k):
+                from fantoma.agent import AgentResult
+                return AgentResult(success=True, data="ok")
+
+        monkeypatch.setattr(server, "Agent", FakeAgent)
+        sd = {"https://*.example.com": {"password": VALUE}, "flat": "x"}
+        r = c.post("/run", json={"task": "t", "sensitive_data": sd})
+        assert r.status_code == 200
+        assert seen["sensitive_data"] == sd
+
+
+def test_mcp_entry_points_take_no_secrets():
+    """MCP tools never accept sensitive_data, so a secret cannot pass through
+    a model's tool arguments."""
+    import inspect
+    from fantoma import mcp_server, mcp_local
+    src = inspect.getsource(mcp_server) + inspect.getsource(mcp_local)
+    assert "sensitive_data" not in src

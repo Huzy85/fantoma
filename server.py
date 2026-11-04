@@ -507,6 +507,15 @@ def run_task():
         return jsonify({"error": "Missing 'task'"}), 400
 
     # The Agent owns its own browser, so any session left open by /start or
+    # A bad sensitive_data pattern is the caller's mistake: say so plainly,
+    # before any browser is touched. The message names the pattern only,
+    # never a secret value.
+    try:
+        from fantoma.secrets_scope import SecretStore
+        SecretStore.from_any(data.get("sensitive_data"))
+    except ValueError as e:
+        return jsonify({"success": False, "error": f"Invalid sensitive_data: {e}"}), 400
+
     # /login has to go first — two sync Playwright instances on one thread
     # is what wedges the container.
     _release_session()

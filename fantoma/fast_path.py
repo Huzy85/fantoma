@@ -423,7 +423,10 @@ class _Revealing:
         return self._f.type_text(element_id, self.reveal(text))
 
     def login(self, url, **creds):
-        return self._f.login(url, **{k: self.reveal(v) for k, v in creds.items()})
+        # Placeholders go down as they are; each is filled in at the moment of
+        # typing, after the page URL is read again, so a redirect between the
+        # username and password steps is caught.
+        return self._f.login(url, value_guard=self.reveal, **creds)
 
 
 class SecretRefused(Exception):
