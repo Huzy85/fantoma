@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Agent Skills file.** `skills/fantoma/SKILL.md` tells a coding agent when and how to use Fantoma. It ships inside the package; `fantoma skill` prints it and `fantoma skill --install DIR` copies it to `DIR/fantoma/SKILL.md` (`--force` to overwrite).
+
 ### Changed
 
 - Listed for the official MCP Registry: `server.json` and the `mcp-name` line in the README. The headline now says small local models can drive the read path, matching what the measurements show.

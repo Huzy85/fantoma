@@ -1045,6 +1045,28 @@ def cmd_read(url, full=False, as_json=False, selector="", browser="camoufox",
     print(result.get("markdown", ""))
 
 
+def _skill_source() -> Path:
+    return Path(__file__).parent / "skills" / "fantoma" / "SKILL.md"
+
+
+def cmd_skill(install_dir=None, force=False):
+    """Print the bundled Agent Skills file, or copy it to DIR/fantoma/SKILL.md."""
+    src = _skill_source()
+    if not src.is_file():
+        print(_red("Bundled SKILL.md not found in this install."), file=sys.stderr)
+        sys.exit(1)
+    if not install_dir:
+        sys.stdout.write(src.read_text(encoding="utf-8"))
+        return
+    dest = Path(install_dir).expanduser() / "fantoma" / "SKILL.md"
+    if dest.exists() and not force:
+        print(_red(f"{dest} already exists. Use --force to overwrite."), file=sys.stderr)
+        sys.exit(1)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"Installed {dest}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fantoma — the AI browser agent",
@@ -1057,6 +1079,7 @@ Commands:
   test fingerprint  Validate Camoufox anti-detection fingerprint
   run "task"      Run a browser task
   read URL        Print a page as clean Markdown (no LLM needed)
+  skill           Print the bundled Agent Skills file (--install DIR to copy it)
   (no args)       Interactive mode with /commands
 
 Examples:
@@ -1071,7 +1094,7 @@ Examples:
 """,
     )
     parser.add_argument("command", nargs="?", default=None,
-                       choices=["setup", "test", "run", "read", "monitor", "logs"],
+                       choices=["setup", "test", "run", "read", "monitor", "logs", "skill"],
                        help="Command to run (or omit for interactive mode)")
     parser.add_argument("task", nargs="?", default=None,
                        help="Task description (for 'run'), or 'full' (for 'test')")
@@ -1089,6 +1112,11 @@ Examples:
                        help="read: cut the output to this many characters")
     parser.add_argument("--browser", default="camoufox", choices=["camoufox", "chromium"],
                        help="read: browser engine (default camoufox)")
+
+    parser.add_argument("--install", default=None, metavar="DIR",
+                       help="skill: copy SKILL.md to DIR/fantoma/SKILL.md")
+    parser.add_argument("--force", action="store_true",
+                       help="skill: overwrite an existing file")
 
     args = parser.parse_args()
 
@@ -1115,6 +1143,8 @@ Examples:
             sys.exit(1)
         cmd_read(args.task, full=args.full, as_json=args.json, selector=args.selector,
                  browser=args.browser, max_chars=args.max_chars, no_links=args.no_links)
+    elif args.command == "skill":
+        cmd_skill(args.install, args.force)
     elif args.command == "logs":
         if args.task == "trace" or args.task == "--trace":
             cmd_logs_trace()
