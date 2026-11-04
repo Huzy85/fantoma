@@ -26,8 +26,15 @@ class BrowserEngine:
 
     def __init__(self, headless=True, profile_dir=None, humanize=True, accessibility=True, proxy=None,
                  trace=False, trace_dir=None, browser_engine="camoufox",
-                 allowed_domains=None, blocked_domains=None):
+                 allowed_domains=None, blocked_domains=None, chromium_full_headless=None):
         self.headless = headless
+        # Chromium only. Headless runs default to chrome-headless-shell, which
+        # lacks some features (WebMCP). True uses the full Chrome build with
+        # --headless instead. Env FANTOMA_CHROMIUM_FULL_HEADLESS=1 also turns it on.
+        if chromium_full_headless is None:
+            chromium_full_headless = os.environ.get(
+                "FANTOMA_CHROMIUM_FULL_HEADLESS", "").lower() in ("1", "true", "yes")
+        self.chromium_full_headless = bool(chromium_full_headless)
         self.profile_dir = profile_dir
         self.accessibility = accessibility
         self.proxy = proxy  # {"server": "http://host:port"} or "http://host:port" string
@@ -54,6 +61,32 @@ class BrowserEngine:
         self._crashed: set = set()
         self.last_status: int | None = None
         self._last_status_url: str = ""
+
+    # Capability checks on the live page object, so callers can branch on
+    # what the engine under them offers (Playwright 1.58 on Camoufox has
+    # neither of these; Patchright 1.64+ on Chromium has aria refs).
+    @staticmethod
+    def _page_supports_refs(page) -> bool:
+        if page is None:
+            return False
+        if not callable(getattr(page, "aria_snapshot", None)):
+            return False
+        if not callable(getattr(page, "get_by_ref", None)):
+            return False
+        try:
+            import inspect
+            return "mode" in inspect.signature(page.aria_snapshot).parameters
+        except (TypeError, ValueError):
+            return True
+
+    def supports_aria_refs(self) -> bool:
+        """True if page.aria_snapshot(mode="ai") and page.get_by_ref exist."""
+        return self._page_supports_refs(self._page)
+
+    def supports_webmcp(self) -> bool:
+        """True if the live page object exposes a webmcp API."""
+        page = self._page
+        return page is not None and getattr(page, "webmcp", None) is not None
 
     def _proxy_dict(self) -> dict | None:
         """Convert any proxy config to Playwright format. Supports rotation."""
@@ -237,6 +270,10 @@ class BrowserEngine:
         self._playwright = sync_playwright().start()
         proxy = self._proxy_dict()
         launch_args = {"headless": self.headless}
+        if self.headless and self.chromium_full_headless:
+            # Patchright picks chrome-headless-shell for headless unless a
+            # channel is named. channel="chromium" selects the full Chrome build.
+            launch_args["channel"] = "chromium"
         if proxy:
             launch_args["proxy"] = proxy
         # Opt-in WebRTC/WebGL kill-switches for the Chromium fallback (Camoufox
