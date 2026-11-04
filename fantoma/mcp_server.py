@@ -554,6 +554,41 @@ def _http_problem(host: str, token: str, insecure: bool):
             "127.0.0.1, or set FANTOMA_MCP_INSECURE=1 to serve without authentication.")
 
 
+_WILDCARD_HOSTS = ("0.0.0.0", "::", "")
+
+
+def _transport_security(host: str, token: str, extra_hosts: str = ""):
+    """DNS-rebinding settings for the HTTP transport, or None to keep the
+    library default.
+
+    FastMCP turns protection on at construction with a loopback-only Host
+    allow-list, and changing `mcp.settings.host` afterwards does not widen it,
+    so a non-loopback server answered 421 to everything. Here the list is
+    rebuilt from the bind address plus FANTOMA_MCP_ALLOWED_HOSTS (comma
+    separated host names or host:port patterns). Bound to a wildcard address
+    with a token and no named hosts there is nothing to match against, so the
+    check is switched off: the bearer token is what protects the server then.
+    """
+    if host in _LOOPBACK_HOSTS:
+        return None
+    from mcp.server.transport_security import TransportSecuritySettings
+    names = [h.strip() for h in extra_hosts.split(",") if h.strip()]
+    if host not in _WILDCARD_HOSTS:
+        names.append(host)
+    if not names:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False) if token else None
+    names += list(_LOOPBACK_HOSTS)
+    hosts, origins = [], []
+    for n in names:
+        bare = n.removesuffix(":*")
+        shown = f"[{bare}]" if bare.count(":") > 1 and not bare.startswith("[") else bare
+        # A Host header has a port unless the client uses the scheme default
+        # (a reverse proxy often does), so accept both forms.
+        hosts += [n, shown, f"{shown}:*"]
+        origins += [f"http://{shown}", f"https://{shown}", f"http://{shown}:*", f"https://{shown}:*"]
+    return TransportSecuritySettings(allowed_hosts=sorted(set(hosts)), allowed_origins=sorted(set(origins)))
+
+
 class _BearerAuth:
     """ASGI wrapper: every HTTP request needs 'Authorization: Bearer <token>'."""
 
@@ -569,8 +604,9 @@ class _BearerAuth:
                 if k == b"authorization":
                     supplied = v.decode("latin-1")
                     break
-            ok = supplied.startswith("Bearer ") and hmac.compare_digest(
-                supplied[7:].encode(), self.token.encode())
+            scheme, _, credential = supplied.partition(" ")
+            ok = scheme.lower() == "bearer" and hmac.compare_digest(
+                credential.strip().encode(), self.token.encode())
             if not ok:
                 body = b'{"error":"unauthorized"}'
                 await send({"type": "http.response.start", "status": 401, "headers": [
@@ -601,6 +637,9 @@ def main() -> None:
             log.warning("FANTOMA_MCP_INSECURE is on: MCP over HTTP on %s has no authentication.", host)
         import uvicorn
         mcp.settings.host, mcp.settings.port = host, port
+        security = _transport_security(host, token, os.environ.get("FANTOMA_MCP_ALLOWED_HOSTS", ""))
+        if security is not None:
+            mcp.settings.transport_security = security
         app = mcp.streamable_http_app()
         if token:
             app = _BearerAuth(app, token)
