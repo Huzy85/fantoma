@@ -10,6 +10,7 @@
 - `tools/secrets_scope_live.py`: local two-site check, no model.
 - `BrowserEngine.supports_aria_refs()` and `supports_webmcp()` report whether the live page object offers `aria_snapshot(mode="ai")` with `get_by_ref`, and a `webmcp` API. True on Chromium with Patchright 1.64.3, false on Camoufox. `supports_webmcp()` checks the client API only; WebMCP is not enabled yet.
 - Chromium option `chromium_full_headless` (env `FANTOMA_CHROMIUM_FULL_HEADLESS=1`), off by default. Headless runs use the full Chrome build instead of chrome-headless-shell, which lacks features such as WebMCP.
+- **Agent Skills file.** `skills/fantoma/SKILL.md` tells a coding agent when and how to use Fantoma. It ships inside the package; `fantoma skill` prints it and `fantoma skill --install DIR` copies it to `DIR/fantoma/SKILL.md` (`--force` to overwrite).
 
 ### Changed
 

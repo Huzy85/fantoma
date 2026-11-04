@@ -79,6 +79,9 @@ No LLM needed to start: `fantoma read https://example.com` works straight after 
 
 Fantoma ships an MCP server, so any MCP client (Claude Code, Claude Desktop, Cursor, or your own agent) can drive a stealth browser.
 
+Coding agents that support [Agent Skills](https://agentskills.io) can load Fantoma's instructions from `skills/fantoma/SKILL.md`.
+`fantoma skill --install ~/.claude/skills` copies the same file into a skills folder.
+
 **One command, no Docker:**
 
 ```bash
@@ -808,6 +811,7 @@ fantoma test full           # Test against 10 real sites
 fantoma test fingerprint    # Validate anti-detection (7 checks)
 fantoma run "task"          # Run a task
 fantoma read URL            # Page as clean Markdown, no LLM (--full, --json, --selector, --no-links)
+fantoma skill              # Print the bundled Agent Skills file (--install DIR copies it)
 fantoma logs               # View recent activity and errors
 fantoma logs --trace        # List saved Playwright traces
 fantoma                    # Interactive mode
