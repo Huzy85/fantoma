@@ -8,8 +8,15 @@ images, fetch/XHR), not only on the pages the agent chooses to open.
 
 Patterns are hostnames. "example.com" matches example.com and every
 subdomain of it; "*.example.com" matches subdomains only. Unicode names are
-converted to their punycode form. Non-network schemes (data:, blob:, about:)
-are always allowed: they fetch nothing.
+converted to their punycode form. Inert schemes (data:, blob:, about:blank)
+are always allowed: they fetch nothing. Every other non-network scheme
+(file:, chrome:, view-source:, resource:, javascript: and so on) is always
+refused, with or without a policy, because it reads the machine, not the web.
+
+Private hosts (loopback, RFC1918, link-local, cloud metadata) are refused when
+a policy is active, and also when block_private is on (FANTOMA_BLOCK_PRIVATE=1,
+which the HTTP server sets unless FANTOMA_ALLOW_PRIVATE=1). Direct Python use
+leaves them reachable by default so local development keeps working.
 
 Redirects need care. Playwright calls a route handler only for the first URL
 of a redirect chain, so an allowed URL that answers 302 to another host would
@@ -31,6 +38,8 @@ import json
 import logging
 import ipaddress
 import os
+import re
+import socket
 from urllib.parse import urljoin, urlparse
 
 log = logging.getLogger("fantoma.domains")
@@ -90,28 +99,45 @@ def _to_ascii(pattern: str) -> str:
 # Schemes that fetch nothing and are safe whatever the policy says.
 _INERT_SCHEMES = {"data", "blob", "about", ""}
 
+_PRIVATE_NAMES = ("localhost", "ip6-localhost", "ip6-loopback",
+                  "metadata", "metadata.google.internal", "instance-data")
+_IPV4_LOOSE = re.compile(r"^[0-9a-fx.]+$")
+
+
+def _parse_ip(candidate: str):
+    """IPv4/IPv6 object for a literal, including the shorthand forms
+    browsers accept (127.1, 0x7f000001, 0177.0.0.1, 2130706433). None if the
+    text is not an address."""
+    try:
+        return ipaddress.ip_address(candidate)
+    except ValueError:
+        pass
+    if candidate and _IPV4_LOOSE.match(candidate):
+        try:
+            return ipaddress.ip_address(socket.inet_aton(candidate))
+        except (OSError, ValueError):
+            return None
+    return None
+
 
 def _is_private_host(host: str) -> bool:
     """True for loopback, link-local, private-range and metadata addresses.
 
-    Covers IP literals (IPv4, IPv6, and the bare-integer form 2130706433),
-    plus the names browsers resolve locally. A name that resolves to a
-    private address at request time is not caught here; an allow-list is
-    the defence for that.
+    Covers IP literals (IPv4, IPv6, IPv4-mapped IPv6 and the shorthand
+    forms 127.1, 0x7f000001, 0177.0.0.1, 2130706433), plus the names
+    browsers resolve locally and the cloud metadata names. A name that
+    resolves to a private address at request time is not caught here; an
+    allow-list is the defence for that.
     """
-    if host in ("localhost", "ip6-localhost", "ip6-loopback") or host.endswith(".localhost"):
+    host = host.strip().strip("[]").rstrip(".").lower()
+    if (host in _PRIVATE_NAMES or host.endswith(".localhost")
+            or host.endswith(".internal") or host.endswith(".local")):
         return True
-    candidate = host.strip("[]")
-    try:
-        addr = ipaddress.ip_address(candidate)
-    except ValueError:
-        if candidate.isdigit():
-            try:
-                addr = ipaddress.ip_address(int(candidate))
-            except ValueError:
-                return False
-        else:
-            return False
+    addr = _parse_ip(host)
+    if addr is None:
+        return False
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
     return (addr.is_private or addr.is_loopback or addr.is_link_local
             or addr.is_reserved or addr.is_unspecified)
 
@@ -126,7 +152,8 @@ def _matches(host: str, pattern: str) -> bool:
 class DomainPolicy:
     """Allow-list and block-list of hostnames. Empty lists allow everything."""
 
-    def __init__(self, allowed=None, blocked=None, strict=None):
+    def __init__(self, allowed=None, blocked=None, strict=None, block_private=None):
+        self.block_private = bool(block_private)
         self.allowed = _split(allowed)
         self.blocked = _split(blocked)
         if strict is None:
@@ -140,11 +167,12 @@ class DomainPolicy:
         return cls(
             allowed if allowed is not None else os.environ.get("FANTOMA_ALLOWED_DOMAINS", ""),
             blocked if blocked is not None else os.environ.get("FANTOMA_BLOCKED_DOMAINS", ""),
+            block_private=os.environ.get("FANTOMA_BLOCK_PRIVATE", "").strip().lower() in ("1", "true", "yes"),
         )
 
     @property
     def active(self) -> bool:
-        return bool(self.allowed or self.blocked)
+        return bool(self.allowed or self.blocked or self.block_private)
 
     def permits(self, url: str) -> bool:
         try:
@@ -153,11 +181,13 @@ class DomainPolicy:
             return False
         scheme = parsed.scheme.lower()
         if scheme not in _NETWORK_SCHEMES:
-            # data:/blob:/about: fetch nothing. file:, chrome:, view-source:
-            # and friends read the machine, not the network, so an active
-            # policy refuses them: a page cannot be allowed to steer the
-            # agent into reading /etc/passwd through the browser.
-            return scheme in _INERT_SCHEMES or not self.active
+            # data:/blob:/about:blank fetch nothing. file:, chrome:, view-source:,
+            # about:config and friends read the machine, not the network, so
+            # they are refused whether or not a policy is active: a page
+            # cannot steer the agent into reading /etc/passwd.
+            if scheme == "about":
+                return url.strip().lower() == "about:blank"
+            return scheme in _INERT_SCHEMES
         host = _to_ascii((parsed.hostname or "").lower().rstrip("."))
         if not host:
             return False

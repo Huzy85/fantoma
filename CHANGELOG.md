@@ -27,6 +27,18 @@
 
 - WebMCP support, off by default: `Fantoma(webmcp=True)` / `FANTOMA_WEBMCP=1` (Chromium only; ignored with a warning on Camoufox). Launches full Chrome with `--enable-features=WebMCP`, lists a page's registered tools in the step prompt, and adds a `WEBMCP name {json}` action. `Fantoma.webmcp_tools()` and `Fantoma.webmcp_call(name, args)` expose it directly. Tool text is treated as untrusted (name check, sanitising, caps, injection scan, fencing) and calls with `<secret:...>` placeholders in the arguments are refused. Tools the page marks consequential or not read-only are hidden and refused unless `webmcp="all"` / `FANTOMA_WEBMCP=all`; `untrustedContent` results get a warning. New module `fantoma/webmcp.py`, live check `tools/webmcp_live.py`.
 
+### Security
+
+- **Non-network schemes are always refused.** `file:`, `chrome:`, `view-source:`, `resource:`, `javascript:` and `about:` other than `about:blank` are refused by `DomainPolicy.permits()` with or without a policy. `data:`, `blob:` and `about:blank` still pass.
+- **The HTTP server refuses private hosts by default.** `/start`, `/navigate`, `/read`, `/run`, `/login` and `/manual/open` reject loopback, private, link-local and cloud metadata URLs, and the browser's own requests and redirects are blocked too (`FANTOMA_BLOCK_PRIVATE`, set by the server). `FANTOMA_ALLOW_PRIVATE=1` lifts it. Direct Python use is unchanged apart from the scheme rule.
+- `/run` and `/start` accept a validated `allowed_domains` list.
+- **Private-host check covers shorthand forms.** `127.1`, `0x7f000001`, `0177.0.0.1`, IPv4-mapped IPv6, `metadata.google.internal` and `*.internal` are now caught.
+- **`/login` cannot type the password on another site.** Credentials are scoped to the login URL's host and the live page URL is checked before each fill, so a redirect mid-login gets nothing. Error text is masked.
+- **The server will not start on a non-loopback address without `FANTOMA_API_KEY`** unless `FANTOMA_INSECURE_NO_AUTH=1`. The compose file publishes 7860 and 6080 on 127.0.0.1 only. x11vnc will not start without `FANTOMA_VNC_PASSWORD` unless `FANTOMA_VNC_ALLOW_NO_PASSWORD=1`.
+- `/run` rejects `max_steps` outside 1 to 500 and `timeout` outside 1 to 3600 with a 400. A 500 returns a generic message and a log id; the masked error is in the log.
+- Dependency floors raised: `mcp>=1.30.0` (fixes five high advisories in 1.26.0) and `werkzeug>=3.1.9`.
+- The Dockerfile no longer hides a failed `pip install`.
+
 ### Changed
 
 - Element numbers in `_last_interactive` are stamped as `el["index"]` and are no longer list positions. Code that addressed elements by list position should use `el["index"]` (`tools/live_read_check.py` and the fast path do). `AccessibilityExtractor.reset_refs()` starts a new numbering; the navigator calls it when a task starts.

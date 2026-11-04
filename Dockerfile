@@ -37,7 +37,11 @@ RUN pip3 install --no-cache-dir \
     "httpx>=0.25" \
     "capsolver" \
     "flask>=3.0" \
-    && pip3 install --no-cache-dir -e /app 2>/dev/null || true
+    "werkzeug>=3.1.9"
+# The editable install of fantoma itself happens below, after the source is
+# copied. It used to run here too, with its errors hidden,
+# when only pyproject.toml was present, so it could never succeed and a real
+# failure was invisible.
 
 # Download the Camoufox browser binary. `camoufox fetch` exits 0 even when
 # GitHub's API refuses it (unauthenticated calls are limited to 60 an hour per
@@ -63,7 +67,9 @@ RUN pip3 install --no-cache-dir -e ".[captcha]"
 # Xvfb display setup
 ENV DISPLAY=:99
 # Inside a container loopback is unreachable from the published port, so the
-# server listens on all interfaces. Set FANTOMA_API_KEY on any shared network.
+# server listens on all interfaces. It refuses to start that way without
+# FANTOMA_API_KEY, unless FANTOMA_INSECURE_NO_AUTH=1 is set. The compose file
+# publishes the ports on the host's loopback only.
 ENV FANTOMA_HOST=0.0.0.0
 # Every browser in the container is ours; also reap orphans re-parented to PID 1.
 ENV FANTOMA_REAP_ALL=1
@@ -77,6 +83,12 @@ RUN mkdir -p /root/.local/share/fantoma/traces \
 # supervisord config
 COPY supervisord.conf /etc/supervisor/conf.d/fantoma.conf
 
+# TODO(security): the container still runs as root. A non-root USER needs the
+# Camoufox browser cache (fetched above as root into /root/.cache), the
+# profile dir /root/.local/share/fantoma, /var/log/supervisor, /var/run
+# (supervisor socket) and a supervisord user= line all moved or re-owned, and
+# the fantoma-profiles volume migrated. Not guessed here because the image
+# cannot be built and tested from this change.
 EXPOSE 7860 6080
 
 # supervisord manages all processes

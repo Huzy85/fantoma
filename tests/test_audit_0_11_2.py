@@ -24,8 +24,8 @@ class TestSchemesAndPrivateHosts:
         for url in ("file:///etc/passwd", "chrome://settings", "view-source:https://example.com"):
             assert p.permits(url) is False, url
 
-    def test_file_allowed_when_no_policy(self):
-        assert DomainPolicy().permits("file:///tmp/x.html") is True
+    def test_file_refused_even_without_policy(self):
+        assert DomainPolicy().permits("file:///tmp/x.html") is False
 
     def test_private_hosts_refused_under_blocklist_only(self):
         p = DomainPolicy(blocked=["evil.example"])

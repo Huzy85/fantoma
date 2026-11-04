@@ -3,9 +3,13 @@ services:
     build: .
     container_name: fantoma-browser
     restart: unless-stopped
+    # Published on the host's loopback only. To reach them from another
+    # machine, change to "0.0.0.0:7860:7860" (and 6080) AND set
+    # FANTOMA_API_KEY and FANTOMA_VNC_PASSWORD below, or put an
+    # authenticating reverse proxy in front.
     ports:
-      - "7860:7860"
-      - "6080:6080"   # noVNC — manual intervention hatch
+      - "127.0.0.1:7860:7860"
+      - "127.0.0.1:6080:6080"   # noVNC — manual intervention hatch
     environment:
       # Local LLM (local-coder on host)
       - LOCAL_LLM_URL=http://host.docker.internal:8081/v1
@@ -22,6 +26,14 @@ services:
       # HTTP API is unauthenticated; without FANTOMA_VNC_PASSWORD noVNC is open.
       - FANTOMA_API_KEY=${FANTOMA_API_KEY:-}
       - FANTOMA_VNC_PASSWORD=${FANTOMA_VNC_PASSWORD:-}
+      # The server refuses to start without FANTOMA_API_KEY (it listens on all
+      # container interfaces). For loopback-only local use you may set
+      # FANTOMA_INSECURE_NO_AUTH=1; x11vnc likewise needs a password unless
+      # FANTOMA_VNC_ALLOW_NO_PASSWORD=1.
+      - FANTOMA_INSECURE_NO_AUTH=${FANTOMA_INSECURE_NO_AUTH:-0}
+      - FANTOMA_VNC_ALLOW_NO_PASSWORD=${FANTOMA_VNC_ALLOW_NO_PASSWORD:-0}
+      # Private, loopback and metadata hosts are refused by default.
+      - FANTOMA_ALLOW_PRIVATE=${FANTOMA_ALLOW_PRIVATE:-0}
       # /evaluate runs arbitrary JS in the page — off unless explicitly enabled.
       - FANTOMA_ALLOW_EVAL=${FANTOMA_ALLOW_EVAL:-0}
       # TLS validation stays on unless you knowingly need bad-cert sites.

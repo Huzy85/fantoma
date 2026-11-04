@@ -5,15 +5,19 @@ Convenience: /run (uses Agent wrapper), /login, /extract, /read.
 Single session at a time.
 """
 import hmac
+import ipaddress
 import json
 import logging
 import os
+import re
 import threading
+import uuid
 from pathlib import Path
 
 from flask import Flask, request, jsonify, send_file
 from io import BytesIO
 
+from fantoma.browser.domains import DomainBlocked, DomainPolicy, _is_private_host
 from fantoma.browser_tool import Fantoma
 from fantoma.agent import Agent
 
@@ -39,6 +43,104 @@ ALLOW_REQUEST_PROXY = bool(API_KEY) or os.environ.get(
 # request cannot point the browser at an arbitrary path.
 PROFILE_BASE = os.path.realpath(os.environ.get(
     "FANTOMA_PROFILE_BASE", os.path.join(os.path.expanduser("~"), ".local", "share", "fantoma")))
+
+
+# Private, loopback, link-local and cloud-metadata hosts are refused for every
+# URL this server is asked to open (and, once the server is running, for the
+# browser's own requests and redirects). The API key does not change that: a
+# caller who can drive the browser could otherwise read the machine's own
+# services through it. Set FANTOMA_ALLOW_PRIVATE=1 to open them up, for
+# example when the target is an app on your own network.
+ALLOW_PRIVATE = os.environ.get("FANTOMA_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes")
+# Explicit opt-out of the "no key on a non-loopback address" refusal.
+INSECURE_NO_AUTH = os.environ.get("FANTOMA_INSECURE_NO_AUTH", "").lower() in ("1", "true", "yes")
+
+
+def _is_loopback_host(host: str) -> bool:
+    h = (host or "").strip().strip("[]").lower()
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def _startup_problem(host: str, api_key: str, insecure: bool) -> str | None:
+    """Reason the server must not start, or None. Listening beyond loopback
+    with no API key hands the browser (and any logged-in session in it) to
+    every host that can reach the port."""
+    if api_key or insecure or _is_loopback_host(host):
+        return None
+    return (f"refusing to start: FANTOMA_HOST={host} is not loopback and FANTOMA_API_KEY is empty. "
+            "Set FANTOMA_API_KEY, bind to 127.0.0.1, or set FANTOMA_INSECURE_NO_AUTH=1 "
+            "if you really want an open API on this address.")
+
+
+_HOST_CHARS = re.compile(r"^(\*\.)?[^\s/:@?#\\]{1,253}$")
+
+
+def _clean_allowed_domains(value):
+    """Validate a request's allowed_domains. Returns (list | None, error | None)."""
+    if value is None:
+        return None, None
+    if not isinstance(value, list) or len(value) > 100:
+        return None, "'allowed_domains' must be a list of at most 100 host names"
+    out = []
+    for item in value:
+        if not isinstance(item, str) or not _HOST_CHARS.match(item.strip()):
+            return None, "'allowed_domains' entries must be host names such as example.com or *.example.com"
+        item = item.strip().lower()
+        if not ALLOW_PRIVATE and _is_private_host(item.removeprefix("*.")):
+            return None, "'allowed_domains' may not name a private or loopback host"
+        out.append(item)
+    return (out or None), None
+
+
+def _url_problem(url, required=False):
+    """Why this URL may not be opened through the API, or None if it may."""
+    if url is None or url == "":
+        return "Missing 'url'" if required else None
+    if not isinstance(url, str) or len(url) > 4096:
+        return "'url' must be a string"
+    if not DomainPolicy(block_private=not ALLOW_PRIVATE).permits(url):
+        return ("url is not allowed: only http(s) addresses on public hosts can be opened "
+                "(set FANTOMA_ALLOW_PRIVATE=1 to allow private hosts)")
+    return None
+
+
+def _bad_url(url, required=False):
+    msg = _url_problem(url, required)
+    return (jsonify({"error": msg}), 400) if msg else None
+
+
+def _secret_values(*sources) -> list:
+    vals = []
+    for src in sources:
+        if isinstance(src, dict):
+            for v in src.values():
+                vals.extend(_secret_values(v))
+        elif isinstance(src, (str, int, float)) and not isinstance(src, bool) and str(src):
+            vals.append(str(src))
+    return vals
+
+
+def _masked(text, *secrets) -> str:
+    """Error text with any secret value replaced, safe to log or return."""
+    text = str(text)
+    for v in sorted(set(_secret_values(*secrets)), key=len, reverse=True):
+        text = text.replace(v, "[REDACTED]")
+    return text
+
+
+def _server_error(e, *secrets, **extra):
+    """A 500 that names no internals: generic text and a short id that
+    matches the masked log line."""
+    log_id = uuid.uuid4().hex[:8]
+    log.error("request failed [%s] %s: %s", log_id, request.path, _masked(e, *secrets)[:500])
+    body = {"success": False, "error": f"internal error (log id {log_id})", "log_id": log_id}
+    body.update(extra)
+    return jsonify(body), 500
 
 
 def _bind_host(api_key: str, env_host: str | None) -> str:
@@ -261,6 +363,15 @@ def start():
     global _fantoma
     if _fantoma is not None:
         return jsonify({"error": "session active", "url": "unknown"}), 409
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "body must be a JSON object"}), 400
+    bad = _bad_url(data.get("url"))
+    if bad:
+        return bad
+    allowed, problem = _clean_allowed_domains(data.get("allowed_domains"))
+    if problem:
+        return jsonify({"error": problem}), 400
 
     # Kill any lingering Playwright driver and Camoufox binary from a prior session.
     # Camoufox.__exit__ closes the browser context but does NOT terminate these processes.
@@ -283,8 +394,9 @@ def start():
         pass
     asyncio.set_event_loop(asyncio.new_event_loop())
 
-    data = request.get_json(force=True) or {}
     defaults = _get_fantoma_defaults()
+    if allowed:
+        defaults["allowed_domains"] = allowed
     if data.get("profile_dir"):
         safe = _safe_profile_dir(data["profile_dir"])
         if not safe:
@@ -306,7 +418,9 @@ def start():
                 "detail": "Browser driver died; this worker is restarting. "
                           "Retry in a few seconds.",
             }), 503
-        return jsonify({"error": err}), 500
+        if isinstance(e, DomainBlocked):
+            return jsonify({"error": err}), 403
+        return _server_error(e)
 
 
 @app.route("/stop", methods=["POST"])
@@ -346,7 +460,7 @@ def evaluate():
         result = _fantoma.evaluate(script)
         return jsonify({"success": True, "result": result})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return _server_error(e)
 
 
 @app.route("/fill", methods=["POST"])
@@ -397,7 +511,10 @@ def navigate():
     err = _require_session()
     if err:
         return err
-    data = request.get_json(force=True)
+    data = request.get_json(force=True, silent=True) or {}
+    bad = _bad_url(data.get("url") if isinstance(data, dict) else None, required=True)
+    if bad:
+        return bad
     return jsonify(_fantoma.navigate(data["url"]))
 
 
@@ -430,29 +547,69 @@ def press_key():
 
 # ── High-level endpoints ─────────────────────────────────────
 
+class _SecretOffSite(Exception):
+    """A login value was about to be typed on a site it was not given for."""
+
+
+def _login_guard(url: str, secrets: dict):
+    """value_guard for /login: refuse to type the credentials unless the live
+    page is still on the host the login URL named. A redirect to another site
+    mid-login would otherwise receive the password."""
+    from urllib.parse import urlsplit
+    from fantoma.secrets_scope import SecretStore
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    port = f":{parts.port}" if parts.port else ""
+    pattern = f"http*://{host}{port}"
+    entries = {pattern: {k: str(v) for k, v in secrets.items() if v}}
+    try:
+        store = SecretStore.from_any(entries)
+    except ValueError:
+        store = None
+
+    def guard(text):
+        if not text or store is None:
+            if store is None and text:
+                raise _SecretOffSite("login host could not be scoped")
+            return text
+        try:
+            live = _fantoma._engine.get_page().url
+        except Exception:
+            live = ""
+        if store.mask(text, live) != store.mask(text):
+            raise _SecretOffSite(f"page is no longer on {host}; credentials not typed")
+        return text
+    return guard
+
+
 @app.route("/login", methods=["POST"])
 def login():
     """Manages its own session — starts, logs in, leaves browser open."""
     global _fantoma
-    data = request.get_json(force=True)
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "body must be a JSON object"}), 400
     url = data.get("url")
-    if not url:
-        return jsonify({"error": "Missing 'url'"}), 400
+    bad = _bad_url(url, required=True)
+    if bad:
+        return bad
 
-    if _fantoma is None:
-        defaults = _get_fantoma_defaults()
-        _fantoma = Fantoma(**defaults)
-        _fantoma.start()
+    secrets = {k: data.get(k) for k in ("email", "username", "password")}
+    guard = _login_guard(url, secrets)
 
     try:
+        if _fantoma is None:
+            defaults = _get_fantoma_defaults()
+            _fantoma = Fantoma(**defaults)
+            _fantoma.start()
         result = _fantoma.login(
             url=url, email=data.get("email", ""), username=data.get("username", ""),
             password=data.get("password", ""), first_name=data.get("first_name", ""),
-            last_name=data.get("last_name", ""),
+            last_name=data.get("last_name", ""), value_guard=guard,
         )
         return jsonify(result)
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return _server_error(e, secrets)
 
 
 @app.route("/extract", methods=["POST"])
@@ -477,7 +634,7 @@ def extract():
         result = _fantoma.extract(query, schema=schema or None)
         return jsonify({"success": True, "data": result})
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return _server_error(e)
 
 
 @app.route("/read", methods=["POST"])
@@ -491,6 +648,9 @@ def read_page():
     if err:
         return err
     data = request.get_json(silent=True) or {}
+    bad = _bad_url(data.get("url"))
+    if bad:
+        return bad
     try:
         result = _fantoma.read(
             url=data.get("url") or None,
@@ -500,8 +660,10 @@ def read_page():
             max_chars=int(data.get("max_chars") or 0),
         )
         return jsonify({"success": True, **result})
+    except DomainBlocked as e:
+        return jsonify({"success": False, "error": str(e)}), 403
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return _server_error(e)
 
 
 @app.route("/run", methods=["POST"])
@@ -512,10 +674,22 @@ def run_task():
     caller can inspect the end state via /state.
     """
     global _fantoma
-    data = request.get_json(force=True)
+    data = request.get_json(force=True, silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "body must be a JSON object"}), 400
     task = data.get("task")
-    if not task:
+    if not task or not isinstance(task, str):
         return jsonify({"error": "Missing 'task'"}), 400
+    max_steps, timeout = data.get("max_steps", 50), data.get("timeout", 300)
+    for name, val, hi in (("max_steps", max_steps, 500), ("timeout", timeout, 3600)):
+        if isinstance(val, bool) or not isinstance(val, int) or not 1 <= val <= hi:
+            return jsonify({"error": f"'{name}' must be an integer from 1 to {hi}"}), 400
+    bad = _bad_url(data.get("url"))
+    if bad:
+        return bad
+    allowed, problem = _clean_allowed_domains(data.get("allowed_domains"))
+    if problem:
+        return jsonify({"error": problem}), 400
 
     # The Agent owns its own browser, so any session left open by /start or
     # A bad sensitive_data pattern is the caller's mistake: say so plainly,
@@ -551,12 +725,13 @@ def run_task():
             escalation_models=escalation_models,
             captcha_api=CAPTCHA_API, captcha_key=CAPTCHA_KEY,
             proxy=_request_proxy(data), headless=HEADLESS_MODE, browser="camoufox",
-            max_steps=data.get("max_steps", 50), timeout=data.get("timeout", 300),
+            max_steps=max_steps, timeout=timeout,
             sensitive_data=data.get("sensitive_data"),
+            **({"allowed_domains": allowed} if allowed else {}),
         )
         keep = bool(data.get("keep_session"))
         result = agent.run(task, start_url=data.get("url"),
-                           deadline_s=data.get("timeout", 300), keep_open=keep)
+                           deadline_s=timeout, keep_open=keep)
         if keep:
             # Hand the live browser to the shared session so /state and /stop
             # can reach it. This is how a caller checks what the run actually
@@ -566,7 +741,7 @@ def run_task():
         if _is_unrecoverable(result.error or ""):
             _restart_worker("run: " + (result.error or "")[:120])
             return jsonify({
-                "success": False, "error": result.error, "retryable": True,
+                "success": False, "error": _masked(result.error, data.get("sensitive_data")), "retryable": True,
                 "detail": "Browser driver died; this worker is restarting. "
                           "Retry in a few seconds.",
             }), 503
@@ -588,11 +763,13 @@ def run_task():
         if _is_unrecoverable(err):
             _restart_worker("run: " + err[:120])
             return jsonify({
-                "success": False, "error": err, "retryable": True,
+                "success": False, "error": _masked(err, data.get("sensitive_data")), "retryable": True,
                 "detail": "Browser driver died; this worker is restarting. "
                           "Retry in a few seconds.",
             }), 503
-        return jsonify({"success": False, "error": err}), 500
+        if isinstance(e, DomainBlocked):
+            return jsonify({"success": False, "error": str(e)}), 403
+        return _server_error(e, data.get("sensitive_data"))
 
 
 # ── Manual intervention endpoints (visible via noVNC on :6080) ─
@@ -611,6 +788,9 @@ def manual_open():
 
     data = request.get_json(force=True) or {}
     url = data.get("url", "about:blank")
+    bad = _bad_url(url)
+    if bad:
+        return bad
     profile_dir = _safe_profile_dir(data.get("profile") or os.path.join(PROFILE_BASE, "chrome-x-profile"))
     if not profile_dir:
         return jsonify({"error": f"profile must sit under {PROFILE_BASE}"}), 400
@@ -632,8 +812,7 @@ def manual_open():
         })
     except Exception as e:
         _manual_fantoma = None
-        log.error("Manual session failed: %s", e)
-        return jsonify({"success": False, "error": str(e)}), 500
+        return _server_error(e)
 
 
 @app.route("/manual/screenshot", methods=["GET"])
@@ -684,6 +863,16 @@ if __name__ == "__main__":
     if ALLOW_EVAL:
         log.warning("FANTOMA_ALLOW_EVAL is on — /evaluate will run arbitrary JS in the page.")
     host = _bind_host(API_KEY, os.environ.get("FANTOMA_HOST"))
+    problem = _startup_problem(host, API_KEY, INSECURE_NO_AUTH)
+    if problem:
+        log.error(problem)
+        raise SystemExit(1)
+    if INSECURE_NO_AUTH and not API_KEY and not _is_loopback_host(host):
+        log.warning("FANTOMA_INSECURE_NO_AUTH is on: open API on %s.", host)
+    # Make the browser itself refuse private hosts too (subrequests and
+    # redirects), not just the URLs named in requests.
+    if not ALLOW_PRIVATE:
+        os.environ["FANTOMA_BLOCK_PRIVATE"] = "1"
     if not API_KEY and host != "127.0.0.1":
         log.warning("Serving without a key on %s — every host that can reach the port can drive the browser.", host)
     log.info("Fantoma server starting on %s:%d (auth=%s)", host, port, "on" if API_KEY else "OFF")
