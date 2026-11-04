@@ -191,7 +191,7 @@ def _search(clause, fantoma):
     if len(fields) != 1:
         return _UNSURE
     before = _url(fantoma)
-    fantoma.type_text(fields[0], query)
+    fantoma.type_text(_num(els, fields[0]), query)
     fantoma.press_key("Enter")
     for _ in range(10):
         if _url(fantoma) != before:
@@ -216,7 +216,7 @@ def _select(clause, fantoma):
     if len(boxes) != 1:
         return _UNSURE            # none or several dropdowns offer it: the model decides
     option = next(o for o in els[boxes[0]]["_options"] if o.strip().lower() == want)
-    fantoma.select(boxes[0], option)
+    fantoma.select(_num(els, boxes[0]), option)
     after = [e for e in _elements(fantoma) if e.get("role") == "combobox"
              and (e.get("_selected") or "").strip().lower() == want]
     if after:
@@ -247,7 +247,7 @@ def _type(clause, fantoma):
         return _UNSURE
     idx = fields[0]
     label = els[idx].get("name") or els[idx].get("_context") or els[idx].get("role")
-    fantoma.type_text(idx, text)
+    fantoma.type_text(_num(els, idx), text)
     if m.group("enter"):
         fantoma.press_key("Enter")
         return True, f"typed {text!r} into {label!r} and pressed Enter", f"type({text!r})+Enter"
@@ -297,7 +297,7 @@ def _checkbox(clause, fantoma):
     key = (els[pick].get("role"), els[pick].get("name", ""), els[pick].get("_ordinal", 0))
     what = "ticked" if want_on else "cleared"
     if _is_checked(els[pick]) != want_on:
-        fantoma.click(pick)
+        fantoma.click(_num(els, pick))
     now = next((e for e in _elements(fantoma)
                 if (e.get("role"), e.get("name", ""), e.get("_ordinal", 0)) == key), None)
     if now is not None and _is_checked(now) == want_on:
@@ -324,7 +324,7 @@ def _add_to_cart(clause, fantoma):
         found = _add_button_in_card(fantoma, els, want)
     if len(found) != 1:
         return _UNSURE
-    fantoma.click(found[0])
+    fantoma.click(_num(els, found[0]))
     time.sleep(0.5)
     els, still = buttons()
     still = still or _add_button_in_card(fantoma, els, want)
@@ -387,7 +387,7 @@ def _click(clause, fantoma):
     if len(hits) != 1:
         return _UNSURE
     before = _url(fantoma)
-    r = fantoma.click(hits[0])
+    r = fantoma.click(_num(els, hits[0]))
     if r.get("success"):
         where = _url(fantoma)
         moved = f" (now at {where})" if where != before else ""
@@ -457,11 +457,19 @@ def _open_for_question(clause, fantoma, out: FastResult) -> None:
     if not hits or len({els[i].get("_url") or i for i in hits}) != 1:
         return
     before = _url(fantoma)
-    r = fantoma.click(hits[0])
+    r = fantoma.click(_num(els, hits[0]))
     if r.get("success") and _url(fantoma) != before:
         out.steps.append({"step": len(out.steps) + 1, "action": f"fast:open({names[0]!r})",
                           "success": True, "url": _url(fantoma)})
         out.done.append(f"opened the page for {els[hits[0]]['name']!r}")
+
+
+def _num(els: list, i: int):
+    """The element number to act on for position i in els.
+
+    Numbers are stable across reads and no longer equal list positions.
+    """
+    return els[i].get("index", i)
 
 
 def _elements(fantoma) -> list:

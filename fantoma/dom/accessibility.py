@@ -14,6 +14,8 @@ from typing import Optional, Any
 log = logging.getLogger("fantoma.accessibility")
 
 from fantoma.dom.page_reads import PageSnapshot, read_aria, safe_evaluate
+from fantoma.dom.refs import (AMBIGUOUS, GONE, RefRegistry, ambiguous_message,
+                              gone_message, page_key, resolve_ref)
 
 
 def page_title(page) -> str:
@@ -538,7 +540,7 @@ def _apply_aria_attrs(result: dict, attrs_str: str) -> None:
             result[attr] = True
 
 
-def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate", _shown_out: list = None, element_filter=None, snapshot: "PageSnapshot | None" = None) -> str:
+def extract_aria(page, max_elements: int = None, max_headings: int = None, task: str = "", previous_elements: list = None, mode: str = "navigate", _shown_out: list = None, element_filter=None, snapshot: "PageSnapshot | None" = None, refs=None) -> str:
     """Extract page content via ARIA accessibility tree.
 
     Returns a numbered element map similar to DOMExtractor but using
@@ -767,6 +769,11 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
             sig = (el.get("role", ""), el.get("name", ""))
             el["_ordinal"] = seen_sig.get(sig, 0)
             seen_sig[sig] = el["_ordinal"] + 1
+        # How many look-alikes there were. A later change in this number is
+        # what tells the resolver that position alone no longer identifies
+        # the element (see dom/refs.py).
+        for el in interactive:
+            el["_same"] = seen_sig[(el.get("role", ""), el.get("name", ""))]
 
         # A little headroom so the filter below can drop a few and still
         # leave a full list.
@@ -784,13 +791,16 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
         # Hand back the very elements that were numbered. Re-parsing them out
         # of the rendered text loses _ordinal and _context, and any mismatch
         # between what was numbered and what is resolved is a wrong click.
+        # Stamp the number each element is rendered with. Callers resolve
+        # by it (form_login, browser_tool), and the re-parsed dicts this
+        # replaced carried it — without it, field lookup silently returns
+        # nothing and a login fills no fields at all. With a registry the
+        # number follows the element across reads instead of its position.
+        for i, el in enumerate(shown):
+            el["index"] = i
+        if refs is not None:
+            refs.assign(shown, url)
         if _shown_out is not None:
-            # Stamp the number each element is rendered with. Callers resolve
-            # by it (form_login, browser_tool), and the re-parsed dicts this
-            # replaced carried it — without it, field lookup silently returns
-            # nothing and a login fills no fields at all.
-            for i, el in enumerate(shown):
-                el["index"] = i
             _shown_out.extend(shown)
 
         output.append(f"Elements ({len(shown)} of {len(interactive)}):")
@@ -800,7 +810,8 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
         current_group_label = None
         current_group_items = []
 
-        for i, el in enumerate(shown):
+        for pos, el in enumerate(shown):
+            i = el["index"]
             landmark = el.get("_landmark")
             label = landmark if landmark else None
             if label != current_group_label:
@@ -808,7 +819,7 @@ def extract_aria(page, max_elements: int = None, max_headings: int = None, task:
                     groups.append((current_group_label, current_group_items))
                 current_group_label = label
                 current_group_items = []
-            current_group_items.append((i, el, new_flags[i]))
+            current_group_items.append((i, el, new_flags[pos]))
 
         if current_group_items:
             groups.append((current_group_label, current_group_items))
@@ -975,6 +986,14 @@ class AccessibilityExtractor:
         self._max_elements = max_elements
         self._max_headings = max_headings
         self._step: PageSnapshot | None = None
+        # Element numbers that outlive a single read. See dom/refs.py.
+        self.refs = RefRegistry()
+        self.last_miss: tuple | None = None   # (number, status) of the last failed lookup
+
+    def reset_refs(self) -> None:
+        """Start a new task: forget every element number."""
+        self.refs.reset()
+        self.last_miss = None
 
     # -- step-scoped read cache -------------------------------------------
     # The navigator arms a snapshot at the start of a step and invalidates it
@@ -1010,11 +1029,12 @@ class AccessibilityExtractor:
             return self.extract_content(page)
 
         previous = list(self._last_interactive)  # copy before overwriting
+        self.refs.begin_read()
         shown: list = []
         snap = self._snap_for(page)
         result = extract_aria(page, self._max_elements, self._max_headings,
                               task=task, previous_elements=previous, mode=mode,
-                              _shown_out=shown, snapshot=snap,
+                              _shown_out=shown, snapshot=snap, refs=self.refs,
                               element_filter=lambda els: self._filter_occluded(page, els))
         from fantoma.dom.frames import collect_all_frame_elements
         main_empty = not result or "Elements: none found" in result
@@ -1042,13 +1062,13 @@ class AccessibilityExtractor:
 
         # Merge iframe elements
         if iframe_elements:
-            base_idx = len(self._last_interactive)
+            self.refs.assign(iframe_elements, page.url)
             self._last_interactive.extend(iframe_elements)
             iframe_section = [f"\nIframe elements ({len(iframe_elements)}):"]
-            for i, el in enumerate(iframe_elements):
+            for el in iframe_elements:
                 frame_tag = f" [{el['_frame']}]" if el.get("_frame") else ""
                 iframe_section.append(
-                    f'[{base_idx + i}] {el["role"]} "{el["name"]}"{el["state"]}{frame_tag}'
+                    f'[{el["index"]}] {el["role"]} "{el["name"]}"{el["state"]}{frame_tag}'
                 )
             result = result + "\n".join(iframe_section)
 
@@ -1323,22 +1343,36 @@ class AccessibilityExtractor:
             lines.append(f"  {card}")
         return "\n".join(lines)
 
-    def signature(self, index: int):
-        """Return (role, name) for an element index, or None. Used by the
-        action cache to record a replayable, index-free target."""
-        if 0 <= index < len(self._last_interactive):
-            el = self._last_interactive[index]
-            return el.get("role", ""), el.get("name", "")
+    def _element(self, number) -> Optional[dict]:
+        """The listed element carrying this number, or None.
+
+        Numbers are stamped on the elements (el["index"]). A list set by hand
+        without them is addressed by position, as it always was.
+        """
+        els = self._last_interactive
+        if any("index" in el for el in els):
+            return next((el for el in els if el.get("index") == number), None)
+        if isinstance(number, int) and 0 <= number < len(els):
+            return els[number]
         return None
 
+    def signature(self, index: int):
+        """Return (role, name) for an element number, or None. Used by the
+        action cache to record a replayable, index-free target."""
+        el = self._element(index)
+        if el is None:
+            ref = self.refs.get(index)
+            return (ref.role, ref.name) if ref else None
+        return el.get("role", ""), el.get("name", "")
+
     def find_index_for_target(self, index: int, target: str):
-        """Return the index of the control belonging to `target`, if different.
+        """Return the number of the control belonging to `target`, if different.
 
         A repeated control ("Add to cart") tells a model nothing about which
         item it acts on, and weak models take the first match — measured live,
         asked for the Fleece Jacket the agent added the first product on the
         page. The item each control belongs to is already known here, so the
-        right index can be resolved in code rather than hoped for in a prompt.
+        right control can be resolved in code rather than hoped for in a prompt.
 
         Returns None when there is nothing to correct: no target, the choice
         already matches, or no single unambiguous alternative. Silence is the
@@ -1346,10 +1380,10 @@ class AccessibilityExtractor:
         """
         if not target or index is None:
             return None
-        if not (0 <= index < len(self._last_interactive)):
+        chosen = self._element(index)
+        if chosen is None:
             return None
 
-        chosen = self._last_interactive[index]
         ctx = (chosen.get("_context") or "").lower()
         want = target.lower()
         if not ctx:
@@ -1365,88 +1399,94 @@ class AccessibilityExtractor:
         ]
         if len(matches) != 1:
             return None      # ambiguous or absent — do not guess
-        return self._last_interactive.index(matches[0])
+        found = matches[0]
+        return found["index"] if "index" in found else self._last_interactive.index(found)
 
     def find_by_signature(self, role: str, name: str):
-        """Return the current index whose (role, name) matches, or None. Used
+        """Return the current number whose (role, name) matches, or None. Used
         on cache replay to re-resolve a step against a possibly-changed page."""
         for i, el in enumerate(self._last_interactive):
             if el.get("role", "") == role and el.get("name", "") == name:
-                return i
+                return el["index"] if "index" in el else i
         return None
+
+    # -- acting on a number ---------------------------------------------------
+
+    def _ref_for(self, number):
+        """The identity to look for: the registry's, else one made from the
+        listed element (a list set by hand has no registry entry)."""
+        ref = self.refs.get(number)
+        if ref is not None:
+            return ref
+        el = self._element(number)
+        if el is None:
+            return None
+        from fantoma.dom.refs import Ref
+        return Ref(number if isinstance(number, int) else -1, el.get("role", ""),
+                   el.get("name", ""), el.get("_frame") or "", el.get("_ordinal", 0),
+                   None, el.get("_url") or "", el.get("_context") or "", "")
+
+    def resolve_number(self, page, number):
+        """Find the live element for [number]. Returns (handle, status).
+
+        Same role, name and position among look-alikes if their number is
+        unchanged; else role and name if exactly one control matches; else
+        None with status GONE or AMBIGUOUS. Never guesses.
+        """
+        ref = self._ref_for(number)
+        if ref is None:
+            return None, GONE
+        try:
+            here = page_key(page.url)
+        except Exception:
+            here = ""
+        if ref.page and here and ref.page != here:
+            return None, GONE          # a different page: the number means nothing here
+        scope = page
+        if ref.frame:
+            scope = self._frame_for(page, ref.frame)
+            if scope is None:
+                return None, GONE
+        loc, status = resolve_ref(scope, ref, _EMPTY_NAME)
+        if loc is None:
+            return None, status
+        try:
+            handle = loc.element_handle() if hasattr(loc, "element_handle") else loc
+        except Exception:
+            return None, GONE
+        return (handle, None) if handle else (None, GONE)
+
+    def can_resolve(self, page, number) -> bool:
+        """True if [number] still names exactly one live element."""
+        return self.resolve_number(page, number)[1] is None
+
+    def miss_message(self, number) -> str:
+        """What to tell the model when [number] could not be used."""
+        if self.last_miss and self.last_miss[0] == number and self.last_miss[1] == AMBIGUOUS:
+            return ambiguous_message(number)
+        return gone_message(number)
 
     def get_element_by_index(self, page, index: int) -> Optional[Any]:
-        """Find element by ARIA role and name using Playwright locators.
+        """Find the element listed as [index] using Playwright role locators.
 
         This is more stable than CSS selectors — ARIA attributes are
-        semantically meaningful and sites are required to maintain them.
+        semantically meaningful and sites are required to maintain them. The
+        number resolves by identity (see dom/refs.py), so it still means the
+        same element after the page reordered or re-rendered, and it fails
+        rather than land on a different one.
         """
-        if index < 0 or index >= len(self._last_interactive):
-            return None
-
-        el = self._last_interactive[index]
-        role = el["role"]
-        name = el["name"]
-
-        # If element is from an iframe, search in that frame
-        if el.get("_frame"):
-            return self._find_in_frame(page, el)
-
-        # Use Playwright's role-based locator, at the right position among
-        # identically-named controls. Taking .first here meant every one of
-        # six "Add to cart" buttons resolved to the first product, so the
-        # model's choice of index was discarded and the wrong item was
-        # actioned no matter what it picked.
-        ordinal = el.get("_ordinal", 0)
-        # Exact match first. Playwright's name match is a case-insensitive
-        # substring by default, so "Add" also matched "Add to cart" and the
-        # ordinal counted the wrong set of elements. Substring stays as the
-        # fallback for names the snapshot normalised differently.
-        # An unnamed control must be counted among unnamed controls only.
-        # Matching every element of the role put named ones in the count, so
-        # on a page with "Agree to terms" and two bare checkboxes the second
-        # bare box resolved to "Agree to terms".
-        for exact in ((True, False) if name else (False,)):
-            try:
-                locator = page.get_by_role(role, name=name, exact=exact) if name \
-                    else page.get_by_role(role, name=_EMPTY_NAME)
-                count = locator.count()
-                if count > 0:
-                    if ordinal and ordinal < count:
-                        return locator.nth(ordinal).element_handle()
-                    return locator.first.element_handle()
-            except Exception:
-                pass
-
-        # Fallback: try aria-label
-        try:
-            element = page.query_selector(f'[aria-label="{name}"]')
-            if element:
-                return element
-        except Exception:
-            pass
-
-        # Fallback: text-based
-        try:
-            locator = page.get_by_text(name, exact=True)
-            if locator.count() > 0:
-                return locator.first.element_handle()
-        except Exception:
-            pass
-
+        handle, status = self.resolve_number(page, index)
+        if handle is not None:
+            self.last_miss = None
+            return handle
+        self.last_miss = (index, status)
+        log.info("Element [%s] not usable: %s", index, status)
         return None
 
-    def _find_in_frame(self, page, el: dict) -> Optional[Any]:
-        """Find an element inside an iframe by frame name and role/name."""
-        frame_name = el["_frame"]
+    def _frame_for(self, page, frame_name: str):
         for frame in page.frames:
             if frame.name == frame_name or frame.url.split("/")[-1][:20] == frame_name:
-                try:
-                    locator = frame.get_by_role(el["role"], name=el["name"])
-                    if locator.count() > 0:
-                        return locator.first.element_handle()
-                except Exception:
-                    pass
+                return frame
         return None
 
     @staticmethod

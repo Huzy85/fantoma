@@ -350,14 +350,26 @@ class Fantoma:
             "state": state,
         }
 
+    def _element_missing(self, element_id, pre_url) -> dict:
+        """Failed action result that tells the model why [N] could not be used."""
+        msg = None
+        say = getattr(self._dom, "miss_message", None)
+        if callable(say):
+            msg = say(element_id)
+        if not isinstance(msg, str):
+            msg = f"element [{element_id}] is gone, re-read the page"
+        log.warning("Element [%s] not usable: %s", element_id, msg)
+        result = self._action_result(False, pre_url)
+        result["notes"] = list(result.get("notes") or []) + [msg]
+        return result
+
     def click(self, element_id: int) -> dict:
         """Click an element by its ARIA tree index."""
         page = self._engine.get_page()
         pre_url = page.url
         element = self._dom.get_element_by_index(page, element_id)
         if not element:
-            log.warning("Element [%d] not found", element_id)
-            return self._action_result(False, pre_url)
+            return self._element_missing(element_id, pre_url)
         try:
             inject_observer(page)
             option = native_option_target(element)
@@ -380,8 +392,7 @@ class Fantoma:
         pre_url = page.url
         element = self._dom.get_element_by_index(page, element_id)
         if not element:
-            log.warning("Element [%d] not found", element_id)
-            return self._action_result(False, pre_url)
+            return self._element_missing(element_id, pre_url)
         try:
             inject_observer(page)
             type_into(self._engine, element, text)
@@ -397,8 +408,7 @@ class Fantoma:
         pre_url = page.url
         element = self._dom.get_element_by_index(page, element_id)
         if not element:
-            log.warning("Element [%d] not found", element_id)
-            return self._action_result(False, pre_url)
+            return self._element_missing(element_id, pre_url)
         try:
             inject_observer(page)
             if not select_dropdown_option(element, value) \

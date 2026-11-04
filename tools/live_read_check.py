@@ -80,9 +80,10 @@ SAUCE = "https://www.saucedemo.com/"
 def _index_of(browser, predicate):
     state = browser.get_state(task="tick the first checkbox; select Option 2")
     del state
-    for i, el in enumerate(browser._dom._last_interactive):
+    # Element numbers are stable labels, not list positions.
+    for el in browser._dom._last_interactive:
         if predicate(el):
-            return i
+            return el["index"]
     return None
 
 

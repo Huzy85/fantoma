@@ -12,6 +12,7 @@ from fantoma.safety import UNTRUSTED_NOTE, wrap_untrusted
 from fantoma.secrets_scope import SecretStore, refusal_message
 from fantoma.dom.aria_diff import aria_diff, aria_snapshot
 from fantoma.dom.page_reads import StepMeter
+from fantoma.dom.refs import page_key
 from fantoma.browser.page_state import classify_blocker
 from fantoma.planner import Planner, Subtask
 from fantoma.state_tracker import StateTracker
@@ -260,6 +261,11 @@ class Navigator:
         spec=None,
     ) -> NavigatorResult:
         steps_detail = []
+        # Element numbers are stable within a task. A new task starts a new
+        # numbering, so nothing from an earlier task can be quoted by mistake.
+        reset_refs = getattr(fantoma._dom, "reset_refs", None)
+        if callable(reset_refs):
+            reset_refs()
         store = SecretStore.from_any(sensitive_data)
         self._secrets = store  # read by _extract_answer to mask page text
         dom_mode = MODE_MAP.get(subtask.mode, "navigate")
@@ -390,7 +396,10 @@ class Navigator:
                 continue
             empty_streak = 0
 
-            for action_type, params in actions:
+            stale = set()   # positions in `actions` whose target is gone
+            for pos, (action_type, params) in enumerate(actions):
+                if pos in stale:
+                    continue
                 if action_type == "done":
                     # A task that asks the agent to *do* something is not
                     # finished until something was actually done. Weak models
@@ -510,6 +519,10 @@ class Navigator:
                     params["text"], refused = store.reveal(params["text"], fill_url)
 
                 method = getattr(fantoma, action_type)
+                try:
+                    pre_action_url = fantoma._engine.get_page().url
+                except Exception:
+                    pre_action_url = ""
                 if refused:
                     msg = refusal_message(refused)
                     log.warning("Action %s refused: %s", action_desc, msg)
@@ -573,27 +586,31 @@ class Navigator:
                 if notes:
                     change_line = f"{change_line} | " + " ".join(notes)
 
-                # Element numbers are captured once per step, so any action
-                # after a re-render acts on whatever now sits at that number.
-                # Measured live: "add the Fleece Jacket" fired two clicks on
-                # index 0; the first added the jacket, the page re-rendered,
-                # and the second added a different product. The remaining
-                # actions are dropped and the model gets a fresh page instead.
+                # Element numbers used to be positions in a list that was
+                # rebuilt on every read, so any action after a re-render acted
+                # on whatever now sat at that number. Measured live: "add the
+                # Fleece Jacket" fired two clicks on index 0; the first added
+                # the jacket, the page re-rendered, and the second added a
+                # different product. The whole rest of the batch was dropped.
                 #
-                # This is the rule browser-use states in its prompt ("execute
-                # the actions until the page changes") but does not enforce,
-                # and the reason Stagehand and Skyvern act once per
-                # observation. Playwright MCP and agent-browser both require a
-                # re-snapshot before the next reference is used.
+                # A number now follows the element it was given to (role, name
+                # and position among look-alikes; see dom/refs.py), so each
+                # queued action is checked on its own: it stays if its target
+                # still resolves to exactly one element, and goes if the target
+                # is gone or has become ambiguous. If the page itself changed
+                # (new URL), nothing from the old page applies and all of the
+                # rest go, as before.
+                #
+                # Playwright MCP and agent-browser both require a re-snapshot
+                # before the next reference is used; Stagehand and Skyvern act
+                # once per observation. Here a stale reference is re-checked
+                # against the live page instead of being trusted or discarded.
                 if structure_changed and action_type in _STATE_CHANGING:
-                    remaining = len(actions) - actions.index((action_type, params)) - 1
-                    if remaining > 0:
-                        log.info(
-                            "Page structure changed after %s — dropping %d "
-                            "queued action(s) rather than reusing stale numbers",
-                            action_type, remaining,
-                        )
-                    break
+                    queued = [(k, a) for k, a in enumerate(actions)
+                              if k > pos and k not in stale]
+                    if queued:
+                        self._screen_queue(fantoma, queued, stale, action_type,
+                                           pre_action_url)
 
                 # Update state tracker with the POST-action DOM content, not
                 # the stale once-per-round snapshot. Using last_content here
@@ -685,6 +702,44 @@ class Navigator:
             failure_reason="max_steps", last_actions=tail,
             is_placeholder=not bool(data),
         )
+
+    @staticmethod
+    def _screen_queue(fantoma, queued, stale: set, after: str, start_url: str) -> None:
+        """After the page changed, mark queued actions whose target is gone.
+
+        queued is a list of (position, (action_type, params)). Positions of
+        actions to skip are added to `stale`. Actions with no element target
+        (navigate, scroll, a bare key press) stay unless the page moved to a
+        different URL, in which case everything queued for the old page goes.
+        """
+        page = fantoma._engine.get_page()
+        try:
+            moved = page_key(page.url) != page_key(start_url)
+        except Exception:
+            moved = True
+        dropped = []
+        for k, (kind, params) in queued:
+            if moved:
+                stale.add(k)
+                dropped.append(f"{kind}[{params.get('element_id', '-')}] (new page)")
+                continue
+            if "element_id" not in params:
+                continue
+            n = params["element_id"]
+            ok = False
+            try:
+                ok = fantoma._dom.can_resolve(page, n)
+            except Exception:
+                ok = False
+            if not ok:
+                stale.add(k)
+                dropped.append(f"{kind}[{n}] (gone or ambiguous)")
+        kept = len(queued) - len(dropped)
+        log.info(
+            "Page structure changed after %s: keeping %d queued action(s) whose "
+            "target still resolves, dropping %d%s",
+            after, kept, len(dropped),
+            (": " + ", ".join(dropped)) if dropped else "")
 
     @staticmethod
     def _check_done(spec, fantoma) -> str:

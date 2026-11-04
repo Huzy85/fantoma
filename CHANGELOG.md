@@ -4,6 +4,10 @@
 
 ### Added
 
+- **Stable element numbers.** `[12]` now follows the element it was given to instead of its position in a list rebuilt on every read. Each listed element stores role, accessible name, its index among elements with the same role and name, how many such elements there were, and its link target or item label when known (new module `fantoma/dom/refs.py`). A control still on the page keeps its number across reads in a task, a new control gets a new number, and a gone control's number is never reused. The prompt format and the small numbers are unchanged.
+- Acting on `[N]` resolves by identity against the live page: the original (same role, name, position) if the number of look-alikes is unchanged; else role and name if exactly one control matches; else the action fails with `element [N] is gone, re-read the page` (or `now matches several identical elements, re-read the page`) in the result notes. It never guesses. A number from another page (different origin or path) is refused. Design after agent-browser's element resolution (Apache-2.0, `cli/src/native/element.rs`: stored id first, role and name fallback, refuse when ambiguous); independent Python implementation, no code copied. Chromium's `aria_snapshot(mode="ai")` refs reset on every read, so they are not used.
+- Queued actions are no longer dropped wholesale when the page structure changes. Each one is kept if its target still resolves to exactly one element and dropped if not; the log says which (`keeping N ... dropping M: click[7] (gone or ambiguous)`). If the URL itself changed, everything queued for the old page is still dropped. Actions with no element target are kept. Tests: `tests/test_stable_refs.py`; live check `tools/stable_refs_live.py`.
+
 - **One page read per step.** The navigator arms a step snapshot (`fantoma/dom/page_reads.py`, `AccessibilityExtractor.begin_step()`) so the before/after diff, the element list, the content summary and the state tracker share one ARIA read. It is dropped by `invalidate()` before and after every action, and silently when the page URL changes. Outside a navigator step nothing is cached. Per step: 3 to 5 ARIA reads down to 2 (one at the start, one after the action). The per-element occlusion check is now one `page.evaluate` for the whole element list (about 20 evaluates down to 1).
 - Every read in the step loop (ARIA snapshot, scroll info, JSON-LD, occlusion, blocker check) is bounded: default 15 s, `FANTOMA_READ_TIMEOUT` to change. A read that does not answer returns the usual degraded result with a warning in the log, and the rest of that step's reads skip straight to degraded instead of waiting again. The timer needs the main thread; in other threads only Playwright's own `aria_snapshot` timeout applies.
 - Each navigator step logs `step N: reads=X evals=Y secs=Z prompt_chars=W`. `tools/read_cost_bench.py` measures the read path per step without a model.
@@ -21,6 +25,7 @@
 
 ### Changed
 
+- Element numbers in `_last_interactive` are stamped as `el["index"]` and are no longer list positions. Code that addressed elements by list position should use `el["index"]` (`tools/live_read_check.py` and the fast path do). `AccessibilityExtractor.reset_refs()` starts a new numbering; the navigator calls it when a task starts.
 - The `chromium` extra pins Patchright to `>=1.64.3,<1.65`. Camoufox and Playwright 1.58 are unchanged and import alongside it in one environment.
 - Listed for the official MCP Registry: `server.json` and the `mcp-name` line in the README. The headline now says small local models can drive the read path, matching what the measurements show.
 - Added `llms.txt`.
