@@ -13,6 +13,8 @@
 - Chromium option `chromium_full_headless` (env `FANTOMA_CHROMIUM_FULL_HEADLESS=1`), off by default. Headless runs use the full Chrome build instead of chrome-headless-shell, which lacks features such as WebMCP.
 - **Agent Skills file.** `skills/fantoma/SKILL.md` tells a coding agent when and how to use Fantoma. It ships inside the package; `fantoma skill` prints it and `fantoma skill --install DIR` copies it to `DIR/fantoma/SKILL.md` (`--force` to overwrite).
 
+- WebMCP support, off by default: `Fantoma(webmcp=True)` / `FANTOMA_WEBMCP=1` (Chromium only; ignored with a warning on Camoufox). Launches full Chrome with `--enable-features=WebMCP`, lists a page's registered tools in the step prompt, and adds a `WEBMCP name {json}` action. `Fantoma.webmcp_tools()` and `Fantoma.webmcp_call(name, args)` expose it directly. Tool text is treated as untrusted (name check, sanitising, caps, injection scan, fencing) and calls with `<secret:...>` placeholders in the arguments are refused. Tools the page marks consequential or not read-only are hidden and refused unless `webmcp="all"` / `FANTOMA_WEBMCP=all`; `untrustedContent` results get a warning. New module `fantoma/webmcp.py`, live check `tools/webmcp_live.py`.
+
 ### Changed
 
 - The `chromium` extra pins Patchright to `>=1.64.3,<1.65`. Camoufox and Playwright 1.58 are unchanged and import alongside it in one environment.

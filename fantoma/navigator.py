@@ -138,6 +138,14 @@ def _parse_actions(raw: str) -> list[tuple[str, dict]]:
         if not line:
             continue
 
+        if line[:6].upper() == "WEBMCP":
+            from fantoma.webmcp import parse_action_line
+            parsed = parse_action_line(line)
+            if parsed:
+                results.append(parsed)
+                break  # the page may change; look again
+            continue
+
         m = re.match(r'CLICK\s*\[?(\d+)\]?', line, re.IGNORECASE)
         if m:
             results.append(("click", {"element_id": int(m.group(1))}))
@@ -326,6 +334,11 @@ class Navigator:
                             + ", ".join(f"<secret:{n}>" for n in usable) + "\n\n") if usable else ""
             user_msg = (f"{prefix}{secrets_line}Change: {change_line}\n\nPage ({current_url}):\n"
                         f"{wrap_untrusted(aria, current_url)}")
+            if getattr(fantoma, "_webmcp", False) is True:
+                block = fantoma.webmcp_prompt()
+                for name, value in sensitive_data.items():
+                    block = block.replace(value, f"<secret:{name}>")
+                user_msg += block
 
             messages = [
                 {"role": "system", "content": system},
@@ -502,6 +515,8 @@ class Navigator:
                     if action_type in _STATE_CHANGING:
                         state_changed = True
                     needs_sig = "element_id" in params
+                    if action_type == "webmcp_call":
+                        replay_ok = False  # page tools are not replayable from a cache
                     valid_sig = isinstance(replay_sig, (tuple, list)) and len(replay_sig) == 2
                     if needs_sig and not valid_sig:
                         replay_ok = False

@@ -143,6 +143,19 @@ A browser agent reads text written by strangers, and some of it is written for t
 - **Credentials stay out of prompts.** `sensitive_data={"password": "..."}` shows the model `<secret:password>` and substitutes the real value only when typing.
 - **Block pages are named.** A "Just a moment..." interstitial, a captcha, a 403 or a login wall comes back as `blocked: "bot_challenge"` and so on, instead of being summarised as if it were the page you asked for.
 
+## WebMCP (experimental, off by default)
+
+Some pages register tools for agents through Chrome's WebMCP API (`document.modelContext.registerTool`). With `webmcp=True` (or `FANTOMA_WEBMCP=1`; read-only and non-consequential tools only) Fantoma launches full Chrome with `--enable-features=WebMCP`, lists the page's tools to the model, and lets it call one with a line like `WEBMCP search {"q": "shoes"}`. Chromium only (`browser="chromium"`, Patchright 1.64+); with Camoufox the option is ignored with a warning.
+
+```python
+f = Fantoma(browser="chromium", webmcp=True)
+f.start("https://example.com")
+f.webmcp_tools()                         # [{"name", "description", "inputSchema", "schema", ...}]
+f.webmcp_call("search", {"q": "shoes"})  # result["webmcp"]["result"] is the tool's text
+```
+
+Tool names, descriptions and results are page text, so they are treated as untrusted: names must match `[A-Za-z0-9_.-]{1,64}`, text is stripped of control characters, capped (10 tools, 200 characters of description, 2000 of result), scanned for injection wording and fenced like other page text. A tool the page marks `consequential`, or `readOnly: false`, is hidden from the model and refused unless you opt in with `webmcp="all"` (`FANTOMA_WEBMCP=all`). Results from a tool marked `untrustedContent` carry an explicit warning. A call whose arguments contain a `<secret:...>` placeholder is refused; secrets are never passed to a WebMCP tool. `python tools/webmcp_live.py` runs a live check.
+
 ## Plugging Things In
 
 Fantoma defines the extension points and stays out of the way. It does not bundle every provider — a bundled integration is a dependency that rots, and you almost certainly want your own solver and your own proxies.
@@ -822,6 +835,7 @@ print(result.validated)                      # True/False/None (None = not valid
 | `FANTOMA_VALIDATE` | Agent | `1` turns on the post-run answer check |
 | `FANTOMA_IGNORE_HTTPS_ERRORS` | browser | `1` accepts bad certificates |
 | `FANTOMA_BLOCK_WEBRTC`, `FANTOMA_DISABLE_WEBGL` | Chromium | Opt-in WebRTC / WebGL kill switches |
+| `FANTOMA_WEBMCP` | Chromium | `1` turns on WebMCP page tools; see [WebMCP](#webmcp-experimental-off-by-default) |
 | `FANTOMA_API_KEY`, `FANTOMA_VNC_PASSWORD`, `FANTOMA_ALLOW_EVAL` | Docker server | See [Security](#security) |
 | `LOCAL_LLM_URL`, `BACKUP_LLM_URL`, `CLOUD_LLM_URL`, `CLOUD_LLM_KEY` | Docker server | Escalation chain for `/run` |
 
