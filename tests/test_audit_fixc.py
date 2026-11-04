@@ -113,7 +113,7 @@ class TestDnsResolution:
         assert calls == []
 
     def test_explicit_private_allow_entry_skips_lookup(self, monkeypatch):
-        monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo({"dev.lan": ["192.168.1.5"]}))
+        monkeypatch.setattr(socket, "getaddrinfo", _fake_getaddrinfo({"dev.lan": ["10.1.2.5"]}))
         assert DomainPolicy(allowed=["dev.lan"], block_private=True).permits("http://dev.lan/") is True
 
     def test_server_url_problem_resolves(self, monkeypatch):
@@ -428,4 +428,4 @@ def test_benchmark_telegram_comes_only_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("FANTOMA_BENCH_TELEGRAM_CHAT", "c")
     assert mod._load_telegram_config() == ("t", "c")
     for name in ("runner.py", "run_docker.sh", "run_overnight.sh"):
-        assert "nanobot" not in open(os.path.join(root, "benchmark", name)).read()
+        assert "config.json" not in open(os.path.join(root, "benchmark", name)).read()
