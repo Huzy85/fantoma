@@ -273,6 +273,7 @@ class BrowserEngine:
             cm_kwargs = dict(
                 persistent_context=True,
                 user_data_dir=self.profile_dir,
+                service_workers="block",
                 headless=self.headless,
                 humanize=True,
                 os=["linux"],
@@ -301,7 +302,8 @@ class BrowserEngine:
                 cm_kwargs["screen"] = screen
             self._camoufox_cm = Camoufox(**cm_kwargs)
             self._browser = self._camoufox_cm.__enter__()
-            self._context = self._browser.new_context(ignore_https_errors=_IGNORE_HTTPS_ERRORS)
+            self._context = self._browser.new_context(ignore_https_errors=_IGNORE_HTTPS_ERRORS,
+                                                       service_workers="block")
             self._page = self._context.new_page()
 
         # Sync viewport with screen size for virtual display
@@ -382,13 +384,14 @@ class BrowserEngine:
             launch_args["args"] = chromium_flags
         if self.profile_dir:
             self._context = self._playwright.chromium.launch_persistent_context(
-                self.profile_dir, **launch_args
+                self.profile_dir, service_workers="block", **launch_args
             )
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         else:
             self._browser = self._playwright.chromium.launch(**launch_args)
             ctx_args = {"proxy": proxy} if proxy else {}
             ctx_args["ignore_https_errors"] = _IGNORE_HTTPS_ERRORS
+            ctx_args["service_workers"] = "block"
             self._context = self._browser.new_context(**ctx_args)
             self._page = self._context.new_page()
 
@@ -407,7 +410,7 @@ class BrowserEngine:
         try:
             self._browser = self._playwright.chromium.connect_over_cdp(self._cdp_url)
             ctxs = self._browser.contexts
-            self._context = ctxs[0] if ctxs else self._browser.new_context()
+            self._context = ctxs[0] if ctxs else self._browser.new_context(service_workers="block")
             self._page = self._context.new_page()
         except Exception as e:
             try:
@@ -643,7 +646,7 @@ class BrowserEngine:
             # real status from the policy, since the browser only saw the 200.
             settle_hops(self._page)
             if hopped:
-                status = self.domain_policy.nav_status.get(self._page.url)
+                status = self.domain_policy.status_for(self._page.url)
                 response = None
                 if status is not None:
                     self.last_status, self._last_status_url = status, self._page.url

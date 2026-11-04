@@ -48,8 +48,16 @@ tiny page (data-fantoma-hop, no-store, locked-down CSP) that starts a fresh
 navigation to the Location; that is a new request, so it comes back through
 the handler and is checked again, at the moment the browser really asks. A
 POST answered 307 or 308 on a navigation is refused. Subresources are
-walked by the handler (every hop checked, redirects off) and the final
-answer is returned in place of the first. Fantoma's own navigation helpers
+walked by the handler (every hop checked, redirects off) when every hop stays
+on the origin of the original request; a chain that leaves that origin
+(scheme, host or port) is refused, because returning the far side's answer as
+if the first URL had given it would hand the page a body the browser's CORS
+rules never let it read. Set-Cookie is stripped from walked answers (the
+context's cookie jar has already applied it). Navigations still cross origins,
+through hop pages. A hop page is only trusted by Fantoma when its URL is one
+this policy served; chains of more than 10 consecutive hop pages in one frame
+are refused (redirect loops). A sandboxed iframe without allow-scripts cannot
+run the hop script and stays on the hop page. Fantoma's own navigation helpers
 wait for the extra hop with settle_hops(); code driving the page directly
 sees the hop page first (page.goto resolves on it) and must wait for the
 URL to change.
@@ -67,6 +75,7 @@ import re
 import socket
 import threading
 import time
+import weakref
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from urllib.parse import urljoin, urlparse
 
@@ -175,35 +184,66 @@ def _ws_guard_script(allowed, blocked, block_private) -> str:
             .replace("__BLOCK_PRIVATE__", "true" if block_private else "false"))
 
 
-def settle_hops(page, timeout_ms: int = 15000) -> bool:
+# Policies by the context (or, when attached, the page) they are installed on,
+# so settle_hops(page) can ask the policy which hop pages it really served.
+_POLICIES: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _policy_of(page):
+    for key in (page, getattr(page, "context", None)):
+        if key is None:
+            continue
+        try:
+            policy = _POLICIES.get(key)
+        except TypeError:
+            continue
+        if policy is not None:
+            return policy
+    return None
+
+
+def on_hop_page(page) -> bool:
+    """True when `page` is showing a hop page that its DomainPolicy served.
+    A page cannot fake this: the page's own markup is not trusted, only the
+    URLs the policy answered with a hop page (and not since with a real one)."""
+    policy = _policy_of(page)
+    if policy is None:
+        return False
+    try:
+        if not policy.is_hop_url(page.url):
+            return False
+        return bool(page.evaluate("() => document.documentElement.hasAttribute('data-fantoma-hop')"))
+    except Exception:
+        return False
+
+
+def settle_hops(page, timeout_ms: int = 5000) -> bool:
     """Wait out redirect hop pages (see DomainPolicy._hop_page).
 
     A strict-mode redirect on a navigation is answered with a page that
     navigates on to the real target. page.goto and click-then-wait resolve on
     that page, not on the target. Call this after them to get to the end of the
     chain. Returns True when the page is not on a hop page (nothing to do, or
-    settled), False when it was still waiting at the timeout. Cheap: one
-    evaluate when there is nothing to wait for.
+    settled), False when it was still waiting at the timeout. Cheap when there
+    is nothing to wait for (no evaluate unless the policy served a hop page
+    for this URL). Only hop pages the policy itself served count, so a site
+    that carries a data-fantoma-hop attribute cannot stall this.
     """
     deadline = time.monotonic() + timeout_ms / 1000.0
     while True:
-        try:
-            hopping = page.evaluate("() => document.documentElement.hasAttribute('data-fantoma-hop')")
-        except Exception:
-            hopping = True  # context destroyed: a navigation is under way
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=max(1, int((deadline - time.monotonic()) * 1000)))
-            except Exception:
-                pass
-            try:
-                hopping = page.evaluate("() => document.documentElement.hasAttribute('data-fantoma-hop')")
-            except Exception:
-                hopping = False
-        if not hopping:
+        if not on_hop_page(page):
             return True
         if time.monotonic() >= deadline:
             return False
-        page.wait_for_timeout(40)
+        try:
+            page.wait_for_timeout(40)
+        except Exception:
+            # context destroyed: a navigation is under way
+            try:
+                page.wait_for_load_state("domcontentloaded",
+                                         timeout=max(1, int((deadline - time.monotonic()) * 1000)))
+            except Exception:
+                pass
 
 
 class DomainBlocked(Exception):
@@ -231,6 +271,64 @@ def _to_ascii(pattern: str) -> str:
 
 # Schemes that fetch nothing and are safe whatever the policy says.
 _INERT_SCHEMES = {"data", "blob", "about", ""}
+
+_SPECIAL = {"http", "https", "ws", "wss", "ftp"}
+_CTL = re.compile(r"[\x00-\x20\x7f]")
+
+
+def parse_url(url):
+    """urlparse() result for `url`, or None when Python and a WHATWG parser
+    (browser, Node) could read it differently.
+
+    Python and the browser disagree on a few shapes, and a check made on
+    Python's reading is worthless if the browser fetches another host:
+    "http://127.0.0.2:80\\@allowed.example/" is host allowed.example to
+    Python and 127.0.0.2 to a browser, which treats a backslash as a slash.
+    So for http, https, ws, wss and ftp this refuses (None): any tab, CR or LF
+    in the text (a browser deletes them), any backslash or whitespace or
+    control character in the authority (the text between "//" and the next
+    "/", "?" or "#"), and any URL whose host or port changes once backslashes
+    are read as slashes. Other schemes are parsed as before. Every place that
+    decides whether a URL may be fetched uses this, never bare urlparse().
+    """
+    if not isinstance(url, str):
+        return None
+    try:
+        text = url.strip(" \t\r\n\x0c\x00")
+        parsed = urlparse(text)
+        if parsed.scheme.lower() not in _SPECIAL:
+            return parsed
+        if re.search(r"[\t\r\n]", text):
+            return None
+        rest = text[len(parsed.scheme) + 1:]
+        if not re.match(r"^[/\\]{2}", rest):
+            return parsed  # no authority: no host, callers refuse it
+        authority = re.split(r"[/?#]", rest.lstrip("/\\"), maxsplit=1)[0]
+        if "\\" in authority or _CTL.search(authority):
+            return None
+        head = re.split(r"[?#]", text, maxsplit=1)
+        flat = head[0].replace("\\", "/") + text[len(head[0]):]
+        other = urlparse(flat)
+        if (parsed.hostname or "") != (other.hostname or "") or parsed.port != other.port:
+            return None
+        return parsed
+    except ValueError:
+        return None
+
+
+def resolve_location(base: str, location: str):
+    """Absolute URL for a Location header, or None when it is not safe to
+    resolve in Python. urljoin and a browser read "/\\evil.example" and
+    "\\\\evil.example" differently, so any backslash, tab, CR, LF or
+    control character in the value is refused outright."""
+    if _CTL.search(location.strip()) or "\\" in location:
+        return None
+    try:
+        out = urljoin(base, location.strip())
+    except ValueError:
+        return None
+    return out if parse_url(out) is not None else None
+
 
 _IPV4_LOOSE = re.compile(r"^[0-9a-fx.]+$")
 
@@ -375,6 +473,10 @@ class DomainPolicy:
         # Final status of recent top-level navigations, by URL: the browser only
         # sees a 200 hop page for a redirect, so the real status is kept here.
         self.nav_status: dict[str, int] = {}
+        # URLs this policy answered with a hop page (see is_hop_url), and the
+        # run of consecutive hop pages per frame (redirect loop guard).
+        self._hop_urls: set[str] = set()
+        self._hop_counts: dict = {}
 
     def _dns_private(self, host: str) -> bool:
         """_resolves_private with a short per-policy cache (60 s)."""
@@ -405,9 +507,8 @@ class DomainPolicy:
         return bool(self.allowed or self.blocked or self.block_private)
 
     def permits(self, url: str) -> bool:
-        try:
-            parsed = urlparse(url)
-        except Exception:
+        parsed = parse_url(url)
+        if parsed is None:
             return False
         scheme = parsed.scheme.lower()
         if scheme not in _NETWORK_SCHEMES:
@@ -443,7 +544,7 @@ class DomainPolicy:
 
     def check(self, url: str) -> None:
         if not self.permits(url):
-            raise DomainBlocked(f"{urlparse(url).hostname or url} is not permitted by the "
+            raise DomainBlocked(f"{(parse_url(url) or urlparse('')).hostname or url[:100]} is not permitted by the "
                                 "domain policy (allowed_domains / blocked_domains)")
 
     _MAX_HOPS = 10
@@ -463,13 +564,41 @@ class DomainPolicy:
         p = urlparse(url)
         return (p.scheme.lower(), (p.hostname or "").lower(), p.port or {"http": 80, "https": 443}.get(p.scheme.lower()))
 
+    @staticmethod
+    def _nofrag(url: str) -> str:
+        return (url or "").split("#", 1)[0]
+
     def _remember_status(self, url: str, status: int) -> None:
         with self._dns_lock:
             if len(self.nav_status) > 256:
                 self.nav_status.clear()
-            self.nav_status[url] = status
+            self.nav_status[self._nofrag(url)] = status
 
-    def _hop_page(self, route, location: str) -> None:
+    def status_for(self, url: str):
+        """Final status of the last top-level navigation that ended on `url`
+        (fragment ignored), or None. Kept per policy, not per tab."""
+        with self._dns_lock:
+            return self.nav_status.get(self._nofrag(url))
+
+    def is_hop_url(self, url: str) -> bool:
+        """True when this policy served a hop page for `url` (fragment
+        ignored) and has not since served it as a real answer."""
+        with self._dns_lock:
+            return self._nofrag(url) in self._hop_urls
+
+    def _hop_count(self, frame, delta: int) -> int:
+        """Consecutive hop pages served to `frame`; delta 0 resets it."""
+        with self._dns_lock:
+            if len(self._hop_counts) > 512:
+                self._hop_counts.clear()
+            n = 0 if delta == 0 else self._hop_counts.get(frame, 0) + delta
+            if n:
+                self._hop_counts[frame] = n
+            else:
+                self._hop_counts.pop(frame, None)
+            return n
+
+    def _hop_page(self, route, url: str, location: str) -> None:
         """Answer a navigation redirect with a page that makes the browser
         start a fresh top-level navigation to `location`.
 
@@ -480,15 +609,29 @@ class DomainPolicy:
         location.replace keeps history clean; <noscript> covers a context with
         JavaScript off. The page carries data-fantoma-hop so Fantoma can tell it
         is waiting for the next hop (see settle_hops)."""
+        frame = None
+        try:
+            frame = route.request.frame
+        except Exception:
+            pass
+        if self._hop_count(frame, 1) > self._MAX_HOPS:
+            self._hop_count(frame, 0)
+            self._refuse(route, "too many consecutive redirect hops (loop?)", url, location)
+            return
+        with self._dns_lock:
+            if len(self._hop_urls) > 512:
+                self._hop_urls.clear()
+            self._hop_urls.add(self._nofrag(url))
         nonce = base64.b64encode(os.urandom(12)).decode()
         target = json.dumps(location).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
         body = ('<!doctype html><html data-fantoma-hop="1"><head><meta charset="utf-8">'
-                '<title>Redirecting</title><noscript><meta http-equiv="refresh" content="0;url='
+                '<meta name="referrer" content="no-referrer"><title>Redirecting</title><noscript><meta http-equiv="refresh" content="0;url='
                 + html.escape(location, quote=True) + '"></noscript></head><body>'
-                '<script nonce="' + nonce + '">location.replace(' + target + ')</script></body></html>')
+                '<script nonce="' + nonce + '">var t=' + target + ';if(t.indexOf("#")<0)t+=location.hash;location.replace(t)</script></body></html>')
         route.fulfill(status=200, body=body, headers={
             "content-type": "text/html; charset=utf-8",
             "cache-control": "no-store",
+            "referrer-policy": "no-referrer",
             "x-fantoma-hop": "1",
             "content-security-policy": f"default-src 'none'; script-src 'nonce-{nonce}'",
         })
@@ -513,8 +656,11 @@ class DomainPolicy:
 
         Subresources (images, scripts, fetch, XHR): the chain is walked here,
         every hop checked, up to _MAX_HOPS redirects, and the final answer is
-        fulfilled in place of the first. 307 and 308 replay the body only to
-        the same origin; cross-origin POST replays are refused.
+        fulfilled in place of the first, but only while every hop stays on the
+        origin of the original request. A hop to another origin is refused
+        (aborted, with a log line): the far side's body, fetched with the
+        context's cookies, would otherwise reach the page as a same-origin
+        answer and skip CORS, and its Set-Cookie would land on the first host.
         """
         request = route.request
         response = route.fetch(max_redirects=0)
@@ -524,6 +670,17 @@ class DomainPolicy:
             nav = bool(request.is_navigation_request())
         except Exception:
             nav = False
+        frame = None
+        try:
+            frame = request.frame
+        except Exception:
+            pass
+        if nav and not (300 <= response.status < 400):
+            # A real answer: the redirect run in this frame is over, and this
+            # URL is not a hop page any more.
+            self._hop_count(frame, 0)
+            with self._dns_lock:
+                self._hop_urls.discard(self._nofrag(url))
         if not location:
             if 300 <= response.status < 400 and response.headers.get("location"):
                 # A 3xx the browser would not follow (300, 304, 305...): hand it
@@ -531,13 +688,13 @@ class DomainPolicy:
                 headers = {k: v for k, v in response.headers.items() if k.lower() != "location"}
                 route.fulfill(response=response, headers=headers)
                 return
-            if nav and request.frame is not None and request.frame.parent_frame is None:
+            if nav and frame is not None and frame.parent_frame is None:
                 self._remember_status(url, response.status)
             route.fulfill(response=response)
             return
         method = (request.method or "GET").upper()
-        nxt = urljoin(url, location)
-        if urlparse(nxt).scheme.lower() not in ("http", "https") or not self.permits(nxt):
+        nxt = resolve_location(url, location)
+        if nxt is None or urlparse(nxt).scheme.lower() not in ("http", "https") or not self.permits(nxt):
             self._refuse(route, "blocked redirect", url, location)
             return
         if nav:
@@ -545,7 +702,10 @@ class DomainPolicy:
                 self._refuse(route, f"refused {response.status} redirect of a {method} navigation "
                              "(the body cannot be replayed through a checked hop)", url, location)
                 return
-            self._hop_page(route, nxt)
+            self._hop_page(route, url, nxt)
+            return
+        if self._origin(nxt) != self._origin(url):
+            self._refuse(route, "refused cross-origin redirect of a subresource", url, nxt)
             return
         self._walk_subresource(route, url, nxt, response, method)
 
@@ -559,9 +719,8 @@ class DomainPolicy:
             status = response.status
             if status in (301, 302) and method == "POST" or status == 303 and method != "HEAD":
                 method, body = "GET", None
-            elif status in (307, 308) and body is not None and self._origin(nxt) != origin:
-                self._refuse(route, f"refused cross-origin {status} redirect of a {method} request",
-                             current, nxt)
+            if self._origin(nxt) != origin:
+                self._refuse(route, "refused cross-origin redirect of a subresource", url, nxt)
                 return
             if hops > self._MAX_HOPS:
                 log.info("domain policy: too many redirects from %s", url[:200])
@@ -576,11 +735,13 @@ class DomainPolicy:
             current = nxt
             location = self._location(response)
             if not location:
-                route.fulfill(response=response)
+                headers = {k: v for k, v in response.headers.items()
+                           if k.lower() not in ("set-cookie", "set-cookie2")}
+                route.fulfill(response=response, headers=headers)
                 return
             hops += 1
-            nxt = urljoin(current, location)
-            if urlparse(nxt).scheme.lower() not in ("http", "https") or not self.permits(nxt):
+            nxt = resolve_location(current, location)
+            if nxt is None or urlparse(nxt).scheme.lower() not in ("http", "https") or not self.permits(nxt):
                 self._refuse(route, "blocked redirect", current, location)
                 return
 
@@ -588,6 +749,10 @@ class DomainPolicy:
         """Enforce the policy on every request `context` makes."""
         if not self.active or context is None:
             return
+        try:
+            _POLICIES[context] = self
+        except TypeError:
+            pass
 
         def _route(route):
             try:

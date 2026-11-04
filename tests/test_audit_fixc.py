@@ -183,7 +183,7 @@ class TestMultiHop:
         r = _Route("http://a.test/", {"http://a.test/": (301, "/b"), "http://a.test/b": (302, "/c"),
                                       "http://a.test/c": (200, None)})
         _run(DomainPolicy(allowed=["a.test"]), r)
-        assert list(r.fulfilled) == ["response"] and r.fulfilled["response"].status == 200
+        assert "response" in r.fulfilled and r.fulfilled["response"].status == 200 and "set-cookie" not in {k.lower() for k in r.fulfilled.get("headers", {})}
 
     def test_cookie_is_not_forwarded_on_followed_hops(self):
         r = _Route("http://a.test/", {"http://a.test/": (302, "/b"), "http://a.test/b": (200, None)})

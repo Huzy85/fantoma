@@ -145,8 +145,6 @@ def _empty_result() -> dict:
 _DOM_STABLE_JS = """(args) => {
     const timeout = args[0];
     const debounce = args[1];
-    // Waiting on a redirect hop page (domains.settle_hops): not stable yet.
-    if (document.documentElement.hasAttribute('data-fantoma-hop')) return 'hop';
     return new Promise((resolve) => {
         let timer;
         const timeoutId = setTimeout(() => {
@@ -196,12 +194,12 @@ def wait_for_dom_stable(page, timeout: int = 5000, debounce: int = 300) -> bool:
         True if DOM stabilized, False if hard timeout hit
     """
     try:
-        result = page.evaluate(_DOM_STABLE_JS, [timeout, debounce])
-        if result == "hop":
-            from fantoma.browser.domains import settle_hops
-            settle_hops(page, timeout)
-            return page.evaluate(_DOM_STABLE_JS, [timeout, debounce])
-        return result
+        # A redirect hop page that Fantoma's domain policy served is not a
+        # stable page: wait it out (at most 5 s) and report False if it stays.
+        from fantoma.browser.domains import settle_hops
+        if not settle_hops(page, min(timeout, 5000)):
+            return False
+        return page.evaluate(_DOM_STABLE_JS, [timeout, debounce])
     except Exception as e:
         log.debug("DOM stability wait failed: %s — assuming navigation", e)
         return True

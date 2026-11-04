@@ -75,7 +75,7 @@ class TestPostChains:
         r = _Route("http://a.test/", {"http://a.test/": (303, "/b"), "http://a.test/b": (302, "/c"),
                                       "http://a.test/c": (200, None)}, method="POST")
         _run(DomainPolicy(allowed=["a.test"]), r)
-        assert list(r.fulfilled) == ["response"] and r.methods == [None, "GET", "GET"]
+        assert "response" in r.fulfilled and r.methods == [None, "GET", "GET"]
 
     @pytest.mark.parametrize("status", [307, 308])
     def test_post_307_cross_origin_is_refused(self, status):
@@ -99,7 +99,7 @@ class TestPostChains:
         _run(DomainPolicy(allowed=["a.test"]), r)
         assert r.fulfilled["status"] == 200 and len(r.fetched) == 1   # the browser makes the next request
         body = r.fulfilled["body"]
-        assert "data-fantoma-hop" in body and 'location.replace("http://a.test/b")' in body
+        assert "data-fantoma-hop" in body and 'var t="http://a.test/b";' in body and "location.replace(t)" in body
         assert r.fulfilled["headers"]["x-fantoma-hop"] == "1" and "no-store" in r.fulfilled["headers"]["cache-control"]
         assert "'none'" in r.fulfilled["headers"]["content-security-policy"]
 
