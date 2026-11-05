@@ -71,7 +71,7 @@ class TestInstall:
         route = self._route("https://example.com/r")
         route.fetch.return_value = MagicMock(status=302, headers={"location": "https://evil.example/x"})
         handler(route)
-        route.fetch.assert_called_once_with(max_redirects=0)
+        route.fetch.assert_called_once_with(max_redirects=0, headers={"accept-encoding": "gzip, deflate, br"})
         route.abort.assert_called_once_with("blockedbyclient")
         route.fulfill.assert_not_called()
 

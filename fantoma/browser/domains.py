@@ -551,6 +551,18 @@ class DomainPolicy:
                                 "domain policy (allowed_domains / blocked_domains)")
 
     _MAX_HOPS = 10
+    # route.fetch hands back a body Playwright cannot decode when the server
+    # answers zstd, and fulfilling that body shows the browser compressed
+    # bytes. Every fetch the policy makes therefore asks for encodings
+    # Playwright does decode.
+    _ACCEPT_ENCODING = "gzip, deflate, br"
+
+    @classmethod
+    def _decodable(cls, headers) -> dict:
+        out = {k: v for k, v in (headers or {}).items() if k.lower() != "accept-encoding"}
+        out["accept-encoding"] = cls._ACCEPT_ENCODING
+        return out
+
     _DROP_ON_HOP = {"cookie", "authorization", "proxy-authorization", "host", "content-length"}
     _BODY_HEADERS = {"content-type", "content-encoding", "content-language", "content-length",
                      "transfer-encoding", "origin"}
@@ -666,7 +678,7 @@ class DomainPolicy:
         answer and skip CORS, and its Set-Cookie would land on the first host.
         """
         request = route.request
-        response = route.fetch(max_redirects=0)
+        response = route.fetch(max_redirects=0, headers=self._decodable(request.headers))
         location = self._location(response)
         nav = False
         try:
@@ -715,7 +727,8 @@ class DomainPolicy:
     def _walk_subresource(self, route, url: str, nxt: str, response, method: str) -> None:
         request = route.request
         body = request.post_data_buffer if method not in ("GET", "HEAD") else None
-        base = {k: v for k, v in request.headers.items() if k.lower() not in self._DROP_ON_HOP}
+        base = self._decodable({k: v for k, v in request.headers.items()
+                                if k.lower() not in self._DROP_ON_HOP})
         origin = self._origin(url)
         current, hops = url, 1
         while True:
