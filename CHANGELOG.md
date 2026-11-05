@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 — 2026-11-05
+
+### Upgrading from 0.11
+
+The defaults are stricter. Read this before you deploy.
+
+- **The HTTP server needs a key or loopback.** With `FANTOMA_API_KEY` unset the server only binds to `127.0.0.1`, refuses any client that is not loopback (503), refuses any browser `Origin` or non-loopback `Host` header (403), and refuses requests that arrive through a proxy (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`, `Via`). The Docker image listens on all interfaces, so the container exits at start unless `FANTOMA_API_KEY` is set (or `FANTOMA_INSECURE_NO_AUTH=1`, on purpose). Send the key as `X-API-Key` or `Authorization: Bearer`. `/health` is always open.
+- **noVNC in the container needs `FANTOMA_VNC_PASSWORD`**, or `FANTOMA_VNC_ALLOW_NO_PASSWORD=1`; otherwise the VNC server does not start.
+- **Every `POST`, `PUT`, `PATCH` and `DELETE` must send `Content-Type: application/json`** (a JSON body, `{}` for `/stop`). A bare `curl -d` or `requests.post(url)` with no `json=` now gets `415`.
+- **Private and internal targets are refused** by the server (and by `DomainPolicy(block_private=True)`): RFC 1918, CGNAT, loopback, link-local, cloud metadata, and `.lan`, `.home`, `.home.arpa` names, after DNS resolution. Set `FANTOMA_ALLOW_PRIVATE=1` to drive an intranet.
+- **Request proxies** must be `http`, `https`, `socks5` or `socks5h` on a public host; a proxy on a private address is refused unless `FANTOMA_ALLOW_PRIVATE=1`.
+- **MCP over HTTP off loopback needs `FANTOMA_MCP_TOKEN`** (or `FANTOMA_MCP_INSECURE=1`).
+- **Strict domain mode (the default under a policy):** cross-origin subresource redirects fail, including http to https and CDN hops (use the final URL); `POST` navigations answered with 307/308 are refused; URLs with a backslash or control character are refused; an SSO login that redirects to another host will not have the password typed; service workers are off; a page that reassigns `window.WebSocket` breaks. Code driving `page.goto` itself must call `fantoma.browser.domains.settle_hops(page)` afterwards.
+- `history.json` and `fantoma.log` are written `0600`. Benchmark Telegram settings moved to `FANTOMA_BENCH_TELEGRAM_TOKEN` and `FANTOMA_BENCH_TELEGRAM_CHAT`.
+- Known limits are listed in the README (Limitations): the Chromium service worker lock is JS-level hardening; Camoufox strict mode may leave a redirect inside an iframe on the hop page; a sandboxed iframe without `allow-scripts` is not guarded; the Docker image still runs as root.
 
 ### Added
 
