@@ -1219,3 +1219,6 @@ Security and reliability fixes, see CHANGELOG 0.11.2. Next candidates (secret-to
 
 ## 2026-10-23: weekly_monitor.py ProtonMail Login check tightened
 PASS now needs final URL on mail.proton.me with /inbox (was: page text containing "mail", which the login page also has, so a wrong password still passed). Backup weekly_monitor.py.bak-20261023. PROTON_PASS in ~/.config/fantoma/monitor.env updated after the Proton website password change and live-tested. Run 23 Oct 02:00 was 22/22 before the change.
+
+## 2026-11-05 — 0.12.0
+Stages 0-9 of the November plan built, six security audit rounds, released. Gate U 1362 passed / 1 skipped. Gate L 10/10 in Camoufox and Chromium, with and without block_private. Gate F on the final code (local 35B MoE model, action cache off, 3 runs): 4/8, 5/8, 5/8 flows; checkpoints 6/12, 8/12, 8/12; 0 server restarts. Run 1 lost three flows to ReadTimeout on a cold start. Known limits listed in README and CHANGELOG. Still owed: Docker non-root user, weekly monitor's Proton login.
