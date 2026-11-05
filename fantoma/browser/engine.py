@@ -315,8 +315,9 @@ class BrowserEngine:
 
         # Apply stealth patches before any page JS runs
         if self._context:
-            from fantoma.browser.stealth import apply_stealth
+            from fantoma.browser.stealth import apply_stealth, apply_sw_lock
             apply_stealth(self._context)
+            apply_sw_lock(self._context)
 
         # Set accessibility preferences — present as assistive technology user
         if self.accessibility and self._page:
@@ -394,6 +395,9 @@ class BrowserEngine:
             ctx_args["service_workers"] = "block"
             self._context = self._browser.new_context(**ctx_args)
             self._page = self._context.new_page()
+
+        from fantoma.browser.stealth import apply_sw_lock
+        apply_sw_lock(self._context)
 
         if self._trace:
             try:

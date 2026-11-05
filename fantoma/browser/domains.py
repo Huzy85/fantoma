@@ -237,6 +237,14 @@ def settle_hops(page, timeout_ms: int = 5000) -> bool:
         if not on_hop_page(page):
             return True
         if time.monotonic() >= deadline:
+            # Give up on this URL: a page that faked a hop with pushState
+            # stalls us once, not on every later call.
+            try:
+                policy = _policy_of(page)
+                if policy is not None:
+                    policy.forget_hop(page.url)
+            except Exception:
+                pass
             return False
         try:
             page.wait_for_timeout(40)
@@ -563,6 +571,35 @@ class DomainPolicy:
         out["accept-encoding"] = cls._ACCEPT_ENCODING
         return out
 
+    _KNOWN_ENCODINGS = {"", "identity", "gzip", "x-gzip", "deflate", "br"}
+
+    def _fetch(self, route, **kwargs):
+        """route.fetch that only returns a body Playwright can decode. A server
+        that answers in an encoding we did not offer (zstd) gets one retry with
+        accept-encoding: identity; if that still comes back undecodable the
+        request is aborted with a log line and None is returned."""
+        headers = kwargs.pop("headers", None)
+        response = route.fetch(headers=headers, **kwargs)
+        enc = (response.headers.get("content-encoding", "") or "").strip().lower()
+        if all(e.strip() in self._KNOWN_ENCODINGS for e in enc.split(",")):
+            return response
+        src = route.request.url
+        log.warning("domain policy: %s answered content-encoding %r, retrying with identity", src[:200], enc[:40])
+        retry = {k: v for k, v in (headers or {}).items() if k.lower() != "accept-encoding"}
+        retry["accept-encoding"] = "identity"
+        response = route.fetch(headers=retry, **kwargs)
+        enc = (response.headers.get("content-encoding", "") or "").strip().lower()
+        if all(e.strip() in self._KNOWN_ENCODINGS for e in enc.split(",")):
+            return response
+        log.warning("domain policy: aborted %s, still undecodable content-encoding %r", src[:200], enc[:40])
+        route.abort("failed")
+        return None
+
+    def forget_hop(self, url: str) -> None:
+        """Stop treating `url` as a hop page (settle_hops timed out on it)."""
+        with self._dns_lock:
+            self._hop_urls.discard(self._nofrag(url))
+
     _DROP_ON_HOP = {"cookie", "authorization", "proxy-authorization", "host", "content-length"}
     _BODY_HEADERS = {"content-type", "content-encoding", "content-language", "content-length",
                      "transfer-encoding", "origin"}
@@ -678,7 +715,9 @@ class DomainPolicy:
         answer and skip CORS, and its Set-Cookie would land on the first host.
         """
         request = route.request
-        response = route.fetch(max_redirects=0, headers=self._decodable(request.headers))
+        response = self._fetch(route, max_redirects=0, headers=self._decodable(request.headers))
+        if response is None:
+            return
         location = self._location(response)
         nav = False
         try:
@@ -746,8 +785,10 @@ class DomainPolicy:
                 k: v for k, v in base.items() if k.lower() not in self._BODY_HEADERS}
             # post_data is passed on every hop: Playwright reuses the original
             # request's body when it is left out, even for a GET.
-            response = route.fetch(url=nxt, method=method, headers=headers, max_redirects=0,
+            response = self._fetch(route, url=nxt, method=method, headers=headers, max_redirects=0,
                                    post_data=body if body is not None else b"")
+            if response is None:
+                return
             current = nxt
             location = self._location(response)
             if not location:

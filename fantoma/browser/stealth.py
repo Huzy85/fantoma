@@ -40,6 +40,10 @@ def get_camoufox_config():
             # Default Camoufox sets this very high (causes Infinity in some checks)
             "privacy.reduceTimerPrecision": True,
             "privacy.resistFingerprinting.reduceTimerPrecision.microseconds": 100,
+            # Service workers off at engine level. Playwright's service_workers="block"
+            # only shadows navigator.serviceWorker.register; a page can still reach
+            # ServiceWorkerContainer.prototype.register, and a worker's fetches are not routed.
+            "dom.serviceWorkers.enabled": False,
         },
     }
     # Opt-in stealth kill-switches. Off by default — outright blocking can be a
@@ -138,3 +142,30 @@ def apply_stealth(context):
         log.debug("Stealth JS patches applied")
     except Exception as e:
         log.warning("Failed to apply stealth patches: %s", e)
+
+
+_SW_LOCK_SCRIPT = """
+(() => {
+  if (typeof ServiceWorkerContainer === 'undefined') return;
+  const nope = function register() {
+    return Promise.reject(new DOMException('Service workers are off', 'SecurityError'));
+  };
+  const lock = (obj) => {
+    try { Object.defineProperty(obj, 'register', {value: nope, writable: false, configurable: false}); } catch (e) {}
+  };
+  lock(ServiceWorkerContainer.prototype);
+  try { if (navigator.serviceWorker) lock(navigator.serviceWorker); } catch (e) {}
+})();
+"""
+
+
+def apply_sw_lock(context):
+    """Lock ServiceWorkerContainer.prototype.register (and the instance property)
+    in every page and frame of `context`, so a page cannot register a worker whose
+    fetches the domain policy never sees. JS-level hardening: Playwright's
+    service_workers="block" alone only shadows navigator.serviceWorker.register.
+    Not applied to a context Fantoma attached to over cdp_url."""
+    try:
+        context.add_init_script(_SW_LOCK_SCRIPT)
+    except Exception as e:
+        log.warning("Failed to apply service worker lock: %s", e)
