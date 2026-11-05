@@ -420,6 +420,7 @@ def _disarm_watchdog(exc=None):
 # ── Config from environment ──────────────────────────────────
 LOCAL_LLM_URL = os.environ.get("LOCAL_LLM_URL", "http://host.docker.internal:8081/v1")
 LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL", "auto")
+LOCAL_LLM_API_KEY = os.environ.get("LOCAL_LLM_API_KEY", "")
 BACKUP_LLM_URL = os.environ.get("BACKUP_LLM_URL", "http://host.docker.internal:8081/v1")
 BACKUP_LLM_MODEL = os.environ.get("BACKUP_LLM_MODEL", "auto")
 CLOUD_LLM_URL = os.environ.get("CLOUD_LLM_URL", "")
@@ -891,7 +892,7 @@ def run_task():
 
     defaults = _get_fantoma_defaults()
     escalation = [defaults["llm_url"]]
-    escalation_keys = [""]
+    escalation_keys = [LOCAL_LLM_API_KEY]
     escalation_models = [LOCAL_LLM_MODEL]
     if BACKUP_LLM_URL:
         escalation.append(BACKUP_LLM_URL)
@@ -904,7 +905,8 @@ def run_task():
 
     try:
         agent = Agent(
-            llm_url=defaults["llm_url"], escalation=escalation,
+            llm_url=defaults["llm_url"], api_key=LOCAL_LLM_API_KEY,
+            model=LOCAL_LLM_MODEL, escalation=escalation,
             escalation_keys=escalation_keys,
             escalation_models=escalation_models,
             captcha_api=CAPTCHA_API, captcha_key=CAPTCHA_KEY,

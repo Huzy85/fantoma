@@ -226,6 +226,10 @@ class LLMClient:
             # Some reasoning models (Qwen3.5) put the answer in reasoning_content
             if not content.strip():
                 content = self._extract_from_reasoning(message)
+            usage = data.get("usage") or {}
+            if usage:
+                log.info("llm usage prompt=%s completion=%s",
+                         usage.get("prompt_tokens"), usage.get("completion_tokens"))
         except (ValueError, KeyError, IndexError) as exc:
             log.warning("Unparseable LLM response: %s", str(exc)[:200])
             return ""

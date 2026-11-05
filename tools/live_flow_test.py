@@ -123,6 +123,132 @@ FLOWS = [
             ("left the register page", "url", "login"),
         ],
     },
+    # ── Longer journeys (5-10 steps). Added 2026-11-05 for the three-model
+    # benchmark: short flows were passing, long ones were not.
+    {
+        "name": "saucedemo-two-items-total",
+        "url": "https://www.saucedemo.com",
+        "task": ("Log in with username 'standard_user' and password "
+                 "'secret_sauce'. Add the 'Sauce Labs Backpack' and the "
+                 "'Sauce Labs Bike Light' to the cart, open the cart, click "
+                 "Checkout, enter first name 'Fan', last name 'Toma', postal "
+                 "code '12345' and click Continue. Tell me the item total."),
+        "checkpoints": [
+            ("reached checkout overview", "url", "checkout-step-two"),
+            ("both items priced on the page", "state", "39.98"),
+        ],
+    },
+    {
+        "name": "saucedemo-complete-order",
+        "url": "https://www.saucedemo.com",
+        "task": ("Log in with username 'standard_user' and password "
+                 "'secret_sauce'. Add the 'Sauce Labs Onesie' to the cart, open "
+                 "the cart, click Checkout, enter first name 'Fan', last name "
+                 "'Toma', postal code '12345', click Continue, then click "
+                 "Finish. Tell me what the final page says."),
+        "checkpoints": [
+            ("order completed", "url", "checkout-complete"),
+            ("thank-you shown", "state", "thank you for your order"),
+        ],
+    },
+    {
+        "name": "saucedemo-sort-price",
+        "url": "https://www.saucedemo.com",
+        "task": ("Log in with username 'standard_user' and password "
+                 "'secret_sauce', then sort the products by price from low to "
+                 "high using the sort dropdown. Tell me the cheapest product."),
+        "checkpoints": [
+            ("reached inventory", "url", "inventory"),
+            ("price sort selected", "state", "low to high\" [selected]"),
+        ],
+    },
+    {
+        "name": "saucedemo-add-then-remove",
+        "url": "https://www.saucedemo.com",
+        "task": ("Log in with username 'standard_user' and password "
+                 "'secret_sauce'. Add the 'Sauce Labs Backpack' to the cart, "
+                 "then remove it again from the products page. Tell me how "
+                 "many items the cart shows."),
+        "checkpoints": [
+            ("reached inventory", "url", "inventory"),
+            ("every product back to Add to cart", "state_count", ("add to cart", 6)),
+            ("nothing left to remove", "state_not", "remove"),
+        ],
+    },
+    {
+        "name": "herokuapp-login-logout",
+        "url": "https://the-internet.herokuapp.com/login",
+        "task": ("Log in with username 'tomsmith' and password "
+                 "'SuperSecretPassword!', then click Logout. Tell me what the "
+                 "page says after logging out."),
+        "checkpoints": [
+            ("back on the login page", "url", "login"),
+            ("logout banner shown", "state", "logged out of the secure area"),
+        ],
+    },
+    {
+        "name": "herokuapp-dynamic-loading",
+        "url": "https://the-internet.herokuapp.com/dynamic_loading/1",
+        "task": ("Click the Start button and wait for the loading to finish. "
+                 "Tell me the text that appears."),
+        "checkpoints": [
+            ("hidden text revealed", "state", "hello world"),
+        ],
+    },
+    {
+        "name": "herokuapp-add-remove",
+        "url": "https://the-internet.herokuapp.com/add_remove_elements/",
+        "task": "Click the 'Add Element' button three times. Tell me how many Delete buttons there are.",
+        "checkpoints": [
+            ("three delete buttons exist", "state_count", ("delete", 3)),
+        ],
+    },
+    {
+        "name": "herokuapp-dynamic-controls",
+        "url": "https://the-internet.herokuapp.com/dynamic_controls",
+        "task": ("Click the Remove button and wait for the message that "
+                 "appears. Tell me what it says."),
+        "checkpoints": [
+            ("gone message shown", "state", "it's gone"),
+        ],
+    },
+    {
+        "name": "herokuapp-key-press",
+        "url": "https://the-internet.herokuapp.com/key_presses",
+        "task": "Click into the input box and press the Enter key. Tell me what the page reports.",
+        "checkpoints": [
+            ("enter key registered", "state", "you entered: enter"),
+        ],
+    },
+    {
+        "name": "herokuapp-js-confirm",
+        "url": "https://the-internet.herokuapp.com/javascript_alerts",
+        "task": ("Click the 'Click for JS Confirm' button and accept the dialog "
+                 "that pops up. Tell me what the result line says."),
+        "checkpoints": [
+            ("confirm accepted", "state", "you clicked: ok"),
+        ],
+    },
+    {
+        "name": "herokuapp-untick-second",
+        "url": "https://the-internet.herokuapp.com/checkboxes",
+        "task": "Untick the second checkbox on this page. Leave the first one as it is.",
+        # Ships with box 2 ticked and box 1 clear, so the only correct end
+        # state is no ticked box at all.
+        "checkpoints": [
+            ("no checkbox ticked", "state_not", "[checked]"),
+        ],
+    },
+    {
+        "name": "expandtesting-login",
+        "url": "https://practice.expandtesting.com/login",
+        "task": ("Log in with username 'practice' and password "
+                 "'SuperSecretPassword!'. Tell me what the page says."),
+        "checkpoints": [
+            ("reached secure page", "url", "secure"),
+            ("success banner shown", "state", "logged into a secure area"),
+        ],
+    },
 ]
 
 
@@ -142,6 +268,7 @@ def _verify(body, state, checkpoints):
       text        title/answer contains needle (loose; never load-bearing)
       state       live ARIA tree contains needle
       state_count live ARIA tree contains needle at least N times
+      state_not   live ARIA tree exists and does NOT contain needle
     """
     url = (body.get("final_url") or "").lower()
     title = (body.get("final_title") or "").lower()
@@ -154,13 +281,15 @@ def _verify(body, state, checkpoints):
         elif kind == "state_count":
             token, want = needle
             ok = tree.lower().count(token.lower()) >= want
+        elif kind == "state_not":
+            ok = bool(tree) and needle.lower() not in tree.lower()
         elif kind == "url":
             ok = needle.lower() in url
         else:
             ok = needle.lower() in f"{title} {answer}"
         hits.append((label, ok))
 
-    needs_live = any(k in ("state", "state_count") for _, k, _ in checkpoints)
+    needs_live = any(k in ("state", "state_count", "state_not") for _, k, _ in checkpoints)
     if needs_live and not tree:
         return hits, "no live page state — cannot verify, treat as failure"
     return hits, ("" if url else "run reported no final_url")
