@@ -834,6 +834,7 @@ print(result.validated)                      # True/False/None (None = not valid
 | `FANTOMA_MCP_TRANSPORT`, `FANTOMA_MCP_HOST`, `FANTOMA_MCP_PORT` | MCP | `http` serves streamable HTTP instead of stdio |
 | `FANTOMA_MCP_ALLOWED_HOSTS` | MCP | Extra Host names accepted over HTTP on a non-loopback bind, comma-separated |
 | `FANTOMA_MCP_TOKEN`, `FANTOMA_MCP_INSECURE` | MCP | Bearer token required on every HTTP request when set. Binding to a non-loopback host without a token is refused unless `FANTOMA_MCP_INSECURE=1` |
+| `FANTOMA_ALLOW_PRIVATE` | server, MCP | `1` lets requests target private and internal addresses (RFC 1918, loopback, link-local, cloud metadata, `.lan`/`.home` names) and use a proxy on a private host. Off by default: such targets are refused after DNS resolution. |
 | `FANTOMA_ALLOWED_DOMAINS`, `FANTOMA_BLOCKED_DOMAINS` | everywhere | Comma-separated host lists; see [Safety](#safety) |
 | `FANTOMA_DOMAIN_STRICT` | everywhere | `0` keeps the browser's own networking (no redirect checks) |
 | `FANTOMA_LLM_SELF_HOSTED` | LLM client | `1`/`0` overrides self-hosted detection |
