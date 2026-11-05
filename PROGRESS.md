@@ -1222,3 +1222,6 @@ PASS now needs final URL on mail.proton.me with /inbox (was: page text containin
 
 ## 2026-11-05 — 0.12.0
 Stages 0-9 of the November plan built, six security audit rounds, released. Gate U 1362 passed / 1 skipped. Gate L 10/10 in Camoufox and Chromium, with and without block_private. Gate F on the final code (local 35B MoE model, action cache off, 3 runs): 4/8, 5/8, 5/8 flows; checkpoints 6/12, 8/12, 8/12; 0 server restarts. Run 1 lost three flows to ReadTimeout on a cold start. Known limits listed in README and CHANGELOG. Still owed: Docker non-root user, weekly monitor's Proton login.
+
+## 2026-11-05 (later) — container runs as uid 1000
+Docker image drops to the `fantoma` user via docker-entrypoint.sh + setpriv; .dockerignore added. Verified on a root-owned legacy volume: one-off re-own, keyed session, VNC auth intact.
