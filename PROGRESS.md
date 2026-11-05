@@ -1225,3 +1225,7 @@ Stages 0-9 of the November plan built, six security audit rounds, released. Gate
 
 ## 2026-11-05 (later) — container runs as uid 1000
 Docker image drops to the `fantoma` user via docker-entrypoint.sh + setpriv; .dockerignore added. Verified on a root-owned legacy volume: one-off re-own, keyed session, VNC auth intact.
+
+## 2026-11-05 three-model flow benchmark (0.12.0 + primary-key fix)
+
+20 live flows x 3 runs, checkpoints read off the live ARIA tree after each run, action cache off, 300 s per flow. Runner: `tools/fantoma_bench.py` (resumable JSONL, status.json, report.md, revives a silent backend). Flows passed out of 60: Gemma 4 26B-A4B 37, DeepSeek-flash 36, Qwen3.6-35B-A3B 30. Short one-step flows pass 3/3 for everyone; multi-page journeys (checkout, order completion, two-item total) fail for everyone, with local models timing out after 20-40 steps. JS confirm fails for all: the dialog handler answers Cancel and there is no accept tool. False success (agent reported success, page says otherwise): hermes: 11 of 30 failures claimed success; gemma: 6 of 23 failures claimed success; deepseek: 15 of 24 failures claimed success. That gap is what the fresh-context step checker (item 3 above) must close. Found on the way: `server.py` never passed `LOCAL_LLM_MODEL` or a key to the primary model (new env `LOCAL_LLM_API_KEY`).

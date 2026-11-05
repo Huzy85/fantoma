@@ -179,6 +179,7 @@ class Bench:
                     pass
             state = {"aria_tree": "\n".join(trees)}
             rec["tree_head"] = trees[0][:400] if trees else ""
+            rec["tree"] = state["aria_tree"]   # full, so checkpoints can be re-scored later
             hits, verr = self.verify(body, state, flow["checkpoints"])
             try:
                 _http("POST", f"{base}/stop", {}, timeout=60)
@@ -298,12 +299,21 @@ def main():
     ap.add_argument("--backend-wait", type=int, default=900,
                     help="how long to wait for a dead backend before failing the flow (s)")
     ap.add_argument("--only", nargs="*", help="flow names to run (default all)")
+    ap.add_argument("--report-only", action="store_true",
+                    help="rebuild report.md and summary.txt from results.jsonl, run nothing")
     ap.add_argument("--restart-cmd", default="",
                     help="shell command to revive a silent backend, {name} is substituted, "
                          "e.g. 'systemctl --user restart fantoma-bench-{name}.service'")
     a = ap.parse_args()
     backends = dict(b.split("=", 1) for b in a.backend)
-    Bench(a.out, backends, a.runs, a.flow_timeout, a.backend_wait, a.only, a.restart_cmd).run()
+    b = Bench(a.out, backends, a.runs, a.flow_timeout, a.backend_wait, a.only, a.restart_cmd)
+    if a.report_only:
+        text, summary = b.report()
+        with open(os.path.join(a.out, "summary.txt"), "w") as fh:
+            fh.write("\n".join(f"{k}: {v}" for k, v in summary.items()) + "\n")
+        print(text)
+        return
+    b.run()
 
 
 if __name__ == "__main__":

@@ -40,7 +40,8 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # A flow is: a task for the agent, then checkpoints proving what happened.
-# Each checkpoint is (label, kind, needle) where kind is "url" or "text".
+# Each checkpoint is (label, kind, needle); kinds are listed on _verify. Anything
+# that must be true for a pass reads the live page (state*), never the answer.
 FLOWS = [
     {
         "name": "saucedemo-login",
@@ -49,7 +50,7 @@ FLOWS = [
                  "'secret_sauce'. Tell me what page you land on."),
         "checkpoints": [
             ("reached inventory", "url", "inventory"),
-            ("products visible", "text", "backpack"),
+            ("products visible", "state", "add to cart"),
         ],
     },
     {
@@ -61,7 +62,7 @@ FLOWS = [
         "checkpoints": [
             ("reached inventory", "url", "inventory"),
             # Only present once something is actually in the cart.
-            ("cart badge shows an item", "text", "remove"),
+            ("cart badge shows an item", "state", "cart, 1 items"),
         ],
     },
     {
@@ -73,7 +74,7 @@ FLOWS = [
                  "checkout page asks for."),
         "checkpoints": [
             ("reached checkout", "url", "checkout"),
-            ("asks for personal details", "text", "first name"),
+            ("asks for personal details", "state", 'textbox "first name"'),
         ],
     },
     {
@@ -83,7 +84,7 @@ FLOWS = [
                  "'SuperSecretPassword!'. Tell me what the page says."),
         "checkpoints": [
             ("reached secure area", "url", "secure"),
-            ("success banner shown", "text", "logged into a secure area"),
+            ("success banner shown", "state", "logged into a secure area"),
         ],
     },
     {
@@ -159,7 +160,7 @@ FLOWS = [
                  "high using the sort dropdown. Tell me the cheapest product."),
         "checkpoints": [
             ("reached inventory", "url", "inventory"),
-            ("price sort selected", "state", "low to high\" [selected]"),
+            ("price sort selected", "state", "(low to high)\" [selected]"),
         ],
     },
     {
