@@ -1,0 +1,24 @@
+# Keep secrets, git history and local run data out of the image.
+.env
+.env.*
+!.env.example
+.git
+.github
+.worktrees
+.venv
+.stage-runs
+.session_snapshots
+.pytest_cache
+__pycache__
+**/__pycache__
+*.pyc
+*.log
+*.bak*
+history.json
+fantoma.log
+dist
+build
+*.egg-info
+node_modules
+benchmark/results
+benchmark/*.log

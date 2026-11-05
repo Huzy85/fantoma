@@ -620,12 +620,14 @@ docker compose -f docker-compose.fantoma.yml up -d
 
 ### Security
 
-The HTTP API and noVNC ship without authentication by default, so secure them before exposing the container beyond localhost. The browser keeps logged-in sessions in a persistent profile, which means a reachable, unauthenticated API can read cookies and act as the logged-in user. All controls are environment variables (wired in `docker-compose.fantoma.yml`):
+The container listens on all interfaces, so it refuses to start without `FANTOMA_API_KEY` (set `FANTOMA_INSECURE_NO_AUTH=1` to run it open on purpose), and noVNC does not start without `FANTOMA_VNC_PASSWORD` (or `FANTOMA_VNC_ALLOW_NO_PASSWORD=1`). The browser keeps logged-in sessions in a persistent profile, which means anyone who can reach the API or the display can act as you on every site you are logged in to.
+
+Everything in the container runs as the unprivileged user `fantoma` (uid 1000): supervisord, Xvfb, x11vnc, websockify, the server and the browsers. The entrypoint starts as root only to re-own the profiles volume (one-off, for volumes created by images before 0.13) and the log directory, then drops privileges with `setpriv`. The profiles volume mounts at `/home/fantoma/.local/share/fantoma`; a compose file written for an older image must change that path from `/root/...`. `.env`, `.git` and local run data are excluded from the image by `.dockerignore`.
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `FANTOMA_API_KEY` | unset (open) | When set, every endpoint except `/health` requires it via `X-API-Key: <key>` or `Authorization: Bearer <key>`. Unset logs a warning at startup. |
-| `FANTOMA_VNC_PASSWORD` | unset (open) | Password-protects the noVNC display on port 6080. |
+| `FANTOMA_API_KEY` | unset (container refuses to start) | Every endpoint except `/health` requires it via `X-API-Key: <key>` or `Authorization: Bearer <key>`. Outside the container, unset means loopback-only with the keyless guards. |
+| `FANTOMA_VNC_PASSWORD` | unset (VNC not started) | Password for the noVNC display on port 6080. `FANTOMA_VNC_ALLOW_NO_PASSWORD=1` runs it open. |
 | `FANTOMA_ALLOW_EVAL` | `0` (off) | `/evaluate` runs arbitrary JS in the page (a cookie and token theft surface). Returns 403 unless set to `1`. |
 | `FANTOMA_HOST` | `127.0.0.1` without a key, `0.0.0.0` with one | Interface the HTTP server listens on. |
 | `FANTOMA_ALLOW_REQUEST_PROXY` | `0` (off) | Lets a `/run` body name its own proxy without an API key. On automatically when a key is set. |

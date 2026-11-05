@@ -21,6 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor x11vnc novnc python3-websockify \
     && rm -rf /var/lib/apt/lists/*
 
+# Everything at runtime belongs to this user. Root is only used at build
+# time and for the first few lines of docker-entrypoint.sh.
+RUN useradd -m -u 1000 -s /bin/bash fantoma
+
 WORKDIR /app
 
 # Upgrade pip + packaging first (hatchling needs packaging>=23)
@@ -48,7 +52,9 @@ RUN pip3 install --no-cache-dir \
 # IP), which once shipped images with no browser. Retry, then fail the build
 # unless a version is really installed. Pass a token to lift the limit:
 #   docker build --secret id=github_token,env=GITHUB_TOKEN .
-RUN --mount=type=secret,id=github_token,required=false \
+USER fantoma
+ENV HOME=/home/fantoma
+RUN --mount=type=secret,id=github_token,required=false,uid=1000 \
     if [ -f /run/secrets/github_token ]; then export GITHUB_TOKEN="$(cat /run/secrets/github_token)"; fi; \
     for i in 1 2 3; do \
         python3 -m camoufox fetch; \
@@ -57,9 +63,10 @@ RUN --mount=type=secret,id=github_token,required=false \
     done; \
     python3 -m camoufox active | grep -v "not fetched" \
         || { echo "Camoufox browser not installed (GitHub rate limit?)"; exit 1; }
+USER root
 
-# Copy Fantoma source
-COPY . /app
+# Copy Fantoma source (.dockerignore keeps .env, .git and run data out)
+COPY --chown=fantoma:fantoma . /app
 
 # Install Fantoma properly
 RUN pip3 install --no-cache-dir -e ".[captcha]"
@@ -75,21 +82,20 @@ ENV FANTOMA_HOST=0.0.0.0
 ENV FANTOMA_REAP_ALL=1
 
 # Create dirs Fantoma expects
-RUN mkdir -p /root/.local/share/fantoma/traces \
-    /root/.local/share/fantoma/sessions \
-    /root/.local/share/fantoma/form_memory \
-    /var/log/supervisor
+RUN mkdir -p /home/fantoma/.local/share/fantoma/traces \
+    /home/fantoma/.local/share/fantoma/sessions \
+    /home/fantoma/.local/share/fantoma/form_memory \
+    /var/log/supervisor \
+    && chown -R fantoma:fantoma /home/fantoma /var/log/supervisor /app
 
-# supervisord config
-COPY supervisord.conf /etc/supervisor/conf.d/fantoma.conf
+# supervisord config (replaces the distro default; socket and pidfile in /tmp
+# so a non-root supervisord can create them)
+COPY supervisord.conf /etc/supervisor/supervisord.conf
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# TODO(security): the container still runs as root. A non-root USER needs the
-# Camoufox browser cache (fetched above as root into /root/.cache), the
-# profile dir /root/.local/share/fantoma, /var/log/supervisor, /var/run
-# (supervisor socket) and a supervisord user= line all moved or re-owned, and
-# the fantoma-profiles volume migrated. Not guessed here because the image
-# cannot be built and tested from this change.
 EXPOSE 7860 6080
 
-# supervisord manages all processes
+# The entrypoint starts as root only to re-own the profiles volume and the
+# log dir, then drops to uid 1000 for supervisord and everything under it.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

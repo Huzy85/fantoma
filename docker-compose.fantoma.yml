@@ -46,7 +46,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       # Persistent browser profiles (sessions survive restarts)
-      - fantoma-profiles:/root/.local/share/fantoma
+      - fantoma-profiles:/home/fantoma/.local/share/fantoma
     deploy:
       resources:
         limits:

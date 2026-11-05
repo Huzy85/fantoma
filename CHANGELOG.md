@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Security
+- Docker image runs as the unprivileged user `fantoma` (uid 1000). `docker-entrypoint.sh` starts as root only to re-own the profiles volume and `/var/log/supervisor`, then drops to that user with `setpriv`; supervisord, Xvfb, x11vnc, websockify, the server and the browsers all run unprivileged. supervisord's socket and pidfile moved to `/tmp`.
+- `.dockerignore` added: `.env`, `.git`, `.worktrees`, `.stage-runs`, logs and caches no longer end up in the image. Before this a `COPY . /app` shipped the build directory's `.env` inside the image.
+
+### Changed
+- Profiles volume path is `/home/fantoma/.local/share/fantoma` (was `/root/...`). Update the mount in your compose file; the entrypoint re-owns an existing volume on first start.
+
 ## 0.12.0 — 2026-11-05
 
 ### Upgrading from 0.11
