@@ -2,6 +2,7 @@
 """Single-subtask execution loop for the hierarchical agent."""
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -19,6 +20,9 @@ from fantoma.planner import Planner, Subtask
 from fantoma.state_tracker import StateTracker
 
 log = logging.getLogger("fantoma.navigator")
+# FANTOMA_LOG_RAW=1 logs each model reply (secrets masked), for finding out
+# why a model's replies do not parse.
+_LOG_RAW = os.environ.get("FANTOMA_LOG_RAW", "").lower() in ("1", "true", "yes")
 
 # Actions that can actually change the page. navigate/scroll/back move you
 # around but leave the site's state untouched, so they are not evidence that
@@ -38,6 +42,7 @@ _ACTION_VERBS = frozenset({
 })
 
 _MAX_DONE_REJECTIONS = 2
+_QUESTION_START = re.compile(r"^(?:what|what's|how|when|who|which|where|tell|give|show|list|find out|report)\b", re.I)
 
 
 def _requires_state_change(instruction: str) -> bool:
@@ -47,9 +52,16 @@ def _requires_state_change(instruction: str) -> bool:
     "post" does not fire on "postcode".
     """
     text = (instruction or "").lower()
-    for verb in _ACTION_VERBS:
-        if re.search(rf"\b{re.escape(verb)}\b", text):
-            return True
+    # A sentence that asks for information is not an action, even when it
+    # names a control: "Tell me how many Delete buttons there are" (2026-11-05,
+    # the guard rejected the right answer and the model wandered for 21 steps).
+    sentences = [s.strip() for s in re.split(r"[.?!;\n]+", text)]
+    for sentence in sentences:
+        if not sentence or _QUESTION_START.match(sentence):
+            continue
+        for verb in _ACTION_VERBS:
+            if re.search(rf"\b{re.escape(verb)}\b", sentence):
+                return True
     return False
 
 
@@ -292,7 +304,12 @@ class Navigator:
         # Premature-DONE guard state. requires_action is decided once from the
         # instruction; state_changed flips when an action that can actually
         # alter the page succeeds.
-        requires_action = _requires_state_change(subtask.instruction)
+        # Judge only what is left to do. The fast path appends "(Already
+        # done, do not repeat: clicked 'Remove'; ...)" and that note named the
+        # verbs it had already carried out, so DONE was refused for work that
+        # was finished (dynamic-controls, 2026-11-05).
+        requires_action = _requires_state_change(
+            (subtask.instruction or "").split("\n(Already done", 1)[0])
         state_changed = False
         done_rejections = 0
         nudge = ""
@@ -380,6 +397,9 @@ class Navigator:
 
             raw = llm.chat(messages, max_tokens=300)
             actions = _parse_actions(raw) if raw else []
+            if _LOG_RAW:
+                log.info("LLM raw (%d chars, %d actions): %r", len(raw or ""),
+                         len(actions), store.mask(raw or "", current_url)[:600])
 
             # Track consecutive empty/unparseable responses. After 2 in a row,
             # bail out with failure_reason="llm_empty" so the orchestrator
@@ -630,10 +650,19 @@ class Navigator:
                     )[:800]
                 except Exception:
                     post_content = last_content
+                # The cycle detector compares actions with the element number
+                # stripped, so four clicks on four different controls (add,
+                # cart, checkout, continue) read as one action repeated and
+                # ended every checkout journey at step 3 (measured 2026-11-05).
+                # The element's role and name tell the clicks apart.
+                if isinstance(replay_sig, (tuple, list)) and len(replay_sig) == 2:
+                    track_desc = f"{action_type}[{replay_sig[0]}:{replay_sig[1]}]({replay_value or ''})"
+                else:
+                    track_desc = action_desc
                 tracker.add(
                     post_action_url,
                     post_content,
-                    f"{action_desc} -> {outcome}",
+                    f"{track_desc} -> {outcome}",
                 )
 
                 # Check domain drift immediately after every action, not just

@@ -82,6 +82,10 @@ class BrowserEngine:
         # by the page (target=_blank, window.open) became tabs nobody
         # mentioned. Crashed pages hung get_state until the task timeout.
         self.last_dialog: dict | None = None
+        # Per-run override of FANTOMA_DIALOGS ("accept" or "dismiss"); the
+        # agent sets it from the task text ("accept the dialog").
+        self.dialog_policy: str | None = None
+        self.dialog_history: list[dict] = []
         self._popup_count = 0
         self._crashed: set = set()
         self.last_status: int | None = None
@@ -187,10 +191,15 @@ class BrowserEngine:
                     return  # the user's tab; not ours to answer
             except Exception:
                 return
-        self.last_dialog = {"type": dialog.type, "message": dialog.message}
-        policy = os.environ.get("FANTOMA_DIALOGS", "dismiss").strip().lower()
+        policy = (getattr(self, "dialog_policy", None) or os.environ.get("FANTOMA_DIALOGS", "dismiss")).strip().lower()
+        accept = dialog.type == "beforeunload" or policy == "accept"
+        self.last_dialog = {"type": dialog.type, "message": dialog.message,
+                            "answer": "accepted" if accept else "dismissed"}
+        if not hasattr(self, "dialog_history"):
+            self.dialog_history = []
+        self.dialog_history.append(self.last_dialog)
         try:
-            if dialog.type == "beforeunload" or policy == "accept":
+            if accept:
                 dialog.accept()
             else:
                 dialog.dismiss()

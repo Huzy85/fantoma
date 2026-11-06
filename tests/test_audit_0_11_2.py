@@ -230,7 +230,7 @@ class TestRealBrowser:
             e._page.click("#del")
             assert e._page.evaluate("window.r") is False
             d = e.take_dialog()
-            assert d == {"type": "confirm", "message": "Delete this item?"}
+            assert d == {"type": "confirm", "message": "Delete this item?", "answer": "dismissed"}
             assert e.take_dialog() is None
         finally:
             ctx.close()

@@ -17,11 +17,11 @@ from fantoma.browser_tool import Fantoma
 from fantoma.llm.client import LLMClient
 from fantoma.resilience.escalation import EscalationChain
 from fantoma.planner import Planner, Subtask, Checkpoint
-from fantoma.navigator import Navigator, NavigatorResult
+from fantoma.navigator import Navigator, NavigatorResult, _requires_state_change
 from fantoma.state_tracker import StateTracker
 from fantoma.task_spec import parse_task, verify_outcome
 from fantoma.dom.page_reads import reset_stuck
-from fantoma.fast_path import run_fast_path
+from fantoma.fast_path import run_fast_path, split_clauses, _QUESTION
 from fantoma.secrets_scope import SecretStore, refusal_message
 from fantoma.validator import validate_answer
 
@@ -115,6 +115,29 @@ def _result_has_real_data(result: "NavigatorResult") -> bool:
     if getattr(result, "is_placeholder", False):
         return False
     return _has_real_data(result.data)
+
+
+_DIALOG_WORDS = r"(?:dialog|dialogue|alert|confirm(?:ation)?(?: box)?|pop-?up|prompt)"
+
+
+def _read_only(remainder: str) -> bool:
+    """True when what the fast path left over asks only for information."""
+    clauses = [c for c in split_clauses(remainder or "") if c.strip()]
+    # "Tell me what the checkout page asks for" names a page, not a step.
+    return bool(clauses) and all(_QUESTION.match(c) or not _requires_state_change(c)
+                                 for c in clauses)
+
+
+def _dialog_policy_for(task: str) -> str | None:
+    """"accept"/"dismiss" when the task says how to answer a dialog, else None."""
+    low = (task or "").lower()
+    accept = rf"\b(?:accept|confirm|ok|press ok|click ok|approve)\b[^.]*\b{_DIALOG_WORDS}\b|\b{_DIALOG_WORDS}\b[^.]*\b(?:accept|confirm|press ok|click ok|approve)\b"
+    dismiss = rf"\b(?:dismiss|cancel|decline|reject|close)\b[^.]*\b{_DIALOG_WORDS}\b|\b{_DIALOG_WORDS}\b[^.]*\b(?:dismiss|cancel|decline|reject)\b"
+    if re.search(accept, low):
+        return "accept"
+    if re.search(dismiss, low):
+        return "dismiss"
+    return None
 
 
 def _build_phase1_context(result: NavigatorResult) -> dict:
@@ -428,6 +451,13 @@ class Agent:
             state = self.fantoma.start(start_url)
         except Exception as e:
             return AgentResult(success=False, error=f"Browser start failed: {e}")
+        # "accept the dialog" in the task: this run presses OK on confirm
+        # boxes instead of the default Cancel. Measured 2026-11-05: the
+        # js-confirm flow failed 9/9 because Cancel was the only answer.
+        engine = getattr(self.fantoma, "_engine", None)
+        if engine is not None:
+            engine.dialog_policy = _dialog_policy_for(task)
+            engine.dialog_history = []
 
         total_steps = 0
         all_steps = []
@@ -469,6 +499,28 @@ class Agent:
                         steps_detail=all_steps,
                         escalations=0,
                     ))
+                if fast.done and _read_only(fast.remainder):
+                    # Every action is done and only a question is left, so
+                    # the answer is on the page in front of us. Handing that
+                    # question to the navigator let the model scroll, hit
+                    # the stagnation stop, and the planner then clicked
+                    # Finish on the overview it was asked to read
+                    # (deepseek, two-items-total, 2026-11-05).
+                    answer = self._navigator._extract_answer(
+                        Subtask(instruction=fast.remainder, mode="read",
+                                done_when="Question answered from this page"),
+                        self.fantoma, self._llm)
+                    if answer.strip():
+                        total_steps += 1
+                        all_steps.append({"step": total_steps, "action": "fast:answer",
+                                          "result": "answered from the current page"})
+                        return self._apply_validator(task, AgentResult(
+                            success=True,
+                            data=answer,
+                            steps_taken=total_steps,
+                            steps_detail=all_steps,
+                            escalations=0,
+                        ))
                 if fast.done:
                     llm_task = (f"{fast.remainder}\n(Already done, do not repeat: "
                                 f"{'; '.join(fast.done)}.)")

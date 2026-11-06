@@ -73,3 +73,21 @@ class TestStateChangingActions:
         """
         for action in ("navigate", "scroll", "go_back"):
             assert action not in _STATE_CHANGING
+
+
+def test_already_done_note_does_not_count_as_pending_action():
+    """The fast path hands over "Tell me what it says\\n(Already done, do not
+    repeat: clicked 'Remove'; waited 3.0s...)". The verbs in that note were
+    already carried out; only the first line decides whether DONE needs an
+    action first (2026-11-05, dynamic-controls refused a correct DONE)."""
+    head = "Tell me what it says."
+    note = "\n(Already done, do not repeat: clicked 'Remove'; waited 3.0s for the page to settle.)"
+    assert _requires_state_change((head + note).split("\n(Already done", 1)[0]) is False
+    assert _requires_state_change("click Checkout" + note) is True
+
+
+def test_a_question_naming_a_control_is_not_an_action():
+    assert _requires_state_change("Tell me how many Delete buttons there are") is False
+    assert _requires_state_change("What does the Remove button say now?") is False
+    assert _requires_state_change("Click Remove and wait. Tell me what it says.") is True
+    assert _requires_state_change("Add two items then tell me the total") is True

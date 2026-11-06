@@ -335,8 +335,7 @@ class Fantoma:
         take_dialog = getattr(engine, "take_dialog", None)
         dialog = take_dialog() if callable(take_dialog) else None
         if isinstance(dialog, dict):
-            policy = os.environ.get("FANTOMA_DIALOGS", "dismiss").strip().lower()
-            verb = "accepted" if (policy == "accept" or dialog.get("type") == "beforeunload") else "dismissed (Cancel)"
+            verb = "accepted" if dialog.get("answer") == "accepted" else "dismissed (Cancel)"
             notes.append(f"A {dialog.get('type')} dialog was {verb}: \"{(dialog.get('message') or '')[:160]}\"")
         take_popups = getattr(engine, "take_popup_count", None)
         popups = take_popups() if callable(take_popups) else 0

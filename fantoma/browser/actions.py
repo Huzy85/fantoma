@@ -60,8 +60,20 @@ def click_element(engine, element_or_selector):
     # synthetic el.click() instead, which still sends no mouse telemetry.
     native = tag in ("a", "button", "input", "select", "textarea", "summary", "option", "label", "area")
     key = "Space" if is_checkbox else "Enter"
+    # A key press goes to whatever has focus. If focus did not land on this
+    # element (an <a> with no href is not focusable, nor is a disabled
+    # control), Enter would activate something else and the click would be
+    # reported done. Measured 2026-11-05 on saucedemo: the cart link is
+    # <a role=button> with no href; every click on it, by the fast path and
+    # by all three models, "succeeded" and went nowhere.
     try:
-        if native:
+        focused = element.evaluate("el => document.activeElement === el")
+    except Exception:
+        focused = False
+    try:
+        if not focused:
+            element.evaluate("el => el.click()")
+        elif native:
             page.keyboard.press(key)
         elif not _key_did_something(page, element, key):
             element.evaluate("el => el.click()")

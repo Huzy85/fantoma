@@ -306,10 +306,25 @@ class TestAgentUsesTheFastPath:
         part = FastResult(done=["clicked 'Travel'"], remainder="tell me the first title")
         monkeypatch.setattr("fantoma.agent.run_fast_path", lambda task, f, s=None: part)
         a = self._agent(tmp_path, part)
+        a._navigator._extract_answer.return_value = ""   # nothing readable: fall through
         a.run("Open the 'Travel' category and tell me the first title", start_url="https://example.com")
         sub = a._navigator.execute.call_args.kwargs["subtask"]
         assert sub.instruction.startswith("tell me the first title")
         assert "clicked 'Travel'" in sub.instruction
+
+    def test_a_question_left_over_is_answered_from_the_page(self, tmp_path, monkeypatch):
+        """Everything was done in code and only "tell me X" is left: read the
+        page and stop. Letting the model navigate here cost deepseek the
+        two-items flow: it scrolled, stagnated, and the planner then clicked
+        Finish on the page it was meant to read (2026-11-05)."""
+        from fantoma.fast_path import FastResult
+        part = FastResult(done=["clicked 'Continue'"], remainder="Tell me the item total")
+        monkeypatch.setattr("fantoma.agent.run_fast_path", lambda task, f, s=None: part)
+        a = self._agent(tmp_path, part)
+        a._navigator._extract_answer.return_value = "Item total: $39.98"
+        res = a.run("Click Continue. Tell me the item total", start_url="https://example.com")
+        assert res.success and "$39.98" in res.data
+        a._navigator.execute.assert_not_called()
 
 
 class TestModelDoneIsChecked:
@@ -381,3 +396,81 @@ class TestQuestionsOpenTheNamedItem:
         page = _open(browser, site + "/grid")
         r = run_fast_path("What is the price of 'Sapiens'?", browser)
         assert page.url.endswith("/grid") and not r.done
+
+
+class TestSplitJourneys:
+    """Benchmark tasks of 2026-11-05: commas and full stops separate steps."""
+
+    def test_comma_before_a_verb_separates(self):
+        assert split_clauses("Log in with username 'a' and password 'b', add the 'X' to the cart, "
+                             "open the cart, and click Checkout. Tell me what it asks for.") == [
+            "Log in with username 'a' and password 'b'", "add the 'X' to the cart",
+            "open the cart", "click Checkout", "Tell me what it asks for"]
+
+    def test_field_list_stays_one_step(self):
+        assert split_clauses("enter first name 'Fan', last name 'Toma', postal code '12345' and click Continue") == [
+            "enter first name 'Fan', last name 'Toma', postal code '12345'", "click Continue"]
+
+    def test_quoted_text_never_splits(self):
+        assert split_clauses("Register with password 'Str0ng. and then, click' now") == [
+            "Register with password 'Str0ng. and then, click' now"]
+
+    def test_press_the_enter_key_stays_with_its_click(self):
+        assert split_clauses("Click into the input box and press the Enter key. Tell me what it says.") == [
+            "Click into the input box and press the Enter key", "Tell me what it says"]
+
+
+class TestSpecJudgesTheLastStep:
+    def test_checkout_journey_is_judged_as_checkout(self):
+        from fantoma.task_spec import parse_task
+        spec = parse_task("Log in with username 'a' and password 'b', add the 'Backpack' to the cart, "
+                          "open the cart, and click Checkout. Tell me what the checkout page asks for.")
+        assert spec.action == "checkout"
+
+    def test_remove_is_judged_by_the_remove_control_being_gone(self):
+        from fantoma.task_spec import parse_task, verify_outcome
+        spec = parse_task("Add the 'Backpack' to the cart, then remove it again. Tell me the count.")
+        assert spec.action == "remove"
+        ok, _ = verify_outcome(spec, "https://x/inventory", 'Backpack\n$29\nbutton "Remove"')
+        assert not ok
+        ok, _ = verify_outcome(spec, "https://x/inventory", 'Backpack\n$29\nbutton "Add to cart"')
+        assert ok
+
+
+class TestDialogPolicy:
+    def test_accept_from_the_task_text(self):
+        from fantoma.agent import _dialog_policy_for
+        assert _dialog_policy_for("Click the button and accept the dialog that pops up.") == "accept"
+        assert _dialog_policy_for("Click the button and dismiss the alert.") == "dismiss"
+        assert _dialog_policy_for("Click the 'Click for JS Confirm' button. Tell me the result.") is None
+
+
+class TestClickLandsOnUnfocusableControls:
+    def test_anchor_without_href_is_clicked_not_keyed(self, browser):
+        """saucedemo's cart is <a role=button> with no href: not focusable, so
+        Enter went to the page and the click was reported done (2026-11-05)."""
+        page = browser._engine.get_page()
+        page.set_content('<button id="other" onclick="window.hit=\'other\'">Other</button>'
+                         '<a role="button" aria-label="Cart, 1 items" onclick="window.hit=\'cart\'">'
+                         '<span>1</span></a>')
+        page.click("#other")                      # focus sits on another control
+        page.evaluate("window.hit = ''")
+        els = _elements_of(browser)
+        cart = next(e for e in els if "Cart" in (e.get("name") or ""))
+        assert browser.click(cart["index"])["success"]
+        assert page.evaluate("window.hit") == "cart"
+
+
+def _elements_of(browser):
+    from fantoma.fast_path import _elements
+    return _elements(browser)
+
+
+class TestReadOnlyRemainder:
+    def test_question_left_over_is_answered_not_navigated(self):
+        from fantoma.agent import _read_only
+        assert _read_only("Tell me the item total") is True
+        assert _read_only("Tell me what the checkout page asks for") is True
+        assert _read_only("Tell me how many items are in the cart") is True
+        assert _read_only("click Checkout. Tell me the total") is False
+        assert _read_only("") is False

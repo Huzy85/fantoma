@@ -1,6 +1,7 @@
 """OpenAI-compatible LLM API client."""
 
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -141,6 +142,19 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        # DeepSeek V4 thinks by default and the reasoning silently eats the
+        # whole max_tokens budget: in the 2026-11-05 benchmark 294 of its
+        # 300-token action requests came back with empty content. Thinking
+        # is switched off through the API, as DeepSeek documents, not the prompt.
+        if "deepseek.com" in (self.base_url or ""):
+            payload["thinking"] = {"type": "disabled"}
+        # Any other provider-specific field, as JSON: FANTOMA_LLM_EXTRA_BODY='{"reasoning_effort":"low"}'
+        extra = os.environ.get("FANTOMA_LLM_EXTRA_BODY", "").strip()
+        if extra:
+            try:
+                payload.update(json.loads(extra))
+            except ValueError:
+                log.warning("FANTOMA_LLM_EXTRA_BODY is not valid JSON; ignored")
         # Only add chat_template_kwargs for self-hosted endpoints (Qwen thinking
         # mode). Cloud APIs (OpenAI, Anthropic, Moonshot) reject unknown
         # parameters. response_format likewise: DeepSeek and others reject it.

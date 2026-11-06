@@ -34,9 +34,21 @@ _QUOTE = r"['\"‘“](.+?)['\"’”]"
 # "and" alone splits only before a question, so "open 'Travel' and tell me
 # the first title" becomes a click plus a question for the model, while
 # "type 'x' and press Enter" stays one clause.
+# "..., add ..." and "... and click ..." also start a new step when what
+# follows is an imperative: the 2026-11-05 benchmark tasks are written that
+# way ("log in ..., add the 'X' to the cart, open the cart, and click
+# Checkout") and none of them reached the fast path. "press Enter" is kept
+# inside its clause. A full stop ends a clause too.
+_VERB = (r"add|open|click|tap|go to|navigate|visit|select|choose|pick|type|enter|fill (?:in|out)|write|input"
+         r"|tick|check|uncheck|untick|clear|search|log ?in|sign ?in|remove|delete|sort|register|sign up"
+         r"|accept|dismiss|confirm|wait|scroll|submit"
+         r"|press(?!\s+(?:the\s+)?(?:enter|return)\b)|hit(?!\s+(?:the\s+)?(?:enter|return)\b)")
+_QWORDS = r"tell|report|give|return|list|show|say|find out|what|which|who|how"
 _SPLIT = re.compile(
-    r"\s*(?:,\s*)?\b(?:and then|then|after that|afterwards"
-    r"|and(?=\s+(?:tell|report|give|return|list|show|say|find out|what|which|who|how)\b))\b[,:]?\s*",
+    r"(?:\s*(?:,\s*)?\b(?:and then|then|after that|afterwards"
+    r"|and(?=\s+(?:" + _QWORDS + r")\b)|and(?=\s+(?:" + _VERB + r")\b))\b[,:]?\s*)"
+    r"|(?:,\s*(?=(?:" + _VERB + r")\b))"
+    r"|(?:(?<=[.!?])\s+(?=\S))",
     re.I)
 # What may trail a clause without changing its meaning.
 _TAIL = r"(?:\s+(?:on|in) (?:this|the) (?:page|form|site))?(?:\s*[.!])?\s*$"
@@ -62,8 +74,22 @@ class FastResult:
 
 
 def split_clauses(task: str) -> list[str]:
-    parts = [p.strip(" ,.;") for p in _SPLIT.split(task or "")]
-    return [p for p in parts if p]
+    # Quoted text is masked first so a comma, a verb or a full stop inside
+    # a product name or a password never splits a clause.
+    spans: list[str] = []
+
+    def mask(m):
+        spans.append(m.group(0))
+        return f"\x00{len(spans) - 1}\x00"
+
+    masked = re.sub(_QUOTE, mask, task or "")
+    out = []
+    for part in _SPLIT.split(masked):
+        part = re.sub(r"\x00(\d+)\x00", lambda m: spans[int(m.group(1))], part or "")
+        part = part.strip(" ,.;")
+        if part:
+            out.append(part)
+    return out
 
 
 def run_fast_path(task: str, fantoma, secrets: dict = None) -> FastResult:
@@ -120,6 +146,8 @@ def _do_clause(clause: str, fantoma, out: FastResult) -> bool:
             # the page gets one more look before the model is asked.
             time.sleep(_SETTLE_S)
     if result is None or result == _UNSURE:
+        log.info("Fast path leaves %r to the model: %s", clause,
+                 "no handler for this sentence" if result is None else "the page does not settle which control")
         return False
     ok, desc, action = result
     out.steps.append({"step": len(out.steps) + 1, "action": f"fast:{action}",
@@ -133,7 +161,8 @@ def _do_clause(clause: str, fantoma, out: FastResult) -> bool:
 
 def _match(clause: str, fantoma):
     unsure = False
-    for handler in (_login, _search, _select, _type, _checkbox, _add_to_cart, _click):
+    for handler in (_login, _search, _select, _sort, _fill_fields, _type, _checkbox,
+                    _add_to_cart, _remove, _wait, _dialog, _press_key, _click):
         result = handler(clause, fantoma)
         if result == _UNSURE:
             unsure = True
@@ -307,10 +336,26 @@ def _checkbox(clause, fantoma):
 
 def _add_to_cart(clause, fantoma):
     m = re.match(r"^add\s+(?:the\s+|a\s+|one\s+)?" + _QUOTE +
+                 r"(?:\s*(?:,|and)\s*(?:the\s+|a\s+)?" + _QUOTE + r")*"
                  r"\s+to\s+(?:the\s+|my\s+|your\s+)?(cart|basket|bag|trolley)" + _TAIL, clause, re.I)
     if not m:
         return None
-    want = m.group(1).strip().lower()
+    items = [q for q, _ in _quoted_spans(clause)]
+    where = m.group(m.lastindex).lower()
+    done = []
+    for item in items:
+        result = _add_one(item, fantoma)
+        if result is not True:
+            return result
+        done.append(item)
+        fantoma._fast_last_item = item
+    names = ", ".join(repr(i) for i in done)
+    return True, f"added {names} to the {where}", f"add_to_cart({names})"
+
+
+def _add_one(item, fantoma):
+    """Add one named product; True when done, else a failed-step tuple or _UNSURE."""
+    want = item.strip().lower()
     add = re.compile(r"add\s+to\s+(cart|basket|bag|trolley)", re.I)
 
     def buttons():
@@ -321,24 +366,59 @@ def _add_to_cart(clause, fantoma):
 
     els, found = buttons()
     if len(found) != 1:
-        found = _add_button_in_card(fantoma, els, want)
+        found = _button_in_card(fantoma, els, want, _ADD_PATTERN)
     if len(found) != 1:
         return _UNSURE
     fantoma.click(_num(els, found[0]))
     time.sleep(0.5)
     els, still = buttons()
-    still = still or _add_button_in_card(fantoma, els, want)
+    still = still or _button_in_card(fantoma, els, want, _ADD_PATTERN)
     if not still:
-        return True, f"added {m.group(1)!r} to the {m.group(2).lower()}", f"add_to_cart({m.group(1)!r})"
-    return False, f"{m.group(1)!r} still shows an add button", f"add_to_cart({m.group(1)!r})"
+        return True
+    return False, f"{item!r} still shows an add button", f"add_to_cart({item!r})"
+
+
+def _remove(clause, fantoma):
+    m = re.match(r"^(?:remove|delete|take out)\s+(?:the\s+)?(?:" + _QUOTE + r"|it|that|them|the item)?"
+                 r"(?:\s+again)?(?:\s+from\s+(?:the\s+|my\s+)?"
+                 r"(?:cart|basket|bag|trolley|products?(?:\s+page)?|list|page))?" + _TAIL, clause, re.I)
+    if not m:
+        return None
+    # "remove it again": the item the fast path just added.
+    item = m.group(1) or getattr(fantoma, "_fast_last_item", "") or ""
+    want = item.strip().lower()
+    if not want:
+        return None
+    rm = re.compile(r"\bremove\b", re.I)
+
+    def buttons():
+        els = _elements(fantoma)
+        return els, [i for i, e in enumerate(els) if e.get("role") == "button"
+                     and rm.search(e.get("name", ""))
+                     and want in f"{e.get('name', '')} {e.get('_context', '')}".lower()]
+
+    els, found = buttons()
+    if len(found) != 1:
+        found = _button_in_card(fantoma, els, want, _REMOVE_PATTERN)
+    if len(found) != 1:
+        return _UNSURE
+    fantoma.click(_num(els, found[0]))
+    time.sleep(0.5)
+    els, still = buttons()
+    still = still or _button_in_card(fantoma, els, want, _REMOVE_PATTERN)
+    if not still:
+        return True, f"removed {item!r}", f"remove({item!r})"
+    return False, f"{item!r} still shows a remove button", f"remove({item!r})"
 
 
 # From each element whose own text is the product name, walk up to the
 # smallest ancestor holding exactly one add button: that is the product's
 # card. Returns the button's name and its position among same-named buttons,
 # which is how the element list tells identical buttons apart.
-_CARD_JS = """(want) => {
-  const add = /add\\s+to\\s+(cart|basket|bag|trolley)/i;
+_ADD_PATTERN = r"add\s+to\s+(cart|basket|bag|trolley)"
+_REMOVE_PATTERN = r"\bremove\b"
+_CARD_JS = """([want, pattern]) => {
+  const add = new RegExp(pattern, 'i');
   const name = b => (b.getAttribute('aria-label') || b.innerText || b.value || '').trim();
   const buttons = [...document.querySelectorAll(
       'button, [role=button], input[type=submit], input[type=button], a')]
@@ -358,14 +438,14 @@ _CARD_JS = """(want) => {
 }"""
 
 
-def _add_button_in_card(fantoma, els, want):
-    """The add button inside the named product's card, as an element index.
+def _button_in_card(fantoma, els, want, pattern):
+    """The matching button inside the named product's card, as an element index.
 
     Used when the button's inferred label is not the product (a price or a
     rating sits between them, as on many shops).
     """
     try:
-        hit = fantoma._engine.get_page().evaluate(_CARD_JS, want)
+        hit = fantoma._engine.get_page().evaluate(_CARD_JS, [want, pattern])
     except Exception:
         return []
     if not hit:
@@ -374,25 +454,228 @@ def _add_button_in_card(fantoma, els, want):
             and e.get("name", "") == hit["name"] and e.get("_ordinal", 0) == hit["ordinal"]]
 
 
+_TIMES = {"once": 1, "twice": 2, "two times": 2, "three times": 3, "four times": 4, "five times": 5}
+_KEYS = {"enter": "Enter", "return": "Enter", "escape": "Escape", "esc": "Escape", "tab": "Tab",
+         "space": "Space", "backspace": "Backspace", "delete": "Delete", "up": "ArrowUp",
+         "down": "ArrowDown", "left": "ArrowLeft", "right": "ArrowRight"}
+
+
 def _click(clause, fantoma):
-    m = re.match(r"^(?:click|press|tap|open|go to)\s+(?:on\s+)?(?:the\s+)?" + _QUOTE +
-                 r"(?:\s+(?:button|link|tab|category|page|section|menu|item))?" + _TAIL,
+    m = re.match(
+        r"^(?:click|press|tap|open|go to)\s+(?:on\s+|into\s+|in\s+)?(?:the\s+)?"
+        r"(?:" + _QUOTE + r"|(?P<plain>[A-Za-z][A-Za-z0-9&'/ -]{0,40}?))"
+        r"(?:\s+(?P<kind>button|link|tab|category|page|section|menu|item|box|field|icon))?"
+        r"(?:\s+(?P<times>once|twice|two times|three times|four times|five times|\d+\s+times))?"
+        r"(?P<enter>\s+and\s+(?:press|hit)\s+(?:the\s+)?enter(?:\s+key)?)?" + _TAIL,
+        clause, re.I)
+    if not m:
+        return None
+    quoted = m.group(1) is not None
+    name = (m.group(1) if quoted else m.group("plain")).strip()
+    # An unquoted name is trusted only when short: "click Checkout", "open
+    # the cart". Longer phrases describe a thing rather than name it.
+    if not quoted and len(name.split()) > 3:
+        return None
+    want = name.lower()
+    kind = (m.group("kind") or "").lower()
+    editable = kind in ("box", "field") or bool(m.group("enter"))
+    roles = _EDITABLE if editable else _CLICKABLE
+
+    def find():
+        els = _elements(fantoma)
+        cands = [i for i, e in enumerate(els) if e.get("role") in roles]
+        hits = _by_name(els, cands, want, exact_only=quoted)
+        if editable and not hits and len(cands) == 1 and want in ("input", "text", "search", "the"):
+            hits = cands
+        return els, hits
+
+    times = (m.group("times") or "").lower()
+    n = _TIMES.get(times) or (int(times.split()[0]) if times else 1)
+    before = _url(fantoma)
+    els, hits = find()
+    if len(hits) != 1:
+        return _UNSURE
+    for k in range(n):
+        if k:
+            time.sleep(0.3)
+            els, hits = find()
+            if len(hits) != 1:
+                return False, f"clicked {name!r} {k} time(s) but then could not find it again", f"click({name!r})"
+        r = fantoma.click(_num(els, hits[0]))
+        if not r.get("success"):
+            return False, f"could not click {name!r}", f"click({name!r})"
+    desc = f"clicked {name!r}" + (f" {n} times" if n > 1 else "")
+    if m.group("enter"):
+        fantoma.press_key("Enter")
+        desc += " and pressed Enter"
+    where = _url(fantoma)
+    if where != before:
+        desc += f" (now at {where})"
+    return True, desc, f"click({name!r})" + (f"x{n}" if n > 1 else "")
+
+
+def _by_name(els, cands, want, exact_only=False):
+    """Candidates whose name is `want`; failing that, for an unquoted name,
+    the one candidate whose name starts with it or contains it as a word."""
+    def nm(i):
+        return (els[i].get("name") or "").strip().lower()
+    hits = [i for i in cands if nm(i) == want]
+    if hits or exact_only:
+        return hits
+    hits = [i for i in cands if nm(i).startswith(want)]
+    if len(hits) == 1:
+        return hits
+    hits = [i for i in cands if re.search(r"\b" + re.escape(want) + r"\b", nm(i))]
+    return hits if len(hits) == 1 else []
+
+
+def _press_key(clause, fantoma):
+    m = re.match(r"^(?:press|hit)\s+(?:the\s+)?(enter|return|escape|esc|tab|space|backspace|delete"
+                 r"|(?:arrow\s*)?(?:up|down|left|right))(?:\s+(?:key|arrow))?" + _TAIL, clause, re.I)
+    if not m:
+        return None
+    word = re.sub(r"^arrow\s*", "", m.group(1).lower())
+    key = _KEYS[word]
+    r = fantoma.press_key(key)
+    if r.get("success", True):
+        return True, f"pressed {key}", f"press({key})"
+    return False, f"could not press {key}", f"press({key})"
+
+
+_FILL_LEAD = re.compile(r"^(?:enter|type|fill (?:in|out)|fill|input|write|put|set)\b", re.I)
+_HINT_NOISE = re.compile(
+    r"\b(?:enter|type|fill (?:in|out)|fill|input|write|put|set|the|a|an|and|with|as|in|into|to"
+    r"|field|box|value|of|your|my|then)\b|[,:]", re.I)
+
+
+def _fill_fields(clause, fantoma):
+    """\"enter first name 'Fan', last name 'Toma', postal code '12345'\".
+
+    Each quoted value is introduced by the words that name its field. A
+    value with no such words is _type's business ("type 'x' into the box").
+    """
+    if not _FILL_LEAD.match(clause):
+        return None
+    spans = _quoted_spans(clause)
+    if not spans:
+        return None
+    pairs = []
+    for quote, lead in spans:
+        hint = re.sub(r"\s+", " ", _HINT_NOISE.sub(" ", lead)).strip().lower()
+        if not hint:
+            return None
+        pairs.append((hint, quote))
+    # Text after the last value ("into the box", "and press Enter") means
+    # a different sentence shape.
+    last = re.search(_QUOTE.replace("(.+?)", re.escape(pairs[-1][1])) + r"(?!.*" + _QUOTE + r")", clause, re.S)
+    tail = clause[last.end():] if last else ""
+    if not re.match(_TAIL, tail, re.I):
+        return None
+    els = _elements(fantoma)
+    fields = [i for i, e in enumerate(els) if e.get("role") in _EDITABLE]
+    picks = []
+    for hint, value in pairs:
+        words = hint.split()
+        named = [i for i in fields
+                 if all(w in f"{els[i].get('name', '')} {els[i].get('_context', '')}".lower() for w in words)]
+        if len(named) != 1:
+            return _UNSURE
+        picks.append((named[0], value))
+    done = []
+    for idx, value in picks:
+        label = els[idx].get("name") or els[idx].get("_context") or els[idx].get("role")
+        fantoma.type_text(_num(els, idx), value)
+        now = _field_value(fantoma, els[idx])
+        if not (now == fantoma.reveal(value) or (now and set(now) == {"•"})):
+            return False, f"typed {value!r} into {label!r} but the field shows {now!r}", "fill"
+        done.append(f"{value!r} into {label!r}")
+    return True, "entered " + ", ".join(done), f"fill({len(done)})"
+
+
+def _sort(clause, fantoma):
+    m = re.match(r"^sort\s+(?:the\s+)?(?:products|items|list|results|page|them)?\s*(?:by\s+)?(.+?)" + _TAIL,
                  clause, re.I)
     if not m:
         return None
-    want = m.group(1).strip().lower()
+    # "by price from low to high using the sort dropdown": the control is
+    # named after "using"/"via"/"with the", and those words are not in any
+    # option (sort-price went to the model on every run, 2026-11-05).
+    wanted = re.split(r"\s+(?:using|via|with\s+the)\s+", m.group(1), 1, flags=re.I)[0]
+    words = [w for w in re.findall(r"[a-z]+", wanted.lower())
+             if w not in ("from", "to", "the", "by", "order", "in", "ascending", "descending", "and")]
+    if not words:
+        return None
+    # The option must carry the words in the task's order: "low to high"
+    # must not pick "high to low".
+    pat = re.compile(r".*?".join(re.escape(w[:4]) for w in words))
     els = _elements(fantoma)
-    hits = [i for i, e in enumerate(els) if e.get("role") in _CLICKABLE
-            and (e.get("name") or "").strip().lower() == want]
+    hits = [(i, o) for i, e in enumerate(els) if e.get("role") == "combobox"
+            for o in (e.get("_options") or []) if pat.search(o.lower())]
     if len(hits) != 1:
         return _UNSURE
-    before = _url(fantoma)
-    r = fantoma.click(_num(els, hits[0]))
-    if r.get("success"):
-        where = _url(fantoma)
-        moved = f" (now at {where})" if where != before else ""
-        return True, f"clicked {m.group(1)!r}{moved}", f"click({m.group(1)!r})"
-    return False, f"could not click {m.group(1)!r}", f"click({m.group(1)!r})"
+    i, option = hits[0]
+    fantoma.select(_num(els, i), option)
+    after = [e for e in _elements(fantoma) if e.get("role") == "combobox"
+             and (e.get("_selected") or "") == option]
+    if after:
+        return True, f"sorted by {option!r}", f"sort({option!r})"
+    return False, f"could not select {option!r}", f"sort({option!r})"
+
+
+_BUSY_JS = """() => {
+  const vis = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden'
+                   && getComputedStyle(e).display !== 'none';
+  const busy = [...document.querySelectorAll(
+      '[id*=loading i],[class*=loading i],[class*=spinner i],[aria-busy=true],progress')].some(vis);
+  const text = document.body ? document.body.innerText : '';
+  return [busy, text.length + '|' + document.querySelectorAll('*').length];
+}"""
+
+
+def _wait(clause, fantoma):
+    """\"wait for the loading to finish\": until nothing says loading and the
+    page has stopped changing, at most 20 seconds."""
+    if not re.match(r"^wait\b", clause, re.I):
+        return None
+    page = fantoma._engine.get_page()
+    t0 = time.time()
+    last, stable = None, 0
+    while time.time() - t0 < 20:
+        try:
+            busy, sig = page.evaluate(_BUSY_JS)
+        except Exception:
+            busy, sig = False, None
+        stable = stable + 1 if (sig == last and not busy) else 0
+        last = sig
+        if stable >= 3:
+            break
+        time.sleep(0.5)
+    return True, f"waited {time.time() - t0:.1f}s for the page to settle", "wait"
+
+
+def _dialog(clause, fantoma):
+    """\"accept the dialog that pops up\": the engine answered it as the task
+    said (the agent set the policy from the task); confirm it happened."""
+    m = re.match(r"^(?:accept|confirm|dismiss|cancel|close|press ok on|click ok on)\s+(?:the\s+|any\s+)?"
+                 r"(?:(?:confirm(?:ation)?|js|javascript|browser)\s+)?"
+                 r"(?:dialog|dialogue|alert|pop-?up|prompt|box|confirm)\b", clause, re.I)
+    if not m:
+        return None
+    want = "dismissed" if re.match(r"^(?:dismiss|cancel|close)", clause, re.I) else "accepted"
+    engine = fantoma._engine
+    hist = []
+    for _ in range(6):
+        hist = list(getattr(engine, "dialog_history", []) or [])
+        if hist:
+            break
+        time.sleep(0.5)
+    if not hist:
+        return None             # nothing popped up; the model takes it from here
+    last = hist[-1]
+    kind = last.get("type", "dialog")
+    if last.get("answer") == want:
+        return True, f"{want} the {kind} dialog", f"dialog({want})"
+    return False, f"the {kind} dialog was {last.get('answer')}, not {want}", f"dialog({want})"
 
 
 # ── page helpers ────────────────────────────────────────────────

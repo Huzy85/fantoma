@@ -44,6 +44,7 @@ _ACTIONS: list[tuple[str, tuple[str, ...]]] = [
     ("submit", ("submit", "send the form")),
     ("select", ("select", "choose", "pick")),
     ("click", ("click", "press", "tap")),
+    ("remove", ("remove", "delete", "take out")),
     ("extract", ("what is", "tell me", "how many", "find out", "report",
                  "summarise", "summarize", "who is", "when is")),
 ]
@@ -129,10 +130,23 @@ def parse_task(task: str, llm=None) -> TaskSpec:
 
     low = task.lower()
 
+    # Several steps in one task: the end page shows the LAST one, so that is
+    # what gets verified. "log in ..., add ... to the cart, click Checkout"
+    # used to be judged as an add-to-cart, and the checkout page (which lists
+    # no products) failed a run that had done everything asked. The question
+    # ("tell me ...") does not count; it comes last in nearly every task.
+    last_pos, last_name = -1, ""
     for name, phrases in _ACTIONS:
-        if any(p in low for p in phrases):
-            spec.action = name
-            break
+        if name == "extract":
+            continue
+        for p in phrases:
+            pos = low.rfind(p)
+            if pos > last_pos:
+                last_pos, last_name = pos, name
+    if last_name:
+        spec.action = last_name
+    elif any(p in low for p in dict(_ACTIONS)["extract"]):
+        spec.action = "extract"
 
     # Quoted spans: those introduced by a credential label are values, the
     # rest are candidate targets.
@@ -284,6 +298,16 @@ def verify_outcome(spec: TaskSpec, end_url: str, end_page: str) -> tuple[bool, s
                 f"{removals} items were added, expected only {spec.target}"
             )
         return True, f"{spec.target} sits with a remove control"
+
+    if spec.action == "remove":
+        # Removed means the item's line is back beside an add control, or
+        # the item is gone from the page altogether.
+        for i, line in enumerate(lines):
+            if target in line.lower():
+                near = " ".join(lines[i:i + 3]).lower()
+                if '"remove"' in near:
+                    return False, f"{spec.target} still sits with a remove control"
+        return True, f"{spec.target} is not in the cart"
 
     # A click or a submission usually takes the named control away (the
     # next page has no "Sign up" button), so its absence proves nothing.

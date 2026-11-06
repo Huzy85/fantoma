@@ -146,3 +146,13 @@ class TestReset:
         assert t.is_cycling() is False
         assert t.is_stagnant() is False
         assert t.scroll_limit_hit() is False
+
+
+def test_clicks_on_different_controls_are_not_a_cycle():
+    """Checkout journeys died at step 3 because every click normalised to the
+    same string once the element number was stripped (2026-11-05)."""
+    from fantoma.state_tracker import StateTracker
+    t = StateTracker()
+    for name in ("Add to cart", "Cart, 1 items", "Checkout", "Continue"):
+        t.add("https://x/", f"page after {name}", f"click[button:{name}]() -> ok")
+    assert not t.is_cycling()

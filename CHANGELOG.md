@@ -6,8 +6,21 @@
 - Docker image runs as the unprivileged user `fantoma` (uid 1000). `docker-entrypoint.sh` starts as root only to re-own the profiles volume and `/var/log/supervisor`, then drops to that user with `setpriv`; supervisord, Xvfb, x11vnc, websockify, the server and the browsers all run unprivileged. supervisord's socket and pidfile moved to `/tmp`.
 - `.dockerignore` added: `.env`, `.git`, `.worktrees`, `.stage-runs`, logs and caches no longer end up in the image. Before this a `COPY . /app` shipped the build directory's `.env` inside the image.
 
+### Fixed
+- Clicks on controls that cannot take focus (an `<a role=button>` with no `href`, a disabled control) now use a synthetic click instead of focus + Enter. Before, Enter went to whatever had focus and the action was reported as done; every saucedemo checkout flow failed at "open the cart" on every model.
+- DONE is no longer refused for work the fast path already carried out: the premature-DONE guard reads only the instruction that is left, not the "(Already done ...)" note appended to it.
+- "sort by price from low to high using the sort dropdown" is handled without the model; the words after "using"/"via"/"with the" name the control, not the option.
+- The confirm-dialog record carries `answer` (`accepted`/`dismissed`), so the agent can see what the browser did with it.
+- When the fast path has done every step and only a question is left ("Tell me the total"), the answer is read from the page at once instead of handing the model a turn. Models given that turn clicked once more (Finish, Add, the cart link) and left the page the checkpoint wanted.
+- The premature-DONE guard ignores sentences that ask for information, so "Tell me how many Delete buttons there are" no longer counts as a pending Delete action. One model wandered for 21 steps, via Google, after its correct answer was refused.
+
 ### Changed
 - Profiles volume path is `/home/fantoma/.local/share/fantoma` (was `/root/...`). Update the mount in your compose file; the entrypoint re-owns an existing volume on first start.
+- Fast path now carries multi-clause journeys on its own: "add X and Y to the cart, open the cart, click Checkout, enter first name ..., click Continue" runs without a model call, and the model gets only what is left. New handlers: multi-item add, remove, sort, fill several fields, press a key, click N times, wait for the page to settle, accept or dismiss a dialog.
+- Task parsing judges the last action in the sentence, so "add it, then remove it" is verified as a removal.
+- DeepSeek endpoints get `thinking: {"type": "disabled"}` in the request body. `FANTOMA_LLM_EXTRA_BODY` (JSON) merges extra fields into every chat request for any provider.
+- `FANTOMA_LOG_RAW=1` logs each raw model reply (masked, 600 chars) at INFO; the cycle detector keys on the element signature, so clicks on different controls are no longer a "cycle".
+- Dialog policy follows the task: a task that says "accept the dialog" accepts it, one that says "dismiss" dismisses, otherwise `FANTOMA_DIALOGS` (default dismiss) applies.
 
 ## 0.12.0 — 2026-11-05
 
