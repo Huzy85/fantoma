@@ -9,7 +9,7 @@ on:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright has no Chromium build for 26.04 yet
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +29,7 @@ jobs:
   live:
     # Real public websites, no LLM. Proves the reader and element handling
     # still work on the live web with the real stealth browsers.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright has no Chromium build for 26.04 yet
     needs: unit
     strategy:
       fail-fast: false

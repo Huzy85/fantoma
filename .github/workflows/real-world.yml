@@ -17,7 +17,7 @@ on:
 
 jobs:
   protected-sites:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright has no Chromium build for 26.04 yet
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -46,7 +46,7 @@ jobs:
     # message contains e.g. "[agent-check models=qwen2.5:14b tasks=herokuapp-inputs]"
     # runs just that subset.
     if: github.event_name != 'push' || contains(github.event.head_commit.message, '[agent-check')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright has no Chromium build for 26.04 yet
     outputs:
       models: ${{ steps.p.outputs.models }}
       tasks: ${{ steps.p.outputs.tasks }}
@@ -84,7 +84,7 @@ jobs:
     # One machine per (model, task) so every run finishes at about the same
     # time. GitHub's free machines have no GPU, so this is far slower than a
     # 12GB card at home; timeouts are sized for CPU inference.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # Playwright has no Chromium build for 26.04 yet
     timeout-minutes: 300
     strategy:
       fail-fast: false
