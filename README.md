@@ -12,7 +12,7 @@ mcp-name: io.github.Huzy85/fantoma
 
 No vision model, no pixel coordinates, no mouse telemetry. A step costs about 500 tokens instead of the 1,000-5,000 a screenshot costs, which is what makes a small model on your own hardware practical.
 
-**What that buys you, and what it does not.** Reading pages works on a small local model. In a 31-site run across 9 models, a 35B local MoE scored 30/31, matching the best cheap API models and beating most of them. That run included sites that block conventional scrapers. Multi-step *interaction* is a different story: the same local model completed 1 of 6 login and form flows, while a frontier API model completed all of them. So extraction on your own hardware is real. For interaction, Fantoma now does the common steps itself (log in, search, pick an option, type into a field, tick a box, add a named item to the cart) and checks the page afterwards, so the model is only asked about what code cannot settle. On GitHub's machines with qwen2.5 7B and 14B, those steps pass with no model action at all ([details](#small-models-on-real-sites)). Open-ended multi-page flows still need a stronger model. Several jobs need no model at all:
+**What that buys you, and what it does not.** Reading pages works on a small local model. In a 31-site run across 9 models, a 35B local MoE scored 30/31, matching the best cheap API models and beating most of them. That run included sites that block conventional scrapers. Multi-step *interaction* is a different story: the same local model completed 1 of 6 login and form flows, while a frontier API model completed all of them. So extraction on your own hardware is real. For interaction, Fantoma now does the common steps itself (log in, search, pick an option, type into a field, tick a box, add a named item to the cart) and checks the page afterwards, so the model is only asked about what code cannot settle. On GitHub's machines with qwen2.5 7B and 14B, those steps pass with no model action at all ([details](#small-models-on-real-sites)). On a 20-flow benchmark of 5-10 step journeys (checkout, sign-up, dialogs, dynamic pages), a 35B local MoE, Gemma 4 26B and DeepSeek's API each went from 30-37 of 60 runs to 60 of 60 in 0.13 ([details](#three-model-flow-benchmark-november-2026)). Open-ended multi-page flows still need a stronger model. Several jobs need no model at all:
 
 ```bash
 pip install fantoma
@@ -667,6 +667,22 @@ Leaderboard scores are over the full WebVoyager suite, not the same 5-task pilot
 
 **Continuous checks.** Every push runs 860+ unit tests, including real-browser cases, on GitHub Actions. A live check (`tools/live_read_check.py`) runs on every push and weekly with both Camoufox and Chromium: it reads public pages and requires text only the correct page contains, then ticks a checkbox and chooses a dropdown option on public practice pages, reading the result back from the live page. It uses no LLM, so a failure is Fantoma's.
 
+### Three-model flow benchmark (November 2026)
+
+`tools/fantoma_bench.py` runs 20 live flows on saucedemo.com, the-internet.herokuapp.com and practice.expandtesting.com: 8 short tasks and 12 journeys of 5-10 steps (two-item checkout with a total, complete an order, sort by price, add then remove, log in then out, dynamic loading, dynamic controls, accept a JS confirm, register an account). Each flow runs 3 times per model. A flow passes only if every checkpoint is read off the live page afterwards: the URL, the cart badge, the ticked box, the message on screen. The agent's own report is not counted.
+
+| Model | 0.12.0 (5 Nov) | 0.13.0 (6 Nov) | Checkpoints | Mean time per flow |
+|---|---|---|---|---|
+| Qwen3.6-35B-A3B (local, llama.cpp) | 30 of 60 | 60 of 60 | 93 of 93 | 94 s → 21 s |
+| Gemma 4 26B-A4B (local, llama.cpp) | 37 of 60 | 60 of 60 | 93 of 93 | 94 s → 22 s |
+| DeepSeek flash (API) | 36 of 60 | 60 of 60 | 93 of 93 | 79 s → 21 s |
+
+In 0.12.0 a large share of failures were reported as success: 11 of 30 for Qwen, 6 of 23 for Gemma, 15 of 24 for DeepSeek. Every model scored zero on checkout, order completion and the confirm dialog.
+
+None of the fixes changed a model. They were Fantoma defects, listed in the [changelog](CHANGELOG.md): a click on a control that cannot take focus (saucedemo's cart link) was sent as Enter to nothing and reported done, which alone failed every checkout; confirm dialogs were always cancelled; a success banner was read as a form error; an unlabelled checkbox was reported gone. Two were benchmark defects (a sign-up username that already existed, a saved session skipping the login form).
+
+**Read this before quoting the numbers.** All three models now take about 3 steps per flow, because the fast path carries most of these journeys in code and the model is asked only what is left. That is the design, and it is why a small model can finish them, but it also means these 20 flows no longer separate the models. They were also the flows the fixes were made against. Treat the result as proof that these journey types work, not as a score on unseen sites. Harder flows are next.
+
 ### Small models on real sites
 
 `tools/live_agent_check.py` has a model drive the Agent through real tasks on public sites and grades each run on the live page afterwards (is the box ticked, is the item in the cart), never on the agent's own report. Run on GitHub's CPU-only machines with Ollama, September 2026:
@@ -847,6 +863,7 @@ print(result.validated)                      # True/False/None (None = not valid
 | `FANTOMA_WEBMCP` | Chromium | `1` turns on WebMCP page tools; see [WebMCP](#webmcp-experimental-off-by-default) |
 | `FANTOMA_API_KEY`, `FANTOMA_VNC_PASSWORD`, `FANTOMA_ALLOW_EVAL` | Docker server | See [Security](#security) |
 | `LOCAL_LLM_URL`, `BACKUP_LLM_URL`, `CLOUD_LLM_URL`, `CLOUD_LLM_KEY` | Docker server | Escalation chain for `/run` |
+| `LOCAL_LLM_MODEL`, `LOCAL_LLM_API_KEY` | Docker server | Model name and key for the primary (`LOCAL_LLM_URL`) endpoint |
 
 ## CLI Commands
 

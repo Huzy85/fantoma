@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 — 2026-11-06
 
 ### Security
 - Docker image runs as the unprivileged user `fantoma` (uid 1000). `docker-entrypoint.sh` starts as root only to re-own the profiles volume and `/var/log/supervisor`, then drops to that user with `setpriv`; supervisord, Xvfb, x11vnc, websockify, the server and the browsers all run unprivileged. supervisord's socket and pidfile moved to `/tmp`.

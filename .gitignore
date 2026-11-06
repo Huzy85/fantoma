@@ -78,3 +78,4 @@ fantoma_demo.mp4
 .worktrees/
 benchmark/results/
 .stage-runs/
+benchmark/overnight-run.log
