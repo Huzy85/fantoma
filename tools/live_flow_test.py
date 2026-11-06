@@ -36,6 +36,8 @@ import os
 import sys
 import time
 import urllib.request
+import random
+import string
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -117,7 +119,9 @@ FLOWS = [
     {
         "name": "expandtesting-signup",
         "url": "https://practice.expandtesting.com/register",
-        "task": ("Register a new account with username 'fantoma_probe_9x' and "
+        # A name can be registered once and usernames may not hold an
+        # underscore (checked 2026-11-06), so each attempt gets a fresh one.
+        "task": ("Register a new account with username 'fantoma-{nonce}' and "
                  "password 'Str0ngPass!2026', confirming the password if asked. "
                  "Tell me what the site says afterwards."),
         "checkpoints": [
@@ -253,6 +257,12 @@ FLOWS = [
 ]
 
 
+def task_text(flow: dict) -> str:
+    """The task to send: {nonce} becomes a fresh lowercase token per attempt."""
+    nonce = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    return flow["task"].replace("{nonce}", nonce)
+
+
 def _verify(body, state, checkpoints):
     """Score checkpoints against the live page, not against the agent's prose.
 
@@ -313,7 +323,7 @@ def run_flow(flow, timeout):
             # read off the page itself. Without it /run tears the browser down
             # and all that survives is the agent's own account of what it did.
             body = m._post(backend, "/run",
-                           {"task": flow["task"], "url": flow["url"],
+                           {"task": task_text(flow), "url": flow["url"],
                             "timeout": timeout, "keep_session": True},
                            timeout=timeout + 30)
             try:

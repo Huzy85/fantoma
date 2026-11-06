@@ -338,3 +338,39 @@ def test_same_length_reorder_by_link_target():
     page = Page([rows[2], rows[1], rows[0]])
     loc, status = resolve_ref(page, ref, re.compile("^$"))
     assert status is None and loc is rows[0]
+
+
+class TestContextBesideTheControl:
+    """The snapshot ran "checkbox 2" into the footer's "Powered by", so the
+    stored label never matched the live row and the box was "gone"
+    (herokuapp checkboxes, 0/9 across three models, 2026-11-06)."""
+
+    HTML = """<h3>Checkboxes</h3><form id="checkboxes">
+    <input type="checkbox"> checkbox 1<br>
+    <input type="checkbox" checked> checkbox 2
+    </form><div>Powered by <a href="#">Elemental</a></div>"""
+
+    def _page(self):
+        import os
+        sync_api = pytest.importorskip("playwright.sync_api")
+        exe = os.environ.get("FANTOMA_TEST_CHROMIUM") or "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
+        try:
+            pw = sync_api.sync_playwright().start()
+            browser = pw.chromium.launch(**({"executable_path": exe} if os.path.exists(exe) else {}))
+        except Exception as e:
+            pytest.skip(f"no Chromium: {e}")
+        page = browser.new_page()
+        page.set_content(self.HTML)
+        return pw, browser, page
+
+    def test_label_run_into_the_next_block_still_resolves(self):
+        from fantoma.dom.refs import _CONTEXT_JS
+        pw, browser, page = self._page()
+        try:
+            boxes = page.locator("input[type=checkbox]")
+            assert boxes.nth(1).evaluate(_CONTEXT_JS, "checkbox 2 Powered by") is True
+            assert boxes.nth(0).evaluate(_CONTEXT_JS, "checkbox 2 Powered by") is False
+            assert boxes.nth(0).evaluate(_CONTEXT_JS, "checkbox 1") is True
+        finally:
+            browser.close()
+            pw.stop()

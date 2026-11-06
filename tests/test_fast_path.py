@@ -474,3 +474,49 @@ class TestReadOnlyRemainder:
         assert _read_only("Tell me how many items are in the cart") is True
         assert _read_only("click Checkout. Tell me the total") is False
         assert _read_only("") is False
+
+
+class TestRegisterHandler:
+    """"Register a new account with username 'x' and password 'y'" (2026-11-06:
+    nine model attempts on the practice register page, one pass)."""
+
+    def _browser(self, url_after):
+        from unittest.mock import MagicMock
+        f = MagicMock()
+        f._dom._last_interactive = [
+            {"index": 0, "role": "textbox", "name": "Username", "_context": ""},
+            {"index": 1, "role": "textbox", "name": "Password", "_context": ""},
+            {"index": 2, "role": "textbox", "name": "Confirm Password", "_context": ""},
+            {"index": 3, "role": "button", "name": "Register", "_context": ""},
+        ]
+        page = f._engine.get_page.return_value
+        page.url = "https://site/register"
+
+        def click(_n):
+            page.url = url_after
+        f.click.side_effect = click
+        page.evaluate.return_value = "Invalid username."
+        return f
+
+    def test_fills_both_password_boxes_and_submits(self):
+        from fantoma.fast_path import _register
+        f = self._browser("https://site/login")
+        ok, desc, step = _register(
+            "Register a new account with username 'probe-1' and password 'Str0ng!1', confirming the password if asked", f)
+        assert ok is True and "probe-1" in desc and step == "register"
+        typed = [c.args for c in f.type_text.call_args_list]
+        assert typed == [(0, "probe-1"), (1, "Str0ng!1"), (2, "Str0ng!1")]
+        f.click.assert_called_once_with(3)
+
+    def test_refusal_carries_the_site_message(self):
+        from fantoma.fast_path import _register
+        f = self._browser("https://site/register")
+        f._engine.get_page.return_value.evaluate.side_effect = [True, "Invalid username."]
+        ok, desc, _ = _register("Register with username 'bad_name' and password 'x1'", f)
+        assert ok is False and "Invalid username" in desc
+
+    def test_other_sentences_are_left_alone(self):
+        from fantoma.fast_path import _register
+        from unittest.mock import MagicMock
+        assert _register("Register your interest by clicking 'Notify me'", MagicMock()) is None
+        assert _register("Create a new folder called 'x'", MagicMock()) is None

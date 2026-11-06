@@ -219,6 +219,17 @@ _CONTEXT_JS = """(el, ctx) => {
   const links = Array.from(document.querySelectorAll('a,[role=link]'))
     .filter(l => !l.contains(el) && (l.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING));
   if (links.length && label(links[links.length - 1]) === want) return true;
+  // The words beside an unlabelled control. The snapshot runs a text node
+  // into whatever text follows it ("checkbox 2 Powered by", the footer), so
+  // the stored label may carry more than the page shows next to the box.
+  const run = (start, step) => {
+    let t = '', s = start;
+    while (s && s.nodeType === 3) { t = step < 0 ? s.textContent + t : t + s.textContent; s = step < 0 ? s.previousSibling : s.nextSibling; }
+    return fold(t);
+  };
+  const after = run(el.nextSibling, 1), before = run(el.previousSibling, -1);
+  if (after.length > 1 && want.startsWith(after)) return true;
+  if (before.length > 1 && want.endsWith(before)) return true;
   const twin = n => n !== el && n.tagName === el.tagName
     && fold(n.getAttribute('aria-label') || n.innerText) === fold(el.getAttribute('aria-label') || el.innerText);
   let row = el.parentElement;

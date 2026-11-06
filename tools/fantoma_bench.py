@@ -39,7 +39,7 @@ def _load_flows():
     spec = importlib.util.spec_from_file_location("lft", os.path.join(HERE, "live_flow_test.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.FLOWS, mod._verify
+    return mod.FLOWS, mod._verify, mod.task_text
 
 
 def _http(method, url, body=None, timeout=60.0):
@@ -66,7 +66,7 @@ class Bench:
         self.flow_timeout = flow_timeout
         self.backend_wait = backend_wait
         self.restart_cmd = restart_cmd    # shell command with {name}, run when a backend stays silent
-        self.flows, self.verify = _load_flows()
+        self.flows, self.verify, self.task_text = _load_flows()
         if only:
             self.flows = [f for f in self.flows if f["name"] in only]
         os.makedirs(out, exist_ok=True)
@@ -165,7 +165,7 @@ class Bench:
             except Exception:
                 pass
             body = _http("POST", f"{base}/run",
-                         {"task": flow["task"], "url": flow["url"],
+                         {"task": self.task_text(flow), "url": flow["url"],
                           "timeout": self.flow_timeout, "keep_session": True},
                          timeout=self.flow_timeout + 90)
             # Two views of the same page: navigate (controls, state flags,

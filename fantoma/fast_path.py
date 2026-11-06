@@ -161,7 +161,7 @@ def _do_clause(clause: str, fantoma, out: FastResult) -> bool:
 
 def _match(clause: str, fantoma):
     unsure = False
-    for handler in (_login, _search, _select, _sort, _fill_fields, _type, _checkbox,
+    for handler in (_login, _register, _search, _select, _sort, _fill_fields, _type, _checkbox,
                     _add_to_cart, _remove, _wait, _dialog, _press_key, _click):
         result = handler(clause, fantoma)
         if result == _UNSURE:
@@ -200,6 +200,85 @@ def _login(clause, fantoma):
         return True, "logged in", "login"
     why = "the login form is still showing" if still_form else "login did not complete"
     return False, f"login failed: {why}", "login"
+
+
+_FLASH_JS = """() => {
+  const vis = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
+  const sel = '[role=alert],#flash,.flash,.alert,.error,.invalid-feedback,.help-block,.message';
+  const el = [...document.querySelectorAll(sel)].find(e => vis(e) && e.innerText.trim());
+  return el ? el.innerText.trim().slice(0, 200) : '';
+}"""
+
+
+def _register(clause, fantoma):
+    """"Register a new account with username 'x' and password 'y', confirming
+    the password if asked": the sign-up form filled and sent in code.
+
+    The site's own verdict comes back when it refuses, so a model given what
+    is left can report it instead of retyping into the same boxes.
+    """
+    low = clause.lower()
+    if not re.match(r"^(?:register|sign ?up|create)\b", low):
+        return None
+    creds = {}
+    for quote, lead in _quoted_spans(clause):
+        key = _value_key(lead)
+        if key:
+            creds.setdefault(key, quote)
+    rest = re.sub(_QUOTE, "", low)
+    rest = re.sub(r"\b(register|sign ?up|create|for|a|an|new|account|with|and|the|username|"
+                  r"user name|user|email|e-mail|password|as|using|on|this|site|page|confirming|"
+                  r"confirm|repeating|repeat|it|if|asked|needed|required|then|my|your)\b|[,.:]",
+                  " ", rest)
+    if rest.strip() or "password" not in creds or not (creds.get("username") or creds.get("email")):
+        return None
+    els = _elements(fantoma)
+    fields = [i for i, e in enumerate(els) if e.get("role") in _EDITABLE]
+
+    def label(i):
+        return f"{els[i].get('name', '')} {els[i].get('_context', '')}".lower()
+
+    pw = [i for i in fields if "pass" in label(i)]
+    confirm = [i for i in pw if re.search(r"confirm|again|repeat|re-?enter|retype|verify", label(i))]
+    first = [i for i in pw if i not in confirm]
+    if len(first) != 1 or len(confirm) > 1:
+        return _UNSURE
+    plan = []
+    for key, want in (("username", "user"), ("email", "mail")):
+        if not creds.get(key):
+            continue
+        hits = [i for i in fields if i not in pw and want in label(i)]
+        if len(hits) != 1:
+            hits = [i for i in fields if i not in pw and re.search(r"user|mail|login", label(i))]
+        if len(hits) != 1:
+            return _UNSURE
+        plan.append((hits[0], creds[key]))
+    plan.append((first[0], creds["password"]))
+    if confirm:
+        plan.append((confirm[0], creds["password"]))
+    before = _url(fantoma)
+    for idx, value in plan:
+        fantoma.type_text(_num(els, idx), value)
+    buttons = [i for i, e in enumerate(els) if e.get("role") == "button"
+               and re.search(r"regist|sign ?up|create|submit|continue|join", (e.get("name") or "").lower())]
+    if len(buttons) == 1:
+        fantoma.click(_num(els, buttons[0]))
+    else:
+        fantoma.press_key("Enter")
+    for _ in range(16):
+        if _url(fantoma) != before:
+            break
+        time.sleep(0.5)
+    page = fantoma._engine.get_page()
+    after = _url(fantoma)
+    who = creds.get("username") or creds.get("email")
+    if after != before or not _password_box_visible(page):
+        return True, f"registered {who!r} (now at {after})", "register"
+    try:
+        msg = page.evaluate(_FLASH_JS)
+    except Exception:
+        msg = ""
+    return False, f"registration refused: {msg or 'the form is still showing'}", "register"
 
 
 def _search(clause, fantoma):
