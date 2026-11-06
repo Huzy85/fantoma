@@ -400,6 +400,11 @@ def login(browser, dom_extractor, email="", username="", password="",
         # v0.6: inline error detection
         from fantoma.browser.page_state import detect_errors
         errors = detect_errors(page)
+        if errors and not _password_box_showing(dom_extractor.extract(page)):
+            # The form is gone and we are somewhere new: the "error" is the
+            # landing page's own notice, not a refusal of the login.
+            log.info("Step %d: form gone, ignoring page notice: %s", step + 1, errors)
+            errors = []
         if errors:
             log.info("Step %d: form errors detected: %s", step + 1, errors)
             return {

@@ -78,3 +78,30 @@ class TestDetectErrors:
         page.evaluate.side_effect = Exception("Page crashed")
         result = detect_errors(page)
         assert result == []
+
+
+class TestSuccessBannersAreNotErrors:
+    """practice.expandtesting.com shows "You logged into a secure area!" in an
+    alert-success box with role=alert; it was read as a form error and the
+    fast-path login reported failure (gemma, 2026-11-06)."""
+
+    HTML = """<div id="flash" role="alert" class="alert alert-success">You logged into a secure area!</div>
+    <div role="alert" class="alert alert-danger">Your password is invalid!</div>"""
+
+    def test_green_alert_is_skipped_red_one_kept(self):
+        import os
+        sync_api = pytest.importorskip("playwright.sync_api")
+        from fantoma.browser.page_state import detect_errors
+        exe = os.environ.get("FANTOMA_TEST_CHROMIUM") or "/opt/pw-browsers/chromium-1194/chrome-linux/chrome"
+        try:
+            pw = sync_api.sync_playwright().start()
+            browser = pw.chromium.launch(**({"executable_path": exe} if os.path.exists(exe) else {}))
+        except Exception as e:
+            pytest.skip(f"no Chromium: {e}")
+        try:
+            page = browser.new_page()
+            page.set_content(self.HTML)
+            assert detect_errors(page) == ["Your password is invalid!"]
+        finally:
+            browser.close()
+            pw.stop()

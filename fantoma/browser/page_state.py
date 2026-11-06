@@ -19,12 +19,15 @@ log = logging.getLogger("fantoma.page_state")
 _ERROR_DETECTION_JS = """() => {
     const errors = new Set();
     const MAX = 3;
+    // A green banner is not an error, whatever its role: "You logged into a
+    // secure area!" came back as a form error and the login was retried.
+    const good = el => /(^|[\s-])(success|info|notice)([\s-]|$)/i.test(el.className || '');
 
     // 1. role="alert" or aria-live="assertive"
     const alerts = document.querySelectorAll('[role="alert"], [aria-live="assertive"]');
     for (const el of alerts) {
         const text = el.textContent?.trim();
-        if (text && text.length < 200 && el.offsetParent !== null) {
+        if (text && text.length < 200 && el.offsetParent !== null && !good(el)) {
             errors.add(text);
             if (errors.size >= MAX) return [...errors];
         }
@@ -37,7 +40,7 @@ _ERROR_DETECTION_JS = """() => {
     );
     for (const el of errorClasses) {
         const text = el.textContent?.trim();
-        if (text && text.length < 200 && text.length > 3 && el.offsetParent !== null) {
+        if (text && text.length < 200 && text.length > 3 && el.offsetParent !== null && !good(el)) {
             errors.add(text);
             if (errors.size >= MAX) return [...errors];
         }
