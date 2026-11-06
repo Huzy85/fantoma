@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.1 — 2026-11-06
+
+### Changed
+- Camoufox pin moved from 0.5.4 to 0.5.9 (Firefox 158.0.1). It carries the upstream fix for the Playwright driver dying on a page whose JavaScript error has no location (daijro/camoufox#625, June 2026). Playwright must be below 1.63 for this build; Camoufox declares that itself.
+- The release workflow now publishes to the MCP Registry after PyPI on every tag (waits for PyPI to serve the version, sets `server.json` from the tag, `mcp-publisher login github-oidc`). The registry entry had sat at 0.11.3 while PyPI was on 0.13.0.
+
+### Docs
+- README: the driver-crash note no longer points at the dormant cloverlabs fork; the March 2026 sannysoft/nowsecure figure says which build it was measured on (0.4.11, Firefox 135) and that it has not been re-measured; the Fedora 43 glibc section is marked probably historical, since 0.5.9 loaded a page on Fedora 43 with no shim; the WebVoyager 0.8 pilot is marked historical; a one-line skill install for coding agents.
+
 ## 0.13.0 — 2026-11-06
 
 ### Security

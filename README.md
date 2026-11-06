@@ -71,6 +71,8 @@ fantoma test         # Verify it works
 
 No LLM needed to start: `fantoma read https://example.com` works straight after install. The browser (Camoufox) downloads itself on first use; `python -m camoufox fetch` does it up front.
 
+Using a coding agent (Claude Code, Codex, Cursor)? `npx skills add Huzy85/fantoma` installs a short skill (`skills/fantoma/SKILL.md`) that tells it when to reach for Fantoma and which route to use.
+
 **Need an LLM?** Install [Ollama](https://ollama.com) and pull a small instruction-tuned model (for example `ollama pull qwen3:8b`), then point Fantoma at `http://localhost:11434/v1`. Works on CPU or GPU (8GB+ GPU recommended for speed). Or use a cloud API (OpenAI, Anthropic, DeepSeek); the wizard handles either. A model on another machine on your network works too; Fantoma recognises LAN, Docker and Tailscale addresses as self-hosted and turns off "thinking" mode for them.
 
 **Requirements:** Python 3.10+, Linux or macOS (Windows via WSL).
@@ -239,7 +241,7 @@ agent actually did, step by step.
 
 ## Reliability
 
-The Playwright Firefox driver Camoufox rides on can die outright: a page whose JavaScript throws an error with no location takes down the Node driver process. When that happens the sync API in that worker is bound to a dead transport, and every later request fails — killing the driver and installing a fresh event loop does not bring it back.
+A browser driver can die outright. With Camoufox builds before mid-2026, a page whose JavaScript threw an error with no location took down the Node driver process (fixed upstream in [daijro/camoufox#625](https://github.com/daijro/camoufox/pull/625), June 2026; the 0.5.9 pin carries it). When a driver dies, the sync API in that worker is bound to a dead transport and every later request fails; killing the driver and installing a fresh event loop does not bring it back.
 
 Fantoma treats this as crash-only rather than trying to repair it in place:
 
@@ -249,7 +251,7 @@ Fantoma treats this as crash-only rather than trying to repair it in place:
 
 A consequence worth knowing: `/health` deliberately does not start a browser, so a green health check means the HTTP server is up, not that the browser works. Use `fantoma_health` plus a real task if you need end-to-end assurance.
 
-**In practice.** Driver crashes are intermittent rather than tied to particular sites. Pages that repeatedly killed a single backend load fine once there is somewhere to fail over to — a three-backend pool reads BBC News, example.com and iana.org in 46s total with every backend healthy afterwards. Running at least two backends is the difference between a crash being a retry and a crash being a failure. The underlying driver bug is upstream; the maintained [cloverlabs-camoufox](https://pypi.org/project/cloverlabs-camoufox/) fork is where a real fix would come from.
+**In practice.** Driver crashes are intermittent rather than tied to particular sites. Pages that repeatedly killed a single backend load fine once there is somewhere to fail over to — a three-backend pool reads BBC News, example.com and iana.org in 46s total with every backend healthy afterwards. Running at least two backends is the difference between a crash being a retry and a crash being a failure. That particular crash is fixed in current Camoufox; the crash-only design stays, because any driver can still hang or die.
 
 ## What It Does
 
@@ -257,7 +259,7 @@ A consequence worth knowing: `/health` deliberately does not start a browser, so
 - **LLM as brain, code as hands** — Code matches form fields by label (fast, zero tokens). When it can't match, one LLM call labels all fields at once. Code fills based on the LLM's answer. Results cached in SQLite — LLM never called twice for the same site.
 - **Signup forms** — fills first name, last name, email, username, password, confirm password. Clicks terms checkboxes. Tracks what's been filled to avoid double-submission.
 - **25 real sites tested** (March 2026) — GitHub, HN, Etsy, eBay, Reddit, Discord, Spotify, and 18 more, with no detection events recorded in that run.
-- [Camoufox](https://github.com/daijro/camoufox) anti-detection — passed bot.sannysoft.com and nowsecure.nl across 2,241 stress tests (March 2026). Detection moves; treat any such figure as a snapshot, not a guarantee.
+- [Camoufox](https://github.com/daijro/camoufox) anti-detection. The March 2026 figure (bot.sannysoft.com and nowsecure.nl passed across 2,241 stress tests) was measured on Camoufox 0.4.11, Firefox 135; the current pin is 0.5.9, Firefox 158, and has not been re-measured. Those two pages are basic checks, not Cloudflare or DataDome. Detection moves; treat any such figure as a snapshot, not a guarantee.
 - **ARIA + raw DOM** — always reads both. No form is invisible, even old-school HTML without ARIA labels.
 - **Form Memory** — SQLite database records every login page. Gets smarter with every visit.
 - **Universal form filling** — one approach for React, Vue, Angular, vanilla HTML. No framework detection.
@@ -520,9 +522,11 @@ agent = Agent(llm_url="http://localhost:8080/v1", browser="chromium")
 | `read()` returns `blocked` | The page was a bot check, error page, login wall or empty. Try `browser="chromium"`, a proxy, or log in first with `login()` |
 | MCP tools fail | Call `fantoma_health`. It says which mode is running and whether an LLM is configured |
 | Domain policy slows pages down | Strict mode fetches each request itself to check redirects. `FANTOMA_DOMAIN_STRICT=0` uses the browser's own networking instead |
-| Camoufox SIGSEGV / "Page crashed" on Fedora 43 | Use Docker (recommended) or LD_PRELOAD shim. See [Fedora 43 / glibc 2.42](#fedora-43--glibc-242-camoufox-crash) below. |
+| Camoufox SIGSEGV / "Page crashed" on Fedora 43 | Seen with Camoufox 0.4.x builds on glibc 2.42. Not reproduced with the 0.5.9 pin (checked 2026-11-06). If it still happens, use Docker or the shim in [Fedora 43 / glibc 2.42](#fedora-43--glibc-242-camoufox-crash). |
 
 ## Fedora 43 / glibc 2.42 — Camoufox Crash
+
+**Probably historical.** This crash was seen with Camoufox 0.4.x builds. With the 0.5.9 pin (Firefox 158), a headless page load on Fedora 43 (glibc 2.42) worked with no shim on 2026-11-06. The notes below are kept for anyone on an older build or who still hits it.
 
 If Camoufox crashes immediately with `TargetClosedError: Page crashed` or SIGSEGV on Fedora 43 (or any distro with glibc 2.42+), this is a known compatibility issue.
 
@@ -588,7 +592,7 @@ cp /usr/lib64/firefox/glxtest ~/.cache/camoufox/
 
 ## Docker API
 
-Fantoma runs in a Docker container (Ubuntu 22.04 + Camoufox + Xvfb). Single session at a time. This is the recommended approach on Fedora 43+ to avoid the glibc/seccomp issue.
+Fantoma runs in a Docker container (Ubuntu 22.04 + Camoufox + Xvfb). Single session at a time. It is the easiest way to get a known-good browser environment, and the fallback if a host build hits the glibc crash above.
 
 ```bash
 docker compose -f docker-compose.fantoma.yml up -d
@@ -638,9 +642,9 @@ Everything in the container runs as the unprivileged user `fantoma` (uid 1000): 
 On any shared network, set `FANTOMA_API_KEY` and `FANTOMA_VNC_PASSWORD`. Credentials passed via `sensitive_data` are masked in the ARIA tree sent to the LLM and in step logs; the real value is substituted only at execution time.
 
 <!-- BENCHMARK:START -->
-## WebVoyager Benchmark (v0.8, GPT-4o)
+## WebVoyager Benchmark (v0.8, GPT-4o, April 2026)
 
-5-task pilot subset, GPT-4o agent + GPT-4o judge, Camoufox + Capsolver, Docker.
+**Historical.** This 5-task pilot ran on Fantoma 0.8 in April 2026 and has not been rerun since; the current measure is the [three-model flow benchmark](#three-model-flow-benchmark-november-2026). GPT-4o agent + GPT-4o judge, Camoufox + Capsolver, Docker.
 
 | Site | Result | Steps | Duration |
 |------|--------|-------|----------|
@@ -701,7 +705,7 @@ The 7B failure is worth knowing: Fantoma opened the right category, then the mod
 
 Before the fast path, the same 7B model passed 4 of 8 and reported success on several tasks it had failed. These tasks are also the ones the fast path was built against, so treat the table as proof the mechanism works, not as a benchmark of unseen sites. Protected-site reads from a data-centre address (the CI runner): Camoufox 7 of 10, Chromium 5 of 10; a home connection is a different, usually easier, case.
 
-**Earlier runs (dated; detection moves, so treat these as snapshots).** 25 real sites with 6 LLMs; fingerprint checks passed on bot.sannysoft.com and nowsecure.nl; no detection events recorded across 2,241 stress tests (March 2026).
+**Earlier runs (dated; detection moves, so treat these as snapshots).** 25 real sites with 6 LLMs; fingerprint checks passed on bot.sannysoft.com and nowsecure.nl; no detection events recorded across 2,241 stress tests (March 2026, Camoufox 0.4.11, Firefox 135).
 
 **v0.7.0 live test — 25 sites, local-llm 9B local model (2026-03-31):**
 

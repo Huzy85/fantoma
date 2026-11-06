@@ -36,7 +36,7 @@ COPY pyproject.toml /app/
 # fetched the browser for the newest release, and the later editable install
 # then downgraded the package underneath it.
 RUN pip3 install --no-cache-dir \
-    "camoufox==0.5.4" \
+    "camoufox==0.5.9" \
     "playwright>=1.40" \
     "httpx>=0.25" \
     "capsolver" \

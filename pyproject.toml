@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fantoma"
-version = "0.13.0"
+version = "0.13.1"
 description = "Accessibility-first browser automation for AI agents. MCP server included. Reads pages with small local LLMs."
 readme = "README.md"
 license = "MIT"
@@ -30,7 +30,7 @@ dependencies = [
     # the one dependency the whole anti-detection story rests on — a routine
     # image rebuild moved 0.4.11 to 0.5.4 with nobody choosing it. Bump this
     # deliberately, and re-run the protected-site checks when you do.
-    "camoufox==0.5.4",
+    "camoufox==0.5.9",
     "playwright>=1.40",
     "httpx>=0.25",
 ]
