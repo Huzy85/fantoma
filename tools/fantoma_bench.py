@@ -42,6 +42,21 @@ def _load_flows():
     return mod.FLOWS, mod._verify, mod.task_text
 
 
+def _forget_sessions(url):
+    """Drop any session Fantoma saved for this flow's site, so a login flow
+    logs in. A kept session skips the form, and with it the success banner
+    the flow checks for (gemma, expandtesting-login, 2026-11-06)."""
+    try:
+        from urllib.parse import urlparse
+        from fantoma.session import SessionManager
+        domain = urlparse(url).netloc.lower()
+        store = SessionManager()
+        for entry in store.list(domain):
+            store.delete(entry["domain"], entry["account"])
+    except Exception as exc:
+        print(f"could not clear saved sessions for {url}: {exc}", flush=True)
+
+
 def _http(method, url, body=None, timeout=60.0):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data, method=method,
@@ -164,6 +179,7 @@ class Bench:
                 _http("POST", f"{base}/stop", {}, timeout=60)
             except Exception:
                 pass
+            _forget_sessions(flow["url"])
             body = _http("POST", f"{base}/run",
                          {"task": self.task_text(flow), "url": flow["url"],
                           "timeout": self.flow_timeout, "keep_session": True},
