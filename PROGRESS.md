@@ -4,6 +4,10 @@
 
 Ordered by what lowers the capability floor, because the point of Fantoma is doing useful work on the smallest model that can run locally. Reading already works on small models and now also works with no model at all (`read`). Acting is where small models still fail, and every item below either removes a step a small model can get wrong or moves a decision from the model into code.
 
+### 0. Measured 2026-11-06: 20 live flows x 3 runs x 3 local models, 180/180
+
+`tools/fantoma_bench.py` with `~/tools/fantoma-bench/launch.sh` (three Fantoma hosts, one per model, resumable, watchdog-published report). Baseline 2026-11-05 on the same matrix: Gemma 4 26B-A4B 37/60, DeepSeek flash 36/60, Hermes (Qwen3.6-35B-A3B) 30/60, mean 80-94 s per flow. After the fixes in Unreleased (synthetic click for focus-less controls, fast-path journeys, direct answers once the actions are done, question-aware DONE guard, register handler, beside-text element refs, success banners not errors) every model passed 60/60 flows and 93/93 checkpoints at a mean of 23-25 s and 3.0 steps. The six cases that still failed at the start of cycle 2 were all Fantoma or benchmark defects, none were model judgement: an impossible signup task (underscore username, name already taken), a checkbox the ref resolver called gone, a login banner read as an error, and a saved session skipping the login form. Lesson for the next round: reproduce a repeated failure in the browser class before reading model traces.
+
 ### 1. Measure 0.10.0 on the live flows, three runs per model
 
 The dropdown, ranking, occlusion and exact-name fixes in 0.10.0 were verified against local copies of the test pages in Chromium, and the dropdown flow end to end through a stand-in model. They have not been measured on the live flow suite (`tools/live_flow_test.py --workers 1`) or with Camoufox. Before claiming a new interaction score, run it with a small local model and a frontier control, three runs per flow (single runs of a weak model measure noise), `action_cache` off.

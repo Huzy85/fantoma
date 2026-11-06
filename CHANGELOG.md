@@ -13,6 +13,9 @@
 - The confirm-dialog record carries `answer` (`accepted`/`dismissed`), so the agent can see what the browser did with it.
 - When the fast path has done every step and only a question is left ("Tell me the total"), the answer is read from the page at once instead of handing the model a turn. Models given that turn clicked once more (Finish, Add, the cart link) and left the page the checkpoint wanted.
 - The premature-DONE guard ignores sentences that ask for information, so "Tell me how many Delete buttons there are" no longer counts as a pending Delete action. One model wandered for 21 steps, via Google, after its correct answer was refused.
+- "Register a new account with username 'x' and password 'y'" is carried out by the fast path: username, password and confirm boxes filled, the form sent, and on refusal the site's own message returned instead of a retry into the same boxes.
+- An unlabelled control whose snapshot label ran into the next block ("checkbox 2 Powered by") was reported gone when clicked. Element refs now also match on the text sitting beside the control.
+- A success banner marked up as an alert ("You logged into a secure area!" in an `alert-success` box with `role=alert`) was read as a form error and the fast-path login reported failure. Error detection skips success/info/notice styled boxes, and the login helper ignores page notices once the password box has gone.
 
 ### Changed
 - Profiles volume path is `/home/fantoma/.local/share/fantoma` (was `/root/...`). Update the mount in your compose file; the entrypoint re-owns an existing volume on first start.
@@ -21,6 +24,7 @@
 - DeepSeek endpoints get `thinking: {"type": "disabled"}` in the request body. `FANTOMA_LLM_EXTRA_BODY` (JSON) merges extra fields into every chat request for any provider.
 - `FANTOMA_LOG_RAW=1` logs each raw model reply (masked, 600 chars) at INFO; the cycle detector keys on the element signature, so clicks on different controls are no longer a "cycle".
 - Dialog policy follows the task: a task that says "accept the dialog" accepts it, one that says "dismiss" dismisses, otherwise `FANTOMA_DIALOGS` (default dismiss) applies.
+- `tools/fantoma_bench.py` drops any saved session for a flow's site before running it, so a login flow logs in rather than restoring last run's cookies.
 
 ## 0.12.0 — 2026-11-05
 
